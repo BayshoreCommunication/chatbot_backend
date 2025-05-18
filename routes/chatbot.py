@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Request, UploadFile, File, Form, HTTPException
-from services.langchain_engine import ask_bot, add_document_to_vectorstore, escalate_to_human
+from services.langchain.engine import ask_bot, add_document, escalate_to_human
 from services.language_detect import detect_language
 from typing import Optional
 import json
@@ -33,9 +33,10 @@ async def ask_question(request: ChatRequest):
     # Get response based on mode
     response = ask_bot(
         query=request.question,
-        mode=request.mode,
+        mode=session["current_mode"],
         user_data=session["user_data"],
-        available_slots=request.available_slots
+        available_slots=request.available_slots,
+        session_id=request.session_id
     )
     
     # Check if we received an error response
@@ -49,9 +50,13 @@ async def ask_question(request: ChatRequest):
         "bot": response["answer"]
     })
     
-    # Update session if user data was collected
+    # Update session user data if provided in response
     if "user_data" in response:
         session["user_data"].update(response["user_data"])
+    
+    # Update session mode if it changed
+    if "mode" in response and response["mode"] != session["current_mode"]:
+        session["current_mode"] = response["mode"]
     
     return response
 
@@ -91,7 +96,7 @@ async def upload_document(
             f.write(content)
         
         # Add to vectorstore
-        result = add_document_to_vectorstore(file_path=file_path)
+        result = add_document(file_path=file_path)
         
         # Clean up temporary file
         os.remove(file_path)
@@ -99,10 +104,10 @@ async def upload_document(
         return result
     
     elif url:
-        return add_document_to_vectorstore(url=url)
+        return add_document(url=url)
     
     elif text:
-        return add_document_to_vectorstore(text=text)
+        return add_document(text=text)
     
     else:
         raise HTTPException(status_code=400, detail="No document source provided")

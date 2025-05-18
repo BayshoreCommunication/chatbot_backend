@@ -1,68 +1,96 @@
 from fastapi import APIRouter, Request, HTTPException
-from services.calendar_integration import get_available_slots, book_appointment
-from pydantic import BaseModel, EmailStr
-from typing import Optional, List, Dict, Any
+from pydantic import BaseModel
+from typing import Optional, List
+from services.langchain.appointments import get_available_slots
+import json
+import os
 from datetime import datetime
 
 router = APIRouter()
 
-class AppointmentRequest(BaseModel):
-    start_time: str
-    end_time: str
-    user_name: str
-    user_email: EmailStr
-    service_type: Optional[str] = "consultation"
-    source: Optional[str] = None  # calendar source (google_calendar, calendly, etc.)
+class AppointmentSlot(BaseModel):
+    id: str
+    date: str
+    time: str
+    available: bool
+
+class BookingRequest(BaseModel):
+    name: str
+    email: str
+    phone: Optional[str] = None
+    service: str
+    slot_id: str
+    date: str
+    time: str
+    notes: Optional[str] = None
 
 @router.get("/available-slots")
-async def available_slots(days_ahead: int = 7, service_type: str = "consultation"):
+async def get_slots():
     """Get available appointment slots"""
-    slots = get_available_slots(days_ahead, service_type)
+    # Get the formatted slots string from the engine
+    slots_text = get_available_slots()
     
-    # Format the response
-    formatted_slots = []
-    for slot in slots:
-        # Parse ISO datetime into a more readable format
-        start_dt = datetime.fromisoformat(slot["start"].replace("Z", "+00:00"))
-        end_dt = datetime.fromisoformat(slot["end"].replace("Z", "+00:00"))
-        
-        formatted_slots.append({
-            "id": f"{slot['source']}_{start_dt.strftime('%Y%m%d%H%M')}",
-            "start": slot["start"],
-            "end": slot["end"],
-            "start_readable": start_dt.strftime("%A, %B %d, %Y at %I:%M %p"),
-            "end_readable": end_dt.strftime("%I:%M %p"),
-            "source": slot["source"]
-        })
+    # Parse the formatted text into actual slot objects
+    import re
+    import datetime
     
-    return {"slots": formatted_slots}
+    slots = []
+    lines = slots_text.strip().split('\n')
+    
+    # Skip the header line
+    for line in lines[2:]:  # Skip first two lines (title and blank line)
+        if line:
+            # Parse the line in format "• YYYY-MM-DD at HH:MM (ID: slot_id)"
+            match = re.match(r'• (\d{4}-\d{2}-\d{2}) at (\d{1,2}:\d{2}) \(ID: (.*?)\)', line)
+            if match:
+                date_str, time_str, slot_id = match.groups()
+                slots.append({
+                    "id": slot_id,
+                    "date": date_str,
+                    "time": time_str,
+                    "available": True
+                })
+    
+    return {"slots": slots}
 
 @router.post("/book")
-async def book(request: AppointmentRequest):
+async def book_appointment(request: BookingRequest):
     """Book an appointment"""
-    result = book_appointment(
-        start_time=request.start_time,
-        end_time=request.end_time,
-        user_name=request.user_name,
-        user_email=request.user_email,
-        service_type=request.service_type,
-        source=request.source
-    )
+    # In a real application, you would:
+    # 1. Check if the slot is still available
+    # 2. Create the appointment in your calendar system
+    # 3. Update the slot to be unavailable
+    # 4. Send confirmation email
     
-    if result.get("status") == "error":
-        raise HTTPException(status_code=400, detail=result.get("message", "Failed to book appointment"))
+    # For demo purposes, we'll just return success
+    booking_info = {
+        "name": request.name,
+        "email": request.email,
+        "phone": request.phone,
+        "service": request.service,
+        "slot_id": request.slot_id,
+        "date": request.date,
+        "time": request.time,
+        "booking_reference": f"BOOK-{datetime.now().strftime('%Y%m%d%H%M%S')}",
+        "status": "confirmed"
+    }
     
-    return result
+    return {
+        "status": "success",
+        "message": "Appointment booked successfully",
+        "booking_info": booking_info
+    }
 
 @router.get("/services")
-async def available_services():
-    """List available service types for appointments"""
-    # This could be loaded from a database in a real application
+async def get_services():
+    """Get available service types"""
+    # In a real application, fetch from database
+    # For demo purposes, return mock data
     services = [
-        {"id": "consultation", "name": "General Consultation", "duration": 60},
-        {"id": "onboarding", "name": "New Client Onboarding", "duration": 90},
-        {"id": "follow_up", "name": "Follow-up Meeting", "duration": 30},
-        {"id": "technical", "name": "Technical Support", "duration": 45}
+        {"id": "legal_consultation", "name": "Legal Consultation", "duration": 60, "price": 200},
+        {"id": "document_review", "name": "Document Review", "duration": 30, "price": 100},
+        {"id": "case_evaluation", "name": "Case Evaluation", "duration": 90, "price": 300},
+        {"id": "will_testament", "name": "Will & Testament", "duration": 60, "price": 250},
     ]
     
     return {"services": services} 
