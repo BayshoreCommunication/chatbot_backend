@@ -8,8 +8,8 @@ import os
 from dotenv import load_dotenv
 
 # API credentials are now hardcoded in the respective service files
-# No need to load environment variables
-# load_dotenv()
+# But we still need to load environment variables for configuration
+load_dotenv()
 
 # Create the FastAPI app
 app = FastAPI(

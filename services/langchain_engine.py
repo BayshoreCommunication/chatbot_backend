@@ -14,22 +14,78 @@ from services.language_detect import detect_language
 from services.notification import send_email_notification
 import json
 import openai
+import numpy as np
+from langchain.embeddings.base import Embeddings
 
 load_dotenv()
 
+print("OPENAI_API_KEY:", os.getenv("OPENAI_API_KEY")) 
+
+# Define a custom embedding class that reduces vector dimensions
+class DimensionReducedEmbeddings(Embeddings):
+    def __init__(self, base_embeddings, target_dim=1024):
+        self.base_embeddings = base_embeddings
+        self.target_dim = target_dim
+        
+    def embed_documents(self, texts):
+        # Get the original embeddings
+        original_embeddings = self.base_embeddings.embed_documents(texts)
+        # Reduce dimensions and convert to Python float
+        reduced_embeddings = []
+        for emb in original_embeddings:
+            # Convert to Python list of floats
+            reduced_emb = [float(x) for x in emb[:self.target_dim]]
+            # Normalize
+            reduced_embeddings.append(self._normalize(reduced_emb))
+        return reduced_embeddings
+    
+    def embed_query(self, text):
+        # Get the original embedding
+        original_embedding = self.base_embeddings.embed_query(text)
+        # Reduce dimensions and convert to Python floats
+        reduced_embedding = [float(x) for x in original_embedding[:self.target_dim]]
+        # Normalize the embedding after reduction
+        return self._normalize(reduced_embedding)
+    
+    def _normalize(self, v):
+        # Normalize the vector to have unit length
+        norm = np.linalg.norm(v)
+        if norm > 0:
+            return [float(x / norm) for x in v]
+        return [float(x) for x in v]
+
 # Initialize OpenAI
-llm = ChatOpenAI(model_name="gpt-3.5-turbo", temperature=0.5)
+llm = ChatOpenAI(
+    model_name="gpt-3.5-turbo", 
+    temperature=0.5,
+    openai_api_key=os.getenv("OPENAI_API_KEY"),
+    openai_api_base="https://api.openai.com/v1"
+)
 
 # Use actual OpenAI embeddings
-embeddings = OpenAIEmbeddings()
+base_embeddings = OpenAIEmbeddings(
+    openai_api_key=os.getenv("OPENAI_API_KEY"),
+    openai_api_base="https://api.openai.com/v1"
+)
+
+# Create dimension-reduced embeddings to match Pinecone index
+embeddings = DimensionReducedEmbeddings(base_embeddings, target_dim=1024)
 
 # Initialize Pinecone
 pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
 index_name = os.getenv("PINECONE_INDEX")
+print(f"PINECONE_INDEX: {index_name}")  # Debug print
+
+# Use fallback value if index_name is None
+if index_name is None:
+    index_name = "bayshoreai"
+    print(f"Using fallback index_name: {index_name}")
 
 # Check if index exists, if not create it
 indexes = pc.list_indexes()
 existing_index_names = [index.name for index in indexes.indexes]
+
+print(f"Existing indexes: {existing_index_names}")
 
 if index_name not in existing_index_names:
     pc.create_index(
@@ -38,8 +94,14 @@ if index_name not in existing_index_names:
         metric="cosine"
     )
 
-index = pc.Index(index_name)
-vectorstore = PineconeVectorStore(index=index, embedding=embeddings, text_key="text")
+try:
+    index = pc.Index(index_name)
+    vectorstore = PineconeVectorStore(index=index, embedding=embeddings, text_key="text")
+    print(f"Successfully initialized vectorstore with index: {index_name}")
+except Exception as e:
+    print(f"Error initializing vectorstore: {str(e)}")
+    # Fallback mechanism
+    vectorstore = None
 
 # Set up QA chain
 qa_chain = load_qa_chain(llm, chain_type="stuff")
@@ -48,9 +110,7 @@ qa_chain = load_qa_chain(llm, chain_type="stuff")
 memory = ConversationBufferMemory(return_messages=True)
 
 # Different prompt templates for various modes
-faq_template = """You are a helpful AI assistant for a business.
-Answer the following question based on the context provided.
-If you don't know the answer, say you don't know and offer to connect the user with a human.
+faq_template = """You are a lawyer assistant and you task is manage the website visitor and answer using very short answer the question based on the context provided. you task is first ask the user name and email and then answer the question based on the context provided.
 
 Context: {context}
 User Language: {language}
@@ -138,10 +198,27 @@ appointment_chain = LLMChain(
 
 def add_document_to_vectorstore(file_path=None, url=None, text=None):
     """Add documents to the vectorstore from different sources"""
-    global vectorstore
+    global vectorstore, index_name, pc, embeddings
     documents = []
     
+    # HARD FALLBACK: Ensure index_name is NEVER None at this point
+    if index_name is None:
+        index_name = "bayshoreai"
+        print(f"CRITICAL: Using hardcoded fallback index_name: {index_name}")
+    
     try:
+        # If vectorstore is None, try to reinitialize
+        if vectorstore is None:
+            try:
+                print(f"Attempting to initialize vectorstore with index: {index_name}")
+                index = pc.Index(index_name)
+                vectorstore = PineconeVectorStore(index=index, embedding=embeddings, text_key="text")
+                print(f"Reinitialized vectorstore with index: {index_name}")
+            except Exception as e:
+                error_msg = str(e)
+                print(f"Error initializing vectorstore: {error_msg}")
+                return {"status": "error", "message": f"Index '{index_name}' not found in your Pinecone project. Did you mean one of the following indexes: {', '.join([index.name for index in pc.list_indexes().indexes])}"}
+        
         if file_path and file_path.endswith('.pdf'):
             loader = PyPDFLoader(file_path)
             documents.extend(loader.load())
@@ -162,15 +239,53 @@ def add_document_to_vectorstore(file_path=None, url=None, text=None):
             splits = text_splitter.split_documents(documents)
             
             # Add to the in-memory vector database
-            new_vectorstore = PineconeVectorStore.from_documents(splits, embeddings)
-            
-            # Merge with existing vectorstore if it exists
-            if vectorstore:
-                vectorstore.merge_from(new_vectorstore)
-            else:
-                vectorstore = new_vectorstore
-            
-            return {"status": "success", "message": f"Added {len(splits)} document chunks to vectorstore"}
+            try:
+                print(f"Creating new vector store with index: {index_name}")
+                
+                # DIRECT APPROACH: Don't use PineconeVectorStore.from_documents
+                # Instead manually embed and insert each document
+                
+                # Get the Pinecone index directly
+                if index_name is None:
+                    index_name = "bayshoreai"  # Final fallback
+                
+                # Get or create vector store
+                if vectorstore is None:
+                    try:
+                        index = pc.Index(index_name)
+                        vectorstore = PineconeVectorStore(index=index, embedding=embeddings, text_key="text")
+                    except Exception as e:
+                        print(f"Error getting index: {str(e)}")
+                        return {"status": "error", "message": str(e)}
+                
+                # Process each document manually
+                successful_uploads = 0
+                for i, doc in enumerate(splits):
+                    try:
+                        # Get the document text
+                        doc_text = doc.page_content
+                        
+                        # Create an ID for this document
+                        doc_id = f"doc_{i}_{abs(hash(doc_text)) % 10000}"
+                        
+                        # Get embedding vector directly
+                        embedding_vector = embeddings.embed_query(doc_text)
+                        
+                        # Store directly in Pinecone
+                        vectorstore.add_texts(
+                            texts=[doc_text],
+                            ids=[doc_id],
+                            metadatas=[doc.metadata] if hasattr(doc, 'metadata') else [{}]
+                        )
+                        
+                        successful_uploads += 1
+                    except Exception as e:
+                        print(f"Error uploading document {i}: {str(e)}")
+                
+                return {"status": "success", "message": f"Added {successful_uploads} document chunks to vectorstore"}
+            except Exception as e:
+                print(f"Error in vector store creation: {str(e)}")
+                return {"status": "error", "message": str(e)}
     
     except openai.RateLimitError as e:
         return {"status": "error", "message": str(e), "error_type": "openai_quota_exceeded"}
