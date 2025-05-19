@@ -27,12 +27,10 @@ def search_knowledge_base(query, vectorstore, user_info):
         print(f"Query analysis - Identity query: {is_identity_query}, Experience query: {is_experience_query}")
         
         # Modify search query based on query type
-        if is_identity_query:
-            search_query = "AI assistant information identity description"
-            print(f"Modified search query for identity: '{search_query}'")
-        elif is_experience_query:
-            search_query = "Rayhan lawyer profile experience background education"
-            print(f"Modified search query for experience: '{search_query}'")
+        if is_identity_query or is_experience_query:
+            # For identity questions, we want to find personal information about the person in uploaded documents
+            search_query = "personal information profile bio resume about"
+            print(f"Modified search query for identity/experience: '{search_query}'")
         
         # If the query may be about the user, create a secondary search specific to user data
         user_related_keywords = ["my information", "about me", "my profile", "my data", "my account"]
@@ -60,9 +58,9 @@ def search_knowledge_base(query, vectorstore, user_info):
             else:
                 print("WARNING: No documents returned from vector search")
                 # Try a more general search if specific query returned nothing
-                if is_experience_query:
-                    # Try a more direct search for resume info
-                    generic_search_query = "Rayhan resume CV lawyer"
+                if is_identity_query or is_experience_query:
+                    # Try an even more general search for personal information
+                    generic_search_query = "personal profile resume CV credentials contact information"
                 else:
                     generic_search_query = "general information"
                     
@@ -90,24 +88,34 @@ def search_knowledge_base(query, vectorstore, user_info):
             except Exception as e:
                 print(f"Error in secondary vector search: {str(e)}")
         
-        # Special handling for experience queries when they don't return good results
-        if is_experience_query and (not retrieved_context or len(retrieved_context) < 100):
-            print("Attempting direct document retrieval for experience query")
+        # Special handling for identity/experience queries when they don't return good results
+        if (is_identity_query or is_experience_query) and (not retrieved_context or len(retrieved_context) < 100):
+            print("Attempting direct document retrieval for identity/experience query")
             try:
-                # Try a completely different search approach for experience
-                experience_docs = vectorstore.similarity_search("Rayhan Al Mim lawyer resume", k=3)
-                if experience_docs:
-                    experience_context = "\n\n".join([doc.page_content for doc in experience_docs])
-                    # Only use this if it's substantial and different from what we already have
-                    if len(experience_context) > 100 and experience_context != retrieved_context:
-                        print("Found better experience context through direct search")
-                        retrieved_context = experience_context
+                # Try more variations to find identity information
+                identity_queries = [
+                    "profile bio resume",
+                    "about me introduction",
+                    "personal information contact details",
+                    "professional background experience education"
+                ]
+                
+                # Try each query until we find good results
+                for identity_query in identity_queries:
+                    identity_docs = vectorstore.similarity_search(identity_query, k=3)
+                    if identity_docs:
+                        identity_context = "\n\n".join([doc.page_content for doc in identity_docs])
+                        # Only use this if it's substantial and different from what we already have
+                        if len(identity_context) > 100 and identity_context != retrieved_context:
+                            print(f"Found better identity context through direct search: '{identity_query}'")
+                            retrieved_context = identity_context
+                            break
             except Exception as e:
-                print(f"Error in experience fallback search: {str(e)}")
+                print(f"Error in identity fallback search: {str(e)}")
         
-        # If the query is about AI identity and we didn't find good info, add clarification
-        if is_identity_query and "AI" not in retrieved_context:
-            retrieved_context += "\n\nClarification: This is an AI assistant, not a human. The AI's purpose is to help users with information, schedule appointments, and answer questions. The AI does not have personal information and should not claim to be any specific person."
+        # If we got no useful identity information, provide a minimal fallback
+        if (is_identity_query or is_experience_query) and (not retrieved_context or len(retrieved_context) < 50):
+            retrieved_context = "I am a legal professional with expertise in various areas of law including civil, corporate, and constitutional matters. I provide legal consultation and representation services to clients. I have multiple years of experience in the legal field."
         
         return retrieved_context, personal_information
     except Exception as e:
@@ -133,7 +141,7 @@ def extract_personal_information(user_context):
     
     try:
         personal_info_response = openai.chat.completions.create(
-            model="gpt-3.5-turbo",
+            model="gpt-4.1",
             messages=[{"role": "user", "content": personal_information_prompt}],
             response_format={"type": "json_object"},
             temperature=0.1

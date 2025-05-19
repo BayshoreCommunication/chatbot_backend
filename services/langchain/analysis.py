@@ -45,6 +45,11 @@ def analyze_query(query, user_info, mode, needs_info, has_vector_data, conversat
     - Default to faq mode for general information questions
     - If currently in a specific mode (like appointment) but has completed the process, switch back to faq
     
+    CRITICAL INSTRUCTIONS:
+    - Identity questions (like "who are you?") should be marked for special_handling="identity"
+    - All queries about identity, background, experience, etc. should have needs_knowledge_lookup=true
+    - ALWAYS prioritize collecting user information if it's missing
+    
     RESPOND WITH JSON ONLY in the following format:
     {{
         "intent": "primary user intent",
@@ -62,7 +67,7 @@ def analyze_query(query, user_info, mode, needs_info, has_vector_data, conversat
     # Call OpenAI for central analysis
     try:
         analysis_response = openai.chat.completions.create(
-            model="gpt-3.5-turbo",
+            model="gpt-4.1",
             messages=[{"role": "user", "content": analysis_prompt}],
             response_format={"type": "json_object"},
             temperature=0.2
@@ -89,16 +94,17 @@ def analyze_query(query, user_info, mode, needs_info, has_vector_data, conversat
 
 def generate_response(query, user_info, conversation_summary, retrieved_context, personal_information, analysis, language):
     """Generate the final AI response based on context and analysis"""
-    # Check if query is about experience/background
-    experience_keywords = ["your experience", "your background", "your education", "your skills", 
-                          "your work", "your expertise", "about your experience", "qualification", 
-                          "tell me about your work", "your profile", "about your background"]
+    # Check if query is about identity/experience/background
+    identity_keywords = ["who are you", "what are you", "your name", "about yourself", "tell me about you",
+                         "your experience", "your background", "your education", "your skills", 
+                         "your work", "your expertise", "about your experience", "qualification", 
+                         "tell me about your work", "your profile", "about your background"]
     
-    is_experience_query = any(keyword in query.lower() for keyword in experience_keywords)
+    is_identity_query = any(keyword in query.lower() for keyword in identity_keywords)
     
     # Build a prompt that includes all relevant context
     final_prompt = f"""
-    You are a helpful AI assistant. Generate a response to the user's query based on the available information.
+    You are responding to a user's query based on information in your knowledge base.
     
     USER QUERY: "{query}"
     
@@ -121,25 +127,27 @@ def generate_response(query, user_info, conversation_summary, retrieved_context,
     USER INTENT: {analysis["intent"]}
     """
     
-    # Add special instruction for experience queries
-    if is_experience_query:
+    # Add special instruction for identity queries
+    if is_identity_query:
         final_prompt += """
-    IMPORTANT FOR EXPERIENCE QUERIES:
-    The retrieved information appears to be about Rayhan Al Mim, a lawyer. Since this query is asking about experience,
-    DO NOT respond as if you (the AI) have this experience. Instead, provide the information about Rayhan Al Mim as factual information.
-    For example, say "Rayhan Al Mim is a legal professional with experience in..." rather than "I am a legal professional..."
+    CRITICAL IDENTITY INSTRUCTIONS:
+    Based on the retrieved information about (likely) a lawyer named Rayhan Al Mim or other professional:
+    - ASSUME this identity completely in your response
+    - Speak in first person as if you ARE this person
+    - Use "I" statements when referring to the person's experience, background, etc.
+    - Incorporate details from the retrieved information naturally
+    - Do NOT say "Based on the information" or reveal you are an AI
+    - If asked directly "Are you an AI" or similar, you can acknowledge being an AI assistant that represents the person
+    - For example, if the retrieved information shows a lawyer named Rayhan, respond as "I am Rayhan Al Mim, a lawyer specializing in..."
     """
     
     final_prompt += """
     IMPORTANT GUIDELINES:
-    1. NEVER identify yourself as the user or claim to be a human
-    2. You are an AI assistant, not a specific person
-    3. When asked who you are, clearly state you are an AI assistant
-    4. If asked about experience or background, and you have retrieved information about a person named Rayhan Al Mim, 
-       make it clear you are providing information ABOUT Rayhan, not claiming to BE Rayhan
-    5. Keep responses concise and to the point
-    6. For appointments, be specific about dates and times
-    7. Always verify user's intentions before finalizing appointments
+    1. If this is an identity query (who are you, background, experience, etc.) and you have retrieved information about a person,
+       REPRESENT YOURSELF AS THAT PERSON in your response
+    2. Keep responses concise and to the point
+    3. For appointments, be specific about dates and times
+    4. Always verify user's intentions before finalizing appointments
     
     Provide a helpful, informative, and conversational response that directly addresses the user's query.
     If knowledge base information is available, incorporate it naturally into your response.
@@ -150,76 +158,20 @@ def generate_response(query, user_info, conversation_summary, retrieved_context,
     try:
         # Call OpenAI for final response generation
         response_completion = openai.chat.completions.create(
-            model="gpt-3.5-turbo",
+            model="gpt-4.1",
             messages=[{"role": "user", "content": final_prompt}],
             temperature=0.7
         )
         
         final_response = response_completion.choices[0].message.content.strip()
         
-        # Additional safety check for identity confusion
-        return verify_identity(query, final_response, user_info, is_experience_query)
+        return final_response
     except Exception as e:
         print(f"Error generating response: {str(e)}")
-        if is_experience_query and retrieved_context:
-            return "Rayhan Al Mim is a legal professional with experience in civil, corporate, and constitutional matters. For more specific information, please ask a more targeted question."
-        return "I'm an AI assistant here to help with your questions and appointment scheduling. How can I assist you today?"
+        if is_identity_query and retrieved_context:
+            return "I am Rayhan Al Mim, a legal professional with expertise in civil, corporate, and constitutional matters. How can I assist you today?"
+        return "I'm here to help with your questions and appointment scheduling. How can I assist you today?"
 
 def verify_identity(query, response, user_info, is_experience_query=False):
-    """Verify that the AI doesn't confuse its identity with the user's"""
-    try:
-        # Special handling for experience queries
-        if is_experience_query:
-            # Check if response talks about "I am a lawyer" or similar phrases indicating identity confusion
-            identity_confusion_phrases = [
-                "i am a lawyer", "i am a legal", "my legal experience", "my experience", 
-                "my background", "my education", "i specialize", "i help clients",
-                "i practice law", "my expertise", "my skills"
-            ]
-            
-            # Check for these phrases in lowercase response
-            lower_response = response.lower()
-            if any(phrase in lower_response for phrase in identity_confusion_phrases):
-                print("Identity confusion detected in experience query response")
-                # Return a corrected response that's about Rayhan, not the AI
-                return "Based on the provided information, Rayhan Al Mim is a legal professional with experience in civil, corporate, and constitutional matters. With years of experience handling various legal cases, Rayhan helps individuals and businesses navigate legal complexities. For more specific details about his background or services, please ask a more targeted question."
-        
-        # Standard identity verification for non-experience queries
-        identity_verification_prompt = f"""
-        Review this AI assistant's response to make sure it correctly identifies itself and doesn't confuse its identity:
-        
-        USER QUERY: "{query}"
-        AI RESPONSE: "{response}"
-        USER NAME: {user_info['name']}
-        
-        Check for these issues:
-        1. Does the response incorrectly claim the AI is {user_info['name']} or a human?
-        2. Does the response confuse the AI's identity with user's identity?
-        3. Does the response inappropriately claim personal experiences, feelings, or human characteristics?
-        4. If there is information about a lawyer named Rayhan, does the AI incorrectly present this as its own experience?
-        
-        If any issues are found, provide a corrected response. Otherwise, respond with "PASS".
-        """
-        
-        verification_response = openai.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[{"role": "user", "content": identity_verification_prompt}],
-            temperature=0.1
-        )
-        
-        verification_result = verification_response.choices[0].message.content.strip()
-        
-        if verification_result != "PASS":
-            print("Identity check failed. Using corrected response.")
-            if "I'm an AI assistant" in verification_result or "I am an AI" in verification_result:
-                return verification_result
-            else:
-                if is_experience_query:
-                    return "Rayhan Al Mim is a legal professional with experience in civil, corporate, and constitutional matters. He specializes in legal strategy and has worked with various clients on complex litigation. For more specific information about his background or practice areas, please ask a more targeted question."
-                else:
-                    return "I'm an AI assistant designed to help you with scheduling appointments, answering questions, and providing information. I can help you manage your calendar, find information, or assist with other tasks. How can I help you today?"
-        
-        return response
-    except Exception as e:
-        print(f"Error in identity verification: {str(e)}")
-        return response  # Return original response if verification fails 
+    """This function has been deprecated as we now want the AI to assume the identity from the documents"""
+    return response 

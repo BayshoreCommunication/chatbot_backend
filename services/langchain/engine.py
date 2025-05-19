@@ -45,7 +45,7 @@ def initialize():
     
     # Initialize OpenAI
     llm = ChatOpenAI(
-        model_name="gpt-3.5-turbo", 
+        model_name="gpt-4.1", 
         temperature=0.5,
         openai_api_key=os.getenv("OPENAI_API_KEY"),
         openai_api_base="https://api.openai.com/v1"
@@ -127,19 +127,23 @@ def ask_bot(query: str, mode="faq", user_data=None, available_slots=None, sessio
     conversation_context = user_data["conversation_history"][-5:] if len(user_data["conversation_history"]) > 0 else []
     conversation_summary = "\n".join([f"{'User' if msg['role'] == 'user' else 'AI'}: {msg['content']}" for msg in conversation_context])
     
+    # STEP 0: If this is first message and we need user info, always collect name first
+    is_first_message = len(user_data["conversation_history"]) <= 1
+    if is_first_message and "name" not in user_data:
+        # We're starting a new conversation - always ask for name first
+        return handle_name_collection("", user_data, mode, language)
+    
     # STEP 1: Analyze the query to determine intent and appropriate mode
     analysis = analyze_query(query, user_info, mode, needs_info, has_vector_data, conversation_summary)
     
     # STEP 2: Handle Information Collection if needed
-    if analysis["collect_info"] and analysis["info_to_collect"] != "none":
-        info_type = analysis["info_to_collect"]
-        
-        # Handle name collection
-        if info_type == "name" and "name" not in user_data:
+    # If we still need information, prioritize collecting it
+    if needs_info:
+        if "name" not in user_data:
+            # If the query could be a name introduction, try to extract it
             return handle_name_collection(query, user_data, analysis["appropriate_mode"], language)
-        
-        # Handle email collection
-        elif info_type == "email" and "email" not in user_data:
+        elif "email" not in user_data:
+            # Otherwise try to get their email
             return handle_email_collection(query, user_data, analysis["appropriate_mode"], language)
     
     # STEP 3: Handle Appointment Actions if needed
@@ -170,16 +174,29 @@ def ask_bot(query: str, mode="faq", user_data=None, available_slots=None, sessio
     
     # STEP 5: Handle special cases if needed
     if analysis["special_handling"] == "identity":
-        response = "I'm an AI assistant designed to help you with information, schedule appointments, and answer your questions. How can I assist you today?"
+        # For identity questions, make sure we search the knowledge base
+        if not retrieved_context and vectorstore is not None:
+            retrieved_context, personal_information = search_knowledge_base("personal information profile bio", vectorstore, user_info)
+            
+        # Generate identity response
+        identity_response = generate_response(
+            query, 
+            user_info, 
+            conversation_summary, 
+            retrieved_context, 
+            personal_information, 
+            analysis, 
+            language
+        )
         
         # Add this interaction to history
         user_data["conversation_history"].append({
             "role": "assistant", 
-            "content": response
+            "content": identity_response
         })
         
         return {
-            "answer": response,
+            "answer": identity_response,
             "mode": "faq",
             "language": language,
             "user_data": user_data

@@ -1,9 +1,45 @@
 import re
 import openai
 import json
+from services.langchain.knowledge import search_knowledge_base
 
 def handle_name_collection(query, user_data, mode, language):
     """Handle collection of user's name"""
+    # Check for skip request first
+    skip_keywords = ["skip", "don't need", "not now", "later", "no thanks", "ignore", "anonymous"]
+    is_skip_request = any(keyword in query.lower() for keyword in skip_keywords)
+    
+    if is_skip_request:
+        user_data["name"] = "Guest User"
+        
+        # Add this interaction to history
+        user_data["conversation_history"].append({
+            "role": "assistant", 
+            "content": "That's fine. Could you please share your email address so I can better assist you? (or type 'skip' if you prefer not to share)"
+        })
+        
+        return {
+            "answer": "That's fine. Could you please share your email address so I can better assist you? (or type 'skip' if you prefer not to share)",
+            "mode": mode,
+            "language": language,
+            "user_data": user_data
+        }
+        
+    # If query is empty (first message), just ask for name
+    if not query.strip():
+        # Add this interaction to history
+        user_data["conversation_history"].append({
+            "role": "assistant", 
+            "content": "Hello! Before we begin, may I know your name? (or type 'skip' if you prefer not to share)"
+        })
+        
+        return {
+            "answer": "Hello! Before we begin, may I know your name? (or type 'skip' if you prefer not to share)",
+            "mode": mode,
+            "language": language,
+            "user_data": user_data
+        }
+    
     # Use OpenAI to extract name
     name_extraction_prompt = f"""
     Extract the person's name from the following text. The text might be an introduction or greeting.
@@ -22,7 +58,7 @@ def handle_name_collection(query, user_data, mode, language):
     try:
         # Call OpenAI for name extraction
         name_response = openai.chat.completions.create(
-            model="gpt-3.5-turbo",
+            model="gpt-4.1",
             messages=[{"role": "user", "content": name_extraction_prompt}],
             max_tokens=20,
             temperature=0.1
@@ -52,11 +88,11 @@ def handle_name_collection(query, user_data, mode, language):
         # Add this interaction to history
         user_data["conversation_history"].append({
             "role": "assistant", 
-            "content": f"Nice to meet you, {name}! Could you please share your email address so I can better assist you?"
+            "content": f"Nice to meet you, {name}! Could you please share your email address so I can better assist you? (or type 'skip' if you prefer not to share)"
         })
         
         return {
-            "answer": f"Nice to meet you, {name}! Could you please share your email address so I can better assist you?",
+            "answer": f"Nice to meet you, {name}! Could you please share your email address so I can better assist you? (or type 'skip' if you prefer not to share)",
             "mode": mode,
             "language": language,
             "user_data": user_data
@@ -65,11 +101,11 @@ def handle_name_collection(query, user_data, mode, language):
         # Add this interaction to history
         user_data["conversation_history"].append({
             "role": "assistant", 
-            "content": "Before we proceed, may I know your name? (or type 'skip' if you prefer not to share)"
+            "content": "I didn't catch your name. Could you please tell me your name? (or type 'skip' if you prefer not to share)"
         })
         
         return {
-            "answer": "Before we proceed, may I know your name? (or type 'skip' if you prefer not to share)",
+            "answer": "I didn't catch your name. Could you please tell me your name? (or type 'skip' if you prefer not to share)",
             "mode": mode,
             "language": language,
             "user_data": user_data
@@ -106,6 +142,65 @@ def extract_name_with_regex(query):
 
 def handle_email_collection(query, user_data, mode, language):
     """Handle collection of user's email"""
+    # Check for skip request
+    skip_keywords = ["skip", "don't need", "not now", "later", "no thanks", "ignore", "anonymous"]
+    is_skip_request = any(keyword in query.lower() for keyword in skip_keywords)
+    
+    if is_skip_request:
+        user_data["email"] = "anonymous@user.com"
+        
+        # Get identity information to introduce properly
+        try:
+            from services.langchain.engine import get_vectorstore
+            vectorstore = get_vectorstore()
+            if vectorstore:
+                # Try to get basic information about the uploaded identity
+                retrieved_context, _ = search_knowledge_base("personal profile introduction", vectorstore, user_data)
+                if retrieved_context:
+                    # Create a welcome based on the identity information
+                    welcome_prompt = f"""
+                    Create a very brief welcome message (maximum 2 sentences) for a user. 
+                    Use the following information about yourself to create this message.
+                    Speak in first person as if YOU are this person. Use "I" statements.
+                    
+                    YOUR INFORMATION:
+                    {retrieved_context}
+                    
+                    Examples:
+                    "Welcome! I'm Dr. Smith, a cardiologist with 15 years of experience. How can I assist you today?"
+                    "I'm Sarah Johnson, your legal consultant specializing in family law. What can I help you with?"
+                    """
+                    
+                    welcome_response = openai.chat.completions.create(
+                        model="gpt-4.1",
+                        messages=[{"role": "user", "content": welcome_prompt}],
+                        max_tokens=100,
+                        temperature=0.7
+                    )
+                    
+                    intro_message = welcome_response.choices[0].message.content.strip()
+                else:
+                    intro_message = "Thank you. How can I assist you today?"
+            else:
+                intro_message = "Thank you. How can I assist you today?"
+                
+        except Exception as e:
+            print(f"Error generating identity welcome: {str(e)}")
+            intro_message = "Thank you. How can I assist you today?"
+        
+        # Add this interaction to history
+        user_data["conversation_history"].append({
+            "role": "assistant", 
+            "content": intro_message
+        })
+        
+        return {
+            "answer": intro_message,
+            "mode": mode,
+            "language": language,
+            "user_data": user_data
+        }
+    
     # Check if the query contains an email address
     email_match = re.search(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}", query)
     
@@ -113,51 +208,74 @@ def handle_email_collection(query, user_data, mode, language):
         email = email_match.group(0)
         user_data["email"] = email
         
+        # Get identity information to introduce properly
+        try:
+            from services.langchain.engine import get_vectorstore
+            vectorstore = get_vectorstore()
+            if vectorstore:
+                # Try to get basic information about the uploaded identity
+                retrieved_context, _ = search_knowledge_base("personal profile introduction", vectorstore, user_data)
+                if retrieved_context:
+                    # Create a welcome based on the identity information
+                    welcome_prompt = f"""
+                    Create a brief welcome message for a user who has just provided their email. 
+                    Use the following information about yourself to create this message.
+                    Speak in first person as if YOU are this person. Use "I" statements.
+                    Make sure to thank them for their email and introduce yourself briefly.
+                    
+                    YOUR INFORMATION:
+                    {retrieved_context}
+                    
+                    USER NAME: {user_data.get("name", "there")}
+                    USER EMAIL: {email}
+                    
+                    Examples:
+                    "Thank you for your email! I'm Dr. Smith, a cardiologist with 15 years of experience. How can I assist you today?"
+                    "Thanks for sharing your email. I'm Sarah Johnson, your legal consultant specializing in family law. What can I help you with?"
+                    """
+                    
+                    welcome_response = openai.chat.completions.create(
+                        model="gpt-4.1",
+                        messages=[{"role": "user", "content": welcome_prompt}],
+                        max_tokens=100,
+                        temperature=0.7
+                    )
+                    
+                    intro_message = welcome_response.choices[0].message.content.strip()
+                else:
+                    intro_message = f"Thank you for providing your email. How can I assist you today?"
+            else:
+                intro_message = f"Thank you for providing your email. How can I assist you today?"
+                
+        except Exception as e:
+            print(f"Error generating identity welcome: {str(e)}")
+            intro_message = f"Thank you for providing your email. How can I assist you today?"
+        
         # Add this interaction to history
         user_data["conversation_history"].append({
             "role": "assistant", 
-            "content": f"Thank you for providing your email. How can I assist you today?"
+            "content": intro_message
         })
         
         return {
-            "answer": f"Thank you for providing your email. How can I assist you today?",
+            "answer": intro_message,
             "mode": mode,
             "language": language,
             "user_data": user_data
         }
     else:
-        # Check for skip request
-        skip_keywords = ["skip", "don't need", "not now", "later", "no thanks", "ignore"]
-        is_skip_request = any(keyword in query.lower() for keyword in skip_keywords)
+        # Add this interaction to history
+        user_data["conversation_history"].append({
+            "role": "assistant", 
+            "content": "Please provide a valid email address so I can better assist you. (or type 'skip' if you prefer not to share)"
+        })
         
-        if is_skip_request:
-            user_data["email"] = "anonymous@user.com"
-            
-            # Add this interaction to history
-            user_data["conversation_history"].append({
-                "role": "assistant", 
-                "content": "No problem. How can I assist you today?"
-            })
-            
-            return {
-                "answer": "No problem. How can I assist you today?",
-                "mode": mode,
-                "language": language,
-                "user_data": user_data
-            }
-        else:
-            # Add this interaction to history
-            user_data["conversation_history"].append({
-                "role": "assistant", 
-                "content": "Please provide a valid email address so I can better assist you. (or type 'skip' if you prefer not to share)"
-            })
-            
-            return {
-                "answer": "Please provide a valid email address so I can better assist you. (or type 'skip' if you prefer not to share)",
-                "mode": mode,
-                "language": language,
-                "user_data": user_data
-            }
+        return {
+            "answer": "Please provide a valid email address so I can better assist you. (or type 'skip' if you prefer not to share)",
+            "mode": mode,
+            "language": language,
+            "user_data": user_data
+        }
 
 def extract_personal_information(user_context):
     """Extract structured personal information from user data context"""
@@ -181,7 +299,7 @@ def extract_personal_information(user_context):
     
     try:
         personal_info_response = openai.chat.completions.create(
-            model="gpt-3.5-turbo",
+            model="gpt-4.1",
             messages=[{"role": "user", "content": personal_information_prompt}],
             response_format={"type": "json_object"},
             temperature=0.1
