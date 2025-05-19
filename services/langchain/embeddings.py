@@ -1,47 +1,78 @@
-import numpy as np
-from langchain.embeddings.base import Embeddings
 from langchain_openai import OpenAIEmbeddings
+from dotenv import load_dotenv
 import os
+import numpy as np
 
-# Define a custom embedding class that reduces vector dimensions
-class DimensionReducedEmbeddings(Embeddings):
+# Load environment variables
+load_dotenv()
+
+class DimensionReducedEmbeddings:
+    """Wrapper for OpenAI embeddings that reduces dimensions to match Pinecone index"""
+    
     def __init__(self, base_embeddings, target_dim=1024):
         self.base_embeddings = base_embeddings
         self.target_dim = target_dim
+        print(f"Initialized DimensionReducedEmbeddings with target dimension: {target_dim}")
+    
+    def _reduce_dimensions(self, embeddings):
+        """Reduce dimensions of embeddings to match the target dimension"""
+        if len(embeddings) == 0:
+            return []
         
+        # Simple strategy: truncate to the target dimension
+        reduced = [emb[:self.target_dim] for emb in embeddings]
+        
+        # Normalize the vectors to unit length
+        normalized = []
+        for emb in reduced:
+            norm = np.linalg.norm(emb)
+            if norm > 0:
+                normalized.append([float(x / norm) for x in emb])
+            else:
+                normalized.append(emb)
+        
+        print(f"Reduced embeddings from dimension {len(embeddings[0])} to {len(normalized[0])}")
+        return normalized
+    
     def embed_documents(self, texts):
-        # Get the original embeddings
-        original_embeddings = self.base_embeddings.embed_documents(texts)
-        # Reduce dimensions and convert to Python float
-        reduced_embeddings = []
-        for emb in original_embeddings:
-            # Convert to Python list of floats
-            reduced_emb = [float(x) for x in emb[:self.target_dim]]
-            # Normalize
-            reduced_embeddings.append(self._normalize(reduced_emb))
-        return reduced_embeddings
+        """Embed documents and reduce dimensions"""
+        embeddings = self.base_embeddings.embed_documents(texts)
+        
+        # Check if we need to reduce dimensions
+        if len(embeddings) > 0 and len(embeddings[0]) > self.target_dim:
+            print(f"Reducing embeddings dimensions from {len(embeddings[0])} to {self.target_dim}")
+            return self._reduce_dimensions(embeddings)
+        return embeddings
     
     def embed_query(self, text):
-        # Get the original embedding
-        original_embedding = self.base_embeddings.embed_query(text)
-        # Reduce dimensions and convert to Python floats
-        reduced_embedding = [float(x) for x in original_embedding[:self.target_dim]]
-        # Normalize the embedding after reduction
-        return self._normalize(reduced_embedding)
-    
-    def _normalize(self, v):
-        # Normalize the vector to have unit length
-        norm = np.linalg.norm(v)
-        if norm > 0:
-            return [float(x / norm) for x in v]
-        return [float(x) for x in v]
+        """Embed query and reduce dimensions"""
+        embedding = self.base_embeddings.embed_query(text)
+        
+        # Check if we need to reduce dimensions
+        if len(embedding) > self.target_dim:
+            print(f"Reducing query embedding dimension from {len(embedding)} to {self.target_dim}")
+            # Truncate and normalize
+            reduced = embedding[:self.target_dim]
+            norm = np.linalg.norm(reduced)
+            if norm > 0:
+                normalized = [float(x / norm) for x in reduced]
+                return normalized
+        return embedding
 
 def initialize_embeddings():
-    # Use actual OpenAI embeddings
+    """Initialize embeddings with dimension reduction to match Pinecone index"""
+    print("Initializing embeddings with dimension reduction...")
+    
+    # Get target dimension from environment or use default
+    target_dim = int(os.getenv("PINECONE_DIMENSION", "1024"))
+    print(f"Using target dimension: {target_dim}")
+    
+    # Use OpenAI embeddings
     base_embeddings = OpenAIEmbeddings(
         openai_api_key=os.getenv("OPENAI_API_KEY"),
-        openai_api_base="https://api.openai.com/v1"
+        openai_api_base="https://api.openai.com/v1",
+        model="text-embedding-3-small"  # This model produces 1536-dimensional embeddings
     )
     
     # Create dimension-reduced embeddings to match Pinecone index
-    return DimensionReducedEmbeddings(base_embeddings, target_dim=1024) 
+    return DimensionReducedEmbeddings(base_embeddings, target_dim=target_dim) 
