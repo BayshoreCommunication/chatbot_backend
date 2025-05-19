@@ -197,264 +197,294 @@ def extract_slot_info(query, available_slots):
             "confidence": "low"
         }
 
+def analyze_appointment_query(query):
+    """
+    Use AI to analyze the user's query related to appointment booking.
+    
+    Args:
+        query (str): The user's query text
+        
+    Returns:
+        dict: A dictionary containing the analysis results
+    """
+    # Build a prompt for AI analysis of the query
+    intent_analysis_prompt = f"""
+    Analyze the following user message in the context of appointment scheduling:
+    
+    USER MESSAGE: "{query}"
+    
+    Determine the user's intent and extract any relevant information.
+    
+    Respond in JSON format:
+    {{
+        "intent": "one of: ask_availability, book_appointment, check_weekends, reschedule, cancel, general_question",
+        "specific_day": "weekday mentioned (if any) or null",
+        "specific_date": "date mentioned (if any) or null",
+        "specific_time": "time mentioned (if any) or null",
+        "clarification_needed": true/false,
+        "is_weekend_query": true/false,
+        "confidence": "high/medium/low"
+    }}
+    """
+    
+    try:
+        # Call OpenAI for intent analysis
+        intent_response = openai.chat.completions.create(
+            model="gpt-4.1",
+            messages=[{"role": "user", "content": intent_analysis_prompt}],
+            response_format={"type": "json_object"},
+            temperature=0.1
+        )
+        
+        # Parse intent information
+        intent_info = json.loads(intent_response.choices[0].message.content)
+        print(f"AI Intent Analysis: {intent_info}")
+        return intent_info
+        
+    except Exception as e:
+        print(f"Error in AI query analysis: {str(e)}")
+        # Return a default intent if analysis fails
+        return {
+            "intent": "general_question",
+            "specific_day": None,
+            "specific_date": None,
+            "specific_time": None,
+            "clarification_needed": False,
+            "is_weekend_query": False,
+            "confidence": "low"
+        }
+
 def handle_booking(query, user_data, available_slots, language):
     """Handle the appointment booking process"""
     # If available_slots is not provided, get them
     if not available_slots:
         available_slots = get_available_slots()
     
-    # Extract slot info
-    slot_info = extract_slot_info(query, available_slots)
-    print(f"Slot Info: {slot_info}")
+    # First, analyze the user's query to determine intent
+    query_analysis = analyze_appointment_query(query)
+    intent = query_analysis.get("intent", "general_question")
     
-    # If we have a slot ID or can extract date and time
-    slot_id = None
-    
-    # Check for direct slot ID in the parsed info
-    if slot_info.get("slot_id") and slot_info["slot_id"] != "null":
-        slot_id = slot_info["slot_id"]
-    
-    # If we don't have a slot ID but have date and time, look for matching slot
-    elif slot_info.get("date") and slot_info["date"] != "null" and slot_info.get("time") and slot_info["time"] != "null":
-        # Try to find a matching slot
-        all_slots_str = available_slots if isinstance(available_slots, str) else "No slots available"
-        found_slot = False
-        
-        date_to_match = slot_info["date"].strip()
-        time_to_match = slot_info["time"].strip()
-        
-        # Convert date to a standard format for better matching
-        clean_date = date_to_match.replace(",", "").replace(".", "")
-        
-        # Parse the slots format to find a matching date and time
-        current_date_section = None
-        for line in all_slots_str.split('\n'):
+    # Handle weekend queries
+    if query_analysis.get("is_weekend_query", False) or ("saturday" in query.lower() or "sunday" in query.lower()):
+        # Get available days from slots
+        available_days = []
+        for line in available_slots.split('\n'):
             if "📅" in line:
-                current_date_section = line.replace("📅", "").strip()
-            
-            if current_date_section and current_date_section == date_to_match:
-                if time_to_match in line and "ID: slot_" in line:
-                    try:
-                        slot_id = line.split("(ID: ")[1].split(")")[0].strip()
-                        found_slot = True
-                        break
-                    except IndexError:
-                        print(f"Error parsing slot ID from line: {line}")
-                        continue
-        
-        # If we didn't find an exact match, try a fuzzy match
-        if not found_slot:
-            best_match_date = None
-            best_match_time = None
-            best_match_id = None
-            best_match_score = 0
-            
-            current_date_section = None
-            for line in all_slots_str.split('\n'):
-                if "📅" in line:
-                    current_date_section = line.replace("📅", "").strip()
-                
-                if current_date_section and "ID: slot_" in line:
-                    date_score = sum(c1 == c2 for c1, c2 in zip(current_date_section.lower(), date_to_match.lower()))
-                    
-                    # Check for time match too if available
-                    time_score = 0
-                    if "AM" in line or "PM" in line:
-                        time_parts = line.split("•")[1].split("(ID:")[0].strip() if "•" in line else ""
-                        time_score = sum(c1 == c2 for c1, c2 in zip(time_parts.lower(), time_to_match.lower()))
-                    
-                    # Calculate combined score
-                    match_score = date_score + time_score
-                    if match_score > best_match_score:
-                        best_match_score = match_score
-                        best_match_date = current_date_section
-                        try:
-                            best_match_id = line.split("(ID: ")[1].split(")")[0].strip()
-                            if "•" in line:
-                                best_match_time = line.split("•")[1].split("(ID:")[0].strip()
-                        except:
-                            pass
-            
-            # If we found a reasonable match, use it
-            if best_match_id and best_match_score > len(date_to_match) * 0.6:
-                slot_id = best_match_id
-                print(f"Using fuzzy matched slot: Date: {best_match_date}, Time: {best_match_time}, ID: {slot_id}")
-    
-    # If we found a valid slot ID
-    if slot_id:
-        # Book the appointment
-        user_data["appointment_slot"] = slot_id
-        
-        # Extract date and time for confirmation
-        try:
-            parts = slot_id.split("_")
-            if len(parts) >= 4:
-                date_str = parts[1]
-                hour = int(parts[2])
-                minute = parts[3]
-                
-                # Format the date and time nicely
                 try:
-                    dt = datetime.datetime.strptime(date_str, "%Y-%m-%d")
-                    formatted_date = dt.strftime("%A, %B %d, %Y")
+                    day = line.replace("📅", "").strip().split(",")[0].strip()
+                    if day and day not in available_days:
+                        available_days.append(day)
                 except:
-                    formatted_date = date_str
-                
-                # Convert hour to 12-hour format
-                hour_12 = hour if hour <= 12 else hour - 12
-                am_pm = "AM" if hour < 12 else "PM"
-                formatted_time = f"{hour_12}:{minute if minute != '00' else '00'} {am_pm}"
-                
-                confirmation = f"Great! I've booked your appointment for {formatted_date} at {formatted_time}. We'll send a confirmation to your email at {user_data.get('email', 'your email address')}. Is there anything else you'd like help with?"
-            else:
-                confirmation = f"Great! I've booked your appointment with slot ID: {slot_id}. We'll send a confirmation to your email. Is there anything else you'd like help with?"
-        except Exception as e:
-            print(f"Error formatting confirmation: {str(e)}")
-            confirmation = f"Great! I've booked your appointment. We'll send a confirmation to your email at {user_data.get('email', 'your email address')}. Is there anything else you'd like help with?"
+                    continue
+        
+        # Create a user-friendly response
+        response = f"I'm sorry, but I don't have appointments available on weekends. I'm available on {', '.join(available_days)}. Here are the available slots:\n\n{available_slots}"
         
         # Add this interaction to history
         user_data["conversation_history"].append({
             "role": "assistant", 
-            "content": confirmation
+            "content": response
         })
         
         return {
-            "answer": confirmation,
-            "mode": "faq",  # Reset to FAQ mode after booking
+            "answer": response,
+            "mode": "appointment",
             "language": language,
             "user_data": user_data,
-            "appointment_confirmed": True,
-            "selected_slot": slot_id
+            "available_slots": available_slots
         }
-    # If we only have date information
-    elif slot_info.get("date") and slot_info["date"] != "null":
-        # Show available times for that date
-        all_slots_str = available_slots if isinstance(available_slots, str) else "No slots available"
-        matching_times = []
-        date_to_match = slot_info["date"].strip()
-        
-        # Extract available times for the specified date
-        current_date_section = None
-        for line in all_slots_str.split('\n'):
-            if "📅" in line:
-                current_date_section = line.replace("📅", "").strip()
+    
+    # Get detailed slot information if needed
+    slot_info = None
+    if intent in ["book_appointment", "ask_availability"]:
+        slot_info = extract_slot_info(query, available_slots)
+        print(f"Slot info extracted: {slot_info}")
+    
+    # Handle specific intents
+    if intent == "book_appointment":
+        # Check if we have enough information to book
+        if slot_info and slot_info.get("confidence") in ["high", "medium"] and (
+            slot_info.get("day") or slot_info.get("time") or slot_info.get("date")):
             
-            # Check for exact date match
-            if current_date_section == date_to_match and "ID: slot_" in line:
-                try:
-                    if "•" in line:
-                        time_part = line.split("•")[1].split("(ID:")[0].strip()
-                        slot_id_part = line.split("(ID: ")[1].split(")")[0].strip()
-                        matching_times.append((time_part, slot_id_part))
-                except IndexError:
-                    continue
-        
-        # If no exact matches, try fuzzy matching on the date
-        if not matching_times:
-            best_match_date = None
-            best_match_score = 0
+            # If we have a day and time, try to find the matching slot
+            day_found = slot_info.get("day")
+            time_found = slot_info.get("time")
+            date_found = slot_info.get("date")
             
-            for line in all_slots_str.split('\n'):
+            # Parse available slots
+            slots_by_day = {}
+            current_day = None
+            day_time_matches = []
+            
+            for line in available_slots.split('\n'):
                 if "📅" in line:
-                    check_date = line.replace("📅", "").strip()
-                    date_score = sum(c1 == c2 for c1, c2 in zip(check_date.lower(), date_to_match.lower()))
-                    
-                    if date_score > best_match_score:
-                        best_match_score = date_score
-                        best_match_date = check_date
+                    current_day = line.replace("📅", "").strip()
+                    slots_by_day[current_day] = []
+                elif current_day and ("AM:" in line or "PM:" in line):
+                    slots_by_day[current_day].append(line.strip())
             
-            # If we found a reasonable match, use times from that date
-            if best_match_date and best_match_score > len(date_to_match) * 0.6:
-                print(f"Using fuzzy matched date: {best_match_date}")
-                current_date_section = None
-                for line in all_slots_str.split('\n'):
-                    if "📅" in line:
-                        current_date_section = line.replace("📅", "").strip()
-                    
-                    if current_date_section == best_match_date and "ID: slot_" in line:
-                        try:
-                            if "•" in line:
-                                time_part = line.split("•")[1].split("(ID:")[0].strip()
-                                slot_id_part = line.split("(ID: ")[1].split(")")[0].strip()
-                                matching_times.append((time_part, slot_id_part))
-                        except IndexError:
-                            continue
-        
-        if matching_times:
-            times_str = "\n".join([f"• {time} (ID: {id})" for time, id in matching_times])
-            response = f"I see you're interested in booking on {slot_info['date']}. What time would you prefer? Here are the available times:\n\n{times_str}\n\nPlease reply with your preferred time or the slot ID."
-            
-            # Add this interaction to history
-            user_data["conversation_history"].append({
-                "role": "assistant", 
-                "content": response
-            })
-            
-            return {
-                "answer": response,
-                "mode": "appointment",
-                "language": language,
-                "user_data": user_data,
-                "available_slots": available_slots
-            }
-        else:
-            response = f"I couldn't find any available slots on {slot_info['date']}. Here are all the available slots:\n\n{available_slots}\n\nPlease select a date and time from these options."
-            
-            # Add this interaction to history
-            user_data["conversation_history"].append({
-                "role": "assistant", 
-                "content": response
-            })
-            
-            return {
-                "answer": response,
-                "mode": "appointment",
-                "language": language,
-                "user_data": user_data,
-                "available_slots": available_slots
-            }
-    # If we only have time information
-    elif slot_info.get("time") and slot_info["time"] != "null":
-        # Show available dates for that time
-        all_slots_str = available_slots if isinstance(available_slots, str) else "No slots available"
-        matching_dates = []
-        time_to_match = slot_info["time"].strip()
-        
-        # Find dates with the specified time
-        current_date_section = None
-        for line in all_slots_str.split('\n'):
-            if "📅" in line:
-                current_date_section = line.replace("📅", "").strip()
-            
-            if current_date_section and "ID: slot_" in line and time_to_match in line:
-                try:
-                    slot_id_part = line.split("(ID: ")[1].split(")")[0].strip()
-                    matching_dates.append((current_date_section, slot_id_part))
-                except IndexError:
-                    continue
-        
-        # If no exact matches, try fuzzy matching on the time
-        if not matching_dates:
-            for line in all_slots_str.split('\n'):
-                if "📅" in line:
-                    current_date_section = line.replace("📅", "").strip()
+            # Try to match day and time
+            for day, slots in slots_by_day.items():
+                # Check if the day matches
+                day_matches = False
+                if day_found and day_found.lower() in day.lower():
+                    day_matches = True
+                elif date_found and date_found.lower() in day.lower():
+                    day_matches = True
                 
-                if current_date_section and "ID: slot_" in line and ("AM" in line or "PM" in line):
+                if day_matches:
+                    # Day matches, now check for time
+                    if not time_found:
+                        # If no specific time, collect all slots for this day
+                        for slot_line in slots:
+                            day_time_matches.append((day, slot_line))
+                    else:
+                        # Check for time match
+                        for slot_line in slots:
+                            if time_found.upper() in slot_line:
+                                day_time_matches.append((day, slot_line))
+                                break
+            
+            # If we have matches
+            if day_time_matches:
+                # Take the first match
+                matching_day, slot_times = day_time_matches[0]
+                
+                # Extract time from slot_times
+                matching_time = None
+                if time_found:
+                    matching_time = time_found
+                else:
+                    # Take the first available time
                     try:
-                        # Try to extract and compare the time portion
-                        if "•" in line:
-                            time_part = line.split("•")[1].split("(ID:")[0].strip()
-                            # Check for similarity
-                            time_score = sum(c1 == c2 for c1, c2 in zip(time_part.lower(), time_to_match.lower()))
-                            if time_score > len(time_to_match) * 0.6:
-                                slot_id_part = line.split("(ID: ")[1].split(")")[0].strip()
-                                matching_dates.append((current_date_section, slot_id_part))
-                    except IndexError:
-                        continue
+                        if "AM:" in slot_times:
+                            am_times = slot_times.split("AM:")[1].split("|")[0].strip().split(",")
+                            matching_time = am_times[0].strip()
+                        elif "PM:" in slot_times:
+                            pm_times = slot_times.split("PM:")[1].split("|")[0].strip().split(",")
+                            matching_time = pm_times[0].strip()
+                    except Exception as e:
+                        print(f"Error extracting time: {str(e)}")
+                
+                if matching_time:
+                    # Try to construct a slot ID
+                    try:
+                        # Extract year-month-day from matching_day
+                        day_parts = matching_day.split(",")
+                        month_day = day_parts[1].strip() if len(day_parts) > 1 else matching_day
+                        
+                        # Convert matching_time to 24-hour format
+                        hour = int(matching_time.replace("AM", "").replace("PM", ""))
+                        if "PM" in matching_time.upper() and hour < 12:
+                            hour += 12
+                        
+                        # Try to construct a date string
+                        today = datetime.datetime.now()
+                        year = today.year
+                        
+                        # Format the slot ID
+                        date_parts = month_day.strip().split(" ")
+                        if len(date_parts) >= 2:
+                            month_name = date_parts[0]  # May
+                            day_num = date_parts[1]     # 26
+                            
+                            # Convert month name to number
+                            month_map = {
+                                "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
+                                "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12
+                            }
+                            
+                            month_num = None
+                            for abbr, num in month_map.items():
+                                if month_name.lower().startswith(abbr):
+                                    month_num = num
+                                    break
+                            
+                            if month_num and day_num:
+                                # Create date string
+                                date_str = f"{year}-{month_num:02d}-{int(day_num):02d}"
+                                slot_id = f"slot_{date_str}_{hour:02d}_00"
+                                
+                                # Book the appointment
+                                user_data["appointment_slot"] = slot_id
+                                
+                                # Format confirmation message
+                                confirmation = f"Appointment booked for {matching_day} at {matching_time}. Confirmation sent to {user_data.get('email', 'your email')}. Need anything else?"
+                                
+                                # Add this interaction to history
+                                user_data["conversation_history"].append({
+                                    "role": "assistant", 
+                                    "content": confirmation
+                                })
+                                
+                                return {
+                                    "answer": confirmation,
+                                    "mode": "faq",  # Reset to FAQ mode after booking
+                                    "language": language,
+                                    "user_data": user_data,
+                                    "appointment_confirmed": True,
+                                    "selected_slot": slot_id
+                                }
+                    except Exception as e:
+                        print(f"Error creating slot ID: {str(e)}")
         
-        if matching_dates:
-            dates_str = "\n".join([f"• {date} (ID: {id})" for date, id in matching_dates])
-            response = f"I see you're interested in booking at {time_to_match}. What date would you prefer? Here are the available dates:\n\n{dates_str}\n\nPlease reply with your preferred date or the slot ID."
+        # If booking failed or we only have partial info, show times for a specific day
+        specific_day = query_analysis.get("specific_day") or (slot_info and slot_info.get("day"))
+        if specific_day:
+            target_day = specific_day
+            day_section = False
+            matching_times = []
+            
+            for line in available_slots.split('\n'):
+                if "📅" in line and target_day.lower() in line.lower():
+                    # Found the day, now get the times
+                    day_section = True
+                    continue
+                elif day_section and ("AM:" in line or "PM:" in line):
+                    matching_times.append(line.strip())
+                elif "📅" in line:
+                    day_section = False
+            
+            if matching_times:
+                response = f"Available times on {target_day}: {', '.join(matching_times)}. Which time works for you?"
+            else:
+                response = f"No slots available on {target_day}. Here are other options:\n{available_slots}"
+            
+            # Add this interaction to history
+            user_data["conversation_history"].append({
+                "role": "assistant", 
+                "content": response
+            })
+            
+            return {
+                "answer": response,
+                "mode": "appointment",
+                "language": language,
+                "user_data": user_data,
+                "available_slots": available_slots
+            }
+            
+    elif intent == "ask_availability":
+        # Show availability for a specific day if mentioned
+        if query_analysis.get("specific_day"):
+            target_day = query_analysis["specific_day"]
+            day_section = False
+            matching_times = []
+            
+            for line in available_slots.split('\n'):
+                if "📅" in line and target_day.lower() in line.lower():
+                    # Found the day, now get the times
+                    day_section = True
+                    continue
+                elif day_section and ("AM:" in line or "PM:" in line):
+                    matching_times.append(line.strip())
+                elif "📅" in line:
+                    day_section = False
+            
+            if matching_times:
+                response = f"Available times on {target_day}: {', '.join(matching_times)}. Which time works for you?"
+            else:
+                response = f"No slots available on {target_day}. Here are other options:\n{available_slots}"
             
             # Add this interaction to history
             user_data["conversation_history"].append({
@@ -470,7 +500,8 @@ def handle_booking(query, user_data, available_slots, language):
                 "available_slots": available_slots
             }
         else:
-            response = f"I couldn't find any available slots at {time_to_match}. Here are all the available slots:\n\n{available_slots}\n\nPlease select a date and time from these options."
+            # Show all available slots
+            response = f"Here are all available appointment slots:\n\n{available_slots}\n\nPlease let me know which date and time works for you."
             
             # Add this interaction to history
             user_data["conversation_history"].append({
@@ -486,7 +517,7 @@ def handle_booking(query, user_data, available_slots, language):
                 "available_slots": available_slots
             }
     
-    # If no specific slot info, show all available slots
+    # Default response for other intents or if booking/availability handling failed
     response = f"I'd be happy to help you schedule an appointment. Here are the available slots:\n\n{available_slots}\n\nPlease reply with the date and time you prefer, or the slot ID directly (e.g., 'slot_2023-09-15_10_00')."
     
     # Add this interaction to history

@@ -6,10 +6,24 @@ from services.langchain.knowledge import search_knowledge_base
 def handle_name_collection(query, user_data, mode, language):
     """Handle collection of user's name"""
     # Check for skip request first
-    skip_keywords = ["skip", "don't need", "not now", "later", "no thanks", "ignore", "anonymous"]
-    is_skip_request = any(keyword in query.lower() for keyword in skip_keywords)
+    skip_keywords = ["skip", "don't need", "not now", "later", "no thanks", "ignore", "anonymous", 
+                     "no", "nope", "don't want", "dont want", "i don't", "i dont", "not interested", 
+                     "won't share", "wont share", "no name", "don't share", "dont share"]
+    refusal_patterns = [
+        "i don't want to share",
+        "i dont want to share",
+        "don't want to give",
+        "dont want to give",
+        "prefer not to",
+        "rather not",
+        "no thank you",
+    ]
     
-    if is_skip_request:
+    # Check if the query matches any skip keywords or refusal patterns
+    is_skip_request = any(keyword in query.lower() for keyword in skip_keywords)
+    is_refusal = any(pattern in query.lower() for pattern in refusal_patterns)
+    
+    if is_skip_request or is_refusal or query.lower() == "no":
         user_data["name"] = "Guest User"
         
         # Add this interaction to history
@@ -48,9 +62,10 @@ def handle_name_collection(query, user_data, mode, language):
     
     Rules:
     1. Only extract actual names of people, not greetings or other words
-    2. If no clear name is found, respond with "No name found"
+    2. If no clear name is found, or if the text appears to be a refusal to provide a name, respond with "No name found"
     3. Return the full name if available (first and last name)
     4. Don't include titles (Mr, Mrs, Dr, etc.)
+    5. Check if the text contains refusal phrases like "don't want to share", "won't give my name", etc.
     
     Output only the extracted name, nothing else.
     """
@@ -72,7 +87,10 @@ def handle_name_collection(query, user_data, mode, language):
             name = extracted_name
         else:
             # Fall back to basic extraction if query looks like just a name
-            if not query.endswith("?") and len(query.split()) <= 5:
+            # Only treat as name if we're confident it's not a refusal
+            if (not query.endswith("?") and len(query.split()) <= 3 and 
+                not any(keyword in query.lower() for keyword in skip_keywords) and
+                not any(pattern in query.lower() for pattern in refusal_patterns)):
                 name = query.strip()
             else:
                 name = None
@@ -143,10 +161,26 @@ def extract_name_with_regex(query):
 def handle_email_collection(query, user_data, mode, language):
     """Handle collection of user's email"""
     # Check for skip request
-    skip_keywords = ["skip", "don't need", "not now", "later", "no thanks", "ignore", "anonymous"]
-    is_skip_request = any(keyword in query.lower() for keyword in skip_keywords)
+    skip_keywords = ["skip", "don't need", "not now", "later", "no thanks", "ignore", "anonymous", 
+                     "no", "nope", "don't want", "dont want", "i don't", "i dont", "not interested",
+                     "won't share", "wont share", "no email", "don't share", "dont share"]
+    refusal_patterns = [
+        "i don't want to share",
+        "i dont want to share",
+        "don't want to give",
+        "dont want to give",
+        "prefer not to",
+        "rather not",
+        "no thank you",
+        "won't give",
+        "wont give",
+    ]
     
-    if is_skip_request:
+    # Check if the query matches any skip keywords or refusal patterns
+    is_skip_request = any(keyword in query.lower() for keyword in skip_keywords)
+    is_refusal = any(pattern in query.lower() for pattern in refusal_patterns)
+    
+    if is_skip_request or is_refusal or query.lower() == "no":
         user_data["email"] = "anonymous@user.com"
         
         # Get identity information to introduce properly
@@ -264,18 +298,38 @@ def handle_email_collection(query, user_data, mode, language):
             "user_data": user_data
         }
     else:
-        # Add this interaction to history
-        user_data["conversation_history"].append({
-            "role": "assistant", 
-            "content": "Please provide a valid email address so I can better assist you. (or type 'skip' if you prefer not to share)"
-        })
-        
-        return {
-            "answer": "Please provide a valid email address so I can better assist you. (or type 'skip' if you prefer not to share)",
-            "mode": mode,
-            "language": language,
-            "user_data": user_data
-        }
+        # Check for explicit refusal again to avoid repeated email prompts
+        if any(refusal in query.lower() for refusal in ["don't want", "dont want", "no thanks", "not giving", "won't give"]):
+            # Set anonymous email and proceed
+            user_data["email"] = "anonymous@user.com"
+            
+            intro_message = "That's fine. How can I assist you today?"
+            
+            # Add this interaction to history
+            user_data["conversation_history"].append({
+                "role": "assistant", 
+                "content": intro_message
+            })
+            
+            return {
+                "answer": intro_message,
+                "mode": mode,
+                "language": language,
+                "user_data": user_data
+            }
+        else:
+            # Add this interaction to history
+            user_data["conversation_history"].append({
+                "role": "assistant", 
+                "content": "Please provide a valid email address so I can better assist you. (or type 'skip' if you prefer not to share)"
+            })
+            
+            return {
+                "answer": "Please provide a valid email address so I can better assist you. (or type 'skip' if you prefer not to share)",
+                "mode": mode,
+                "language": language,
+                "user_data": user_data
+            }
 
 def extract_personal_information(user_context):
     """Extract structured personal information from user data context"""
