@@ -19,6 +19,9 @@ class ChatRequest(BaseModel):
     user_data: Optional[dict] = None
     available_slots: Optional[str] = None
 
+class ChatHistoryRequest(BaseModel):
+    session_id: str
+
 async def get_organization_from_api_key(api_key: Optional[str] = Header(None, alias="X-API-Key")):
     """Dependency to get organization from API key"""
     if not api_key:
@@ -219,6 +222,68 @@ async def ask_question(
     # Ensure user_data is included in the response
     if "user_data" not in response:
         response["user_data"] = session["user_data"]
+    
+    return response
+
+@router.get("/history/{session_id}")
+async def get_chat_history(
+    session_id: str,
+    organization=Depends(get_organization_from_api_key)
+):
+    """Retrieve chat history using session key"""
+    # Get organization ID
+    org_id = organization["id"]
+    
+    # Get fresh conversation data from MongoDB
+    previous_conversations = get_conversation_history(org_id, session_id)
+    
+    # Get visitor information
+    visitor = get_visitor(org_id, session_id)
+    if not visitor:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    # Get user profile from dedicated collection
+    user_profile = get_user_profile(org_id, session_id)
+    profile_data = {}
+    
+    if user_profile and "profile_data" in user_profile:
+        profile_data = user_profile["profile_data"]
+    
+    # Convert MongoDB conversations to desired format for client
+    formatted_history = []
+    for msg in previous_conversations:
+        if "role" in msg and "content" in msg:
+            formatted_history.append({
+                "role": msg.get("role"),
+                "content": msg.get("content")
+            })
+    
+    # Determine current mode from visitor metadata
+    current_mode = "faq"  # Default mode
+    if visitor and "metadata" in visitor and "mode" in visitor["metadata"]:
+        current_mode = visitor["metadata"]["mode"]
+    
+    # Get last assistant answer (if available)
+    last_answer = ""
+    for msg in reversed(formatted_history):
+        if msg["role"] == "assistant":
+            last_answer = msg["content"]
+            break
+    
+    # Build user data object with the most recent conversation history
+    user_data = {
+        **profile_data,
+        "conversation_history": formatted_history,
+        "returning_user": "name" in profile_data and bool(profile_data.get("name"))
+    }
+    
+    # Construct response in the required format
+    response = {
+        "answer": last_answer,
+        "mode": current_mode,
+        "language": "en",  # Default language
+        "user_data": user_data
+    }
     
     return response
 

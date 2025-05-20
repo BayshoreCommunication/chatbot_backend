@@ -139,7 +139,7 @@ def add_conversation_message(
         "session_id": session_id,
         "role": role,
         "content": content,
-        "created_at": None,  # Server will set this
+        "created_at": datetime.datetime.utcnow(),  # Explicitly set current timestamp
         "metadata": metadata or {}
     }
     
