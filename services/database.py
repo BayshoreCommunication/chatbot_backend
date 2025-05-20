@@ -5,6 +5,7 @@ from models.organization import Organization
 from models.visitor import Visitor, ConversationMessage
 import uuid
 import secrets
+import datetime  # Import Python's datetime module
 from typing import List, Dict, Any, Optional
 
 # Load environment variables
@@ -22,6 +23,7 @@ organizations = db.organizations
 visitors = db.visitors
 conversations = db.conversations
 api_keys = db.api_keys
+user_profiles = db.user_profiles  # New collection for user profiles
 
 # Initialize the database with indexes
 def init_db():
@@ -39,6 +41,20 @@ def init_db():
     conversations.create_index("visitor_id")
     conversations.create_index("session_id")
     conversations.create_index([("organization_id", pymongo.ASCENDING), ("session_id", pymongo.ASCENDING)])
+    
+    # User profile indexes
+    user_profiles.create_index("session_id", unique=True)
+    user_profiles.create_index("organization_id")
+    user_profiles.create_index([("organization_id", pymongo.ASCENDING), ("session_id", pymongo.ASCENDING)], unique=True)
+    
+    # Create documents collection if it doesn't exist
+    if "documents" not in db.list_collection_names():
+        db.create_collection("documents")
+        db.documents.create_index("organization_id")
+        db.documents.create_index([("organization_id", pymongo.ASCENDING), ("document_id", pymongo.ASCENDING)], unique=True)
+
+# Documents collection
+documents = db.documents
 
 # Organization methods
 def create_organization(name: str, subscription_tier: str = "free") -> Dict[str, Any]:
@@ -130,13 +146,110 @@ def add_conversation_message(
     conversations.insert_one(message)
     return message
 
-def get_conversation_history(organization_id: str, session_id: str, limit: int = 50) -> List[Dict[str, Any]]:
-    """Get conversation history for a session"""
-    return list(
-        conversations.find(
-            {"organization_id": organization_id, "session_id": session_id}
-        ).sort("created_at", pymongo.ASCENDING).limit(limit)
-    )
+def get_conversation_history(organization_id, session_id):
+    """Retrieve conversation history from MongoDB for a specific session"""
+    try:
+        # Query MongoDB to get all messages for this session in chronological order
+        result = conversations.find({
+            "organization_id": organization_id,
+            "session_id": session_id
+        }).sort("created_at", pymongo.ASCENDING)
+        
+        # Convert cursor to list - maintain original document format
+        conversation_history = []
+        for doc in result:
+            # Convert MongoDB _id to string representation
+            if "_id" in doc:
+                doc["_id"] = {"$oid": str(doc["_id"])}
+            conversation_history.append(doc)
+            
+        return conversation_history
+    except Exception as e:
+        print(f"Error retrieving conversation history: {e}")
+        return []
+
+# Document tracking methods
+def add_organization_document(organization_id: str, document_data: Dict[str, Any]) -> Dict[str, Any]:
+    """Add a document to an organization"""
+    if "document_id" not in document_data:
+        document_data["document_id"] = str(uuid.uuid4())
+    
+    document_data["organization_id"] = organization_id
+    document_data["created_at"] = document_data.get("created_at", datetime.datetime.utcnow())
+    
+    # Check if document already exists
+    existing = documents.find_one({
+        "organization_id": organization_id, 
+        "document_id": document_data["document_id"]
+    })
+    
+    if existing:
+        # Update existing document
+        documents.update_one(
+            {"_id": existing["_id"]},
+            {"$set": document_data}
+        )
+        return document_data
+    else:
+        # Insert new document
+        result = documents.insert_one(document_data)
+        document_data["_id"] = str(result.inserted_id)
+        return document_data
+
+def get_organization_documents(organization_id: str) -> List[Dict[str, Any]]:
+    """Get all documents for an organization"""
+    return list(documents.find({"organization_id": organization_id}))
+
+def count_organization_documents(organization_id: str) -> int:
+    """Count documents for an organization"""
+    return documents.count_documents({"organization_id": organization_id})
+
+def get_document(organization_id: str, document_id: str) -> Optional[Dict[str, Any]]:
+    """Get a document by id"""
+    return documents.find_one({"organization_id": organization_id, "document_id": document_id})
+
+def delete_organization_document(organization_id: str, document_id: str) -> bool:
+    """Delete a document by id"""
+    result = documents.delete_one({"organization_id": organization_id, "document_id": document_id})
+    return result.deleted_count > 0
+
+# User profile methods
+def save_user_profile(organization_id: str, session_id: str, profile_data: Dict[str, Any]) -> Dict[str, Any]:
+    """Save or update user profile data"""
+    # Check if profile exists
+    existing_profile = user_profiles.find_one({
+        "organization_id": organization_id,
+        "session_id": session_id
+    })
+    
+    profile = {
+        "organization_id": organization_id,
+        "session_id": session_id,
+        "updated_at": datetime.datetime.utcnow(),  # Use Python's datetime module
+        "profile_data": profile_data
+    }
+    
+    if existing_profile:
+        # Update existing profile
+        user_profiles.update_one(
+            {"_id": existing_profile["_id"]},
+            {"$set": profile}
+        )
+        profile["_id"] = existing_profile["_id"]
+    else:
+        # Create new profile
+        profile["created_at"] = profile["updated_at"]
+        result = user_profiles.insert_one(profile)
+        profile["_id"] = result.inserted_id
+    
+    return profile
+
+def get_user_profile(organization_id: str, session_id: str) -> Optional[Dict[str, Any]]:
+    """Get user profile by organization_id and session_id"""
+    return user_profiles.find_one({
+        "organization_id": organization_id,
+        "session_id": session_id
+    })
 
 # Initialize database on module import
 init_db() 

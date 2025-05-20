@@ -102,6 +102,7 @@ async def get_organization_usage(organization=Depends(get_organization_from_api_
         import os
         from datetime import datetime
         import json
+        import traceback
         
         # Import directly from vectorstore module to avoid circular imports
         from pinecone import Pinecone
@@ -114,69 +115,162 @@ async def get_organization_usage(organization=Depends(get_organization_from_api_
         
         # Create a fresh Pinecone connection
         pc = Pinecone(api_key=pinecone_api_key)
-        index = pc.Index(index_name)
         
-        # Get detailed stats
-        stats = index.describe_index_stats()
-        print(f"Full index stats: {json.dumps(stats.dict(), default=str)}")
-        
-        # Try different ways to access namespace stats
-        vector_count = 0
-        dimensions = 0
-        
-        # Get namespace directly
-        if hasattr(stats, 'namespaces') and namespace in stats.namespaces:
-            namespace_stats = stats.namespaces[namespace]
-            print(f"Found namespace stats: {json.dumps(namespace_stats, default=str)}")
+        # Make sure we have a valid index
+        try:
+            # List available indexes to ensure they exist
+            indexes = pc.list_indexes()
+            index_names = [idx.name for idx in indexes.indexes]
             
-            # Try to get vector count
-            if hasattr(namespace_stats, 'vector_count'):
-                vector_count = namespace_stats.vector_count or 0
+            if index_name not in index_names:
+                print(f"Warning: Index {index_name} not found. Available indexes: {index_names}")
+                # Use first available index or default to bayshoreai
+                if index_names:
+                    index_name = index_names[0]
+                    print(f"Using first available index: {index_name}")
+                else:
+                    index_name = "bayshoreai"
+                    print(f"No indexes found, defaulting to: {index_name}")
             
-            # Try to get dimensions
-            if hasattr(namespace_stats, 'dimension'):
-                dimensions = namespace_stats.dimension or 0
-                
-        # If we didn't get any vectors but we know content is retrievable
-        # set a minimum count for display purposes
-        if vector_count == 0:
-            # Check if vectors exist by doing a simple query
+            # Connect to the index
+            index = pc.Index(index_name)
+            
+            # Get detailed stats
+            stats = index.describe_index_stats()
+            
+            # Convert stats to dict for easier debugging
+            stats_dict = {}
             try:
-                from services.langchain.engine import get_org_vectorstore
-                from services.langchain.embeddings import initialize_embeddings
+                stats_dict = stats.dict()
+            except:
+                # Fall back to manual extraction if dict() method not available
+                if hasattr(stats, 'namespaces'):
+                    stats_dict = {"namespaces": {}}
+                    for ns_name, ns_data in stats.namespaces.items():
+                        stats_dict["namespaces"][ns_name] = {
+                            "vector_count": getattr(ns_data, "vector_count", 0)
+                        }
+                stats_dict["total_vector_count"] = getattr(stats, "total_vector_count", 0)
+                stats_dict["dimension"] = getattr(stats, "dimension", 0)
                 
-                embeddings = initialize_embeddings()
-                org_vectorstore = get_org_vectorstore(organization["api_key"])
+            print(f"Full index stats: {json.dumps(stats_dict, default=str)}")
+            
+            # Try different ways to access namespace stats
+            vector_count = 0
+            dimensions = 0
+            
+            # Get namespace directly
+            ns_data = None
+            if hasattr(stats, 'namespaces') and namespace in stats.namespaces:
+                ns_data = stats.namespaces[namespace]
+                print(f"Found namespace stats for {namespace}")
                 
-                if org_vectorstore:
-                    results = org_vectorstore.similarity_search("test", k=1)
-                    if results and len(results) > 0:
-                        # If we get results but count shows 0, use at least 1
-                        vector_count = max(1, vector_count)
-                        print(f"Found {len(results)} results in search, setting minimum vector count to {vector_count}")
+                # Try to get vector count
+                if hasattr(ns_data, 'vector_count'):
+                    vector_count = ns_data.vector_count or 0
+                    print(f"Vector count from namespace: {vector_count}")
+                
+                # Try to get dimensions
+                if hasattr(ns_data, 'dimension'):
+                    dimensions = ns_data.dimension or 0
+            else:
+                print(f"Namespace {namespace} not found in stats. Available namespaces: {list(stats.namespaces.keys() if hasattr(stats, 'namespaces') else [])}")
+                    
+            # If we didn't get any vectors but we know content is retrievable
+            # set a minimum count for display purposes
+            if vector_count == 0:
+                # Do a direct count query if possible
+                try:
+                    # Try to count vectors directly with API (if available)
+                    count_result = index.fetch(
+                        ids=[], 
+                        namespace=namespace
+                    )
+                    if hasattr(count_result, 'vectors') and count_result.vectors:
+                        vector_count = len(count_result.vectors)
+                        print(f"Direct count query found {vector_count} vectors")
+                except Exception as e:
+                    print(f"Error during direct count: {str(e)}")
+                
+                # If still zero, do a test query as fallback
+                if vector_count == 0:
+                    try:
+                        from services.langchain.engine import get_org_vectorstore
+                        from services.langchain.embeddings import initialize_embeddings
+                        
+                        # Initialize with correct dimension
+                        os.environ["PINECONE_DIMENSION"] = "1024"
+                        embeddings = initialize_embeddings()
+                        org_vectorstore = get_org_vectorstore(organization["api_key"])
+                        
+                        if org_vectorstore:
+                            results = org_vectorstore.similarity_search("test", k=1, namespace=namespace)
+                            if results and len(results) > 0:
+                                # If results found, set count to at least 1
+                                vector_count = max(1, vector_count)
+                                print(f"Test query found {len(results)} results, setting count to {vector_count}")
+                    except Exception as e:
+                        print(f"Error during verification search: {str(e)}")
+            
+            # Get dimension from index if not found in namespace
+            if dimensions == 0:
+                dimensions = getattr(stats, 'dimension', 1024)
+                print(f"Using index dimension: {dimensions}")
+            
+            # Safe calculation with reasonable defaults
+            storage_bytes = vector_count * (dimensions or 1024) * 4  # Float32 is 4 bytes
+            
+            # Always provide at least approximate stats
+            api_calls = organization.get("api_calls", 0)
+            
+            # Count any documents that might be present
+            document_count = 0
+            try:
+                # Import services here to avoid circular imports
+                from services.database import get_organization_documents
+                docs = get_organization_documents(org_id)
+                document_count = len(docs) if docs else 0
+                print(f"Found {document_count} documents for organization")
             except Exception as e:
-                print(f"Error during verification search: {str(e)}")
-        
-        # Safe calculation - use default values if needed
-        storage_bytes = vector_count * (dimensions or 1536) * 4  # Float32 is 4 bytes
-        
-        return {
-            "status": "success",
-            "usage": {
-                "api_calls": organization.get("api_calls", 0),
-                "vector_embeddings": vector_count,
-                "storage_used": storage_bytes,
-                "last_updated": datetime.now().isoformat()
+                print(f"Error getting document count: {str(e)}")
+            
+            return {
+                "status": "success",
+                "usage": {
+                    "api_calls": api_calls,
+                    "vector_embeddings": vector_count,
+                    "storage_used": storage_bytes,
+                    "documents": document_count,
+                    "last_updated": datetime.now().isoformat()
+                }
             }
-        }
+        except Exception as e:
+            print(f"Error accessing Pinecone index: {str(e)}")
+            traceback.print_exc()
+            # Return fallback response
+            return {
+                "status": "success",
+                "usage": {
+                    "api_calls": organization.get("api_calls", 0),
+                    "vector_embeddings": 0,
+                    "storage_used": 0,
+                    "documents": 0,
+                    "last_updated": datetime.now().isoformat(),
+                    "error": f"Error accessing vector database: {str(e)}"
+                }
+            }
+            
     except Exception as e:
         print(f"Error getting usage statistics: {str(e)}")
+        traceback.print_exc()
         return {
             "status": "success",
             "usage": {
                 "api_calls": 0,
                 "vector_embeddings": 0,
                 "storage_used": 0,
-                "last_updated": datetime.now().isoformat()
+                "documents": 0,
+                "last_updated": datetime.now().isoformat(),
+                "error": f"General error: {str(e)}"
             }
         } 

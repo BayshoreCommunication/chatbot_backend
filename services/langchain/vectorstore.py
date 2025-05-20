@@ -6,6 +6,8 @@ from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_core.documents import Document
 import openai
 from services.database import get_organization_by_api_key
+import datetime
+import uuid
 
 def initialize_vectorstore(embeddings, api_key=None):
     """Initialize the Pinecone vector store with optional organization namespace"""
@@ -61,10 +63,13 @@ def add_document_to_vectorstore(vectorstore, pc, index_name, embeddings, api_key
     
     # Get organization namespace if API key is provided
     namespace = None
+    organization_id = None
+    
     if api_key:
         organization = get_organization_by_api_key(api_key)
         if organization:
             namespace = organization.get('pinecone_namespace')
+            organization_id = organization.get('id')
             print(f"Using organization namespace: {namespace}")
     
     # Debug outputs - check that all required parameters are provided
@@ -176,6 +181,8 @@ def add_document_to_vectorstore(vectorstore, pc, index_name, embeddings, api_key
                 
                 # Process each document manually
                 successful_uploads = 0
+                document_details = []
+                
                 for i, doc in enumerate(splits):
                     try:
                         # Get the document text
@@ -200,9 +207,48 @@ def add_document_to_vectorstore(vectorstore, pc, index_name, embeddings, api_key
                             namespace=namespace  # Explicitly set namespace here too
                         )
                         
+                        # Track successful uploads
                         successful_uploads += 1
+                        
+                        # Save document details for database tracking
+                        document_details.append({
+                            "document_id": doc_id,
+                            "content_preview": doc_text[:200] + "..." if len(doc_text) > 200 else doc_text,
+                            "source_type": "file" if file_path else "url" if url else "text",
+                            "source_path": file_path if file_path else url if url else None,
+                            "vector_id": doc_id,
+                            "namespace": namespace,
+                            "metadata": metadata,
+                            "created_at": datetime.datetime.utcnow()
+                        })
+                        
                     except Exception as e:
                         print(f"Error uploading document {i}: {str(e)}")
+                
+                # Track documents in the database if organization is available
+                if organization_id and successful_uploads > 0:
+                    try:
+                        from services.database import add_organization_document
+                        
+                        # File-level document record
+                        main_doc_id = f"doc_main_{uuid.uuid4().hex[:8]}"
+                        source_name = os.path.basename(file_path) if file_path else url if url else "Text input"
+                        
+                        # Add main document record
+                        main_document = {
+                            "document_id": main_doc_id,
+                            "title": source_name,
+                            "source_type": "file" if file_path else "url" if url else "text",
+                            "source_path": file_path if file_path else url if url else None,
+                            "chunk_count": successful_uploads,
+                            "chunks": document_details,
+                            "created_at": datetime.datetime.utcnow()
+                        }
+                        
+                        add_organization_document(organization_id, main_document)
+                        print(f"Tracked document in database with ID: {main_doc_id}")
+                    except Exception as e:
+                        print(f"Error tracking document in database: {str(e)}")
                 
                 # Verify documents were added by performing a test query
                 if successful_uploads > 0:

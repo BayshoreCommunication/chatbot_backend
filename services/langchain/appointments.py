@@ -212,9 +212,9 @@ def extract_slot_info(query, available_slots):
     """
     
     try:
-        # Call OpenAI for slot detection - use GPT-4.1 for best accuracy
+        # Call OpenAI for slot detection - use gpt-3.5-turbo for best accuracy
         slot_response = openai.chat.completions.create(
-            model="gpt-4.1",
+            model="gpt-3.5-turbo",
             messages=[{"role": "user", "content": slot_selection_prompt}],
             response_format={"type": "json_object"},
             temperature=0.1
@@ -441,7 +441,7 @@ def analyze_appointment_query(query):
     try:
         # Call OpenAI for intent analysis
         intent_response = openai.chat.completions.create(
-            model="gpt-4.1",
+            model="gpt-3.5-turbo",
             messages=[{"role": "user", "content": intent_analysis_prompt}],
             response_format={"type": "json_object"},
             temperature=0.1

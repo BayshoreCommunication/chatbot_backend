@@ -219,7 +219,7 @@ def extract_personal_information(user_context):
     
     try:
         personal_info_response = openai.chat.completions.create(
-            model="gpt-4.1",
+            model="gpt-3.5-turbo",
             messages=[{"role": "user", "content": personal_information_prompt}],
             response_format={"type": "json_object"},
             temperature=0.1

@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Request, UploadFile, File, Form, HTTPException, Depends, Header
 from services.langchain.engine import ask_bot, add_document, escalate_to_human
 from services.language_detect import detect_language
-from services.database import get_organization_by_api_key, create_or_update_visitor, add_conversation_message, get_visitor
+from services.database import get_organization_by_api_key, create_or_update_visitor, add_conversation_message, get_visitor, get_conversation_history, save_user_profile, get_user_profile
 from typing import Optional, Dict, Any
 import json
 import os
@@ -44,6 +44,9 @@ async def ask_question(
     print(f"Organization API key: {org_api_key[:8]}...")
     print(f"Organization namespace: {org_namespace}")
     
+    # Get previous conversations from MongoDB
+    previous_conversations = get_conversation_history(org_id, request.session_id)
+    
     # Get or create visitor
     visitor = create_or_update_visitor(
         organization_id=org_id,
@@ -57,11 +60,42 @@ async def ask_question(
         }
     )
     
+    # Convert MongoDB conversations to desired format for client
+    formatted_history = []
+    for msg in previous_conversations:
+        if "role" in msg and "content" in msg:
+            formatted_history.append({
+                "role": msg.get("role"),
+                "content": msg.get("content")
+            })
+    
+    # Get user profile from dedicated collection
+    user_profile = get_user_profile(org_id, request.session_id)
+    profile_data = {}
+    
+    if user_profile and "profile_data" in user_profile:
+        profile_data = user_profile["profile_data"]
+        print(f"Found existing user profile: {profile_data}")
+    
+    # Initialize user_data if not provided
+    if not request.user_data:
+        request.user_data = {}
+    
+    # Merge profile data with request user_data (request takes precedence)
+    merged_user_data = {**profile_data, **request.user_data}
+    
+    # Add conversation history to user_data
+    merged_user_data["conversation_history"] = formatted_history
+    
+    # Add indicator for returning users
+    if "name" in merged_user_data and merged_user_data["name"]:
+        merged_user_data["returning_user"] = True
+        print(f"Recognized returning user: {merged_user_data['name']}")
+    
     # Get or create session (in-memory for now)
     session_key = f"{org_id}:{request.session_id}"
     session = user_sessions.get(session_key, {
-        "conversation_history": [],
-        "user_data": request.user_data or {},
+        "user_data": merged_user_data,
         "current_mode": request.mode
     })
     
@@ -73,11 +107,24 @@ async def ask_question(
     if "unique identifier" in request.question.lower() or "test-doc" in request.question.lower():
         print(f"UNIQUE IDENTIFIER QUESTION DETECTED!")
     
+    # Prepare context for the bot to understand returning users
+    user_context = ""
+    if "name" in session["user_data"] and session["user_data"]["name"]:
+        user_context = f"The user's name is {session['user_data']['name']}. "
+    if "email" in session["user_data"] and session["user_data"]["email"]:
+        user_context += f"The user's email is {session['user_data']['email']}. "
+    
+    # If we have user context, modify the question to include it
+    enhanced_query = request.question
+    if user_context and "returning_user" in session["user_data"] and session["user_data"]["returning_user"]:
+        print(f"Adding user context to query: {user_context}")
+        enhanced_query = f"{user_context}The user, who you already know, asks: {request.question}"
+    
     # Get response based on mode
     response = ask_bot(
-        query=request.question,
+        query=enhanced_query,  # Use enhanced query with user context
         mode=session["current_mode"],
-        user_data=session["user_data"],
+        user_data=session["user_data"],  # Pass existing user data with conversation history
         available_slots=request.available_slots,
         session_id=request.session_id,
         api_key=org_api_key
@@ -85,14 +132,25 @@ async def ask_question(
     
     # Check if we received an error response
     if "status" in response and response["status"] == "error":
-        # Just return the error response directly
         return response
     
-    # Add to conversation history
-    session["conversation_history"].append({
-        "user": request.question,
-        "bot": response["answer"]
-    })
+    # Add user question to conversation history
+    if "conversation_history" not in session["user_data"]:
+        session["user_data"]["conversation_history"] = []
+    
+    # Add user message to conversation history (original question, not enhanced)
+    user_message = {
+        "role": "user",
+        "content": request.question
+    }
+    session["user_data"]["conversation_history"].append(user_message)
+    
+    # Add bot response to conversation history
+    bot_message = {
+        "role": "assistant",
+        "content": response["answer"]
+    }
+    session["user_data"]["conversation_history"].append(bot_message)
     
     # Store in MongoDB
     add_conversation_message(
@@ -113,9 +171,38 @@ async def ask_question(
         metadata={"mode": session["current_mode"]}
     )
     
+    # Check if the user data contains important profile information
+    profile_keys = ["name", "email", "phone", "preferences"]
+    profile_updated = False
+    profile_to_save = {}
+    
+    # Extract profile data from user_data
+    for key in profile_keys:
+        if key in session["user_data"] and session["user_data"][key]:
+            profile_updated = True
+            profile_to_save[key] = session["user_data"][key]
+    
+    # Update profile if needed
+    if profile_updated or (response.get("user_data") and any(key in response["user_data"] for key in profile_keys)):
+        # Add additional profile data from response
+        if "user_data" in response:
+            for key in profile_keys:
+                if key in response["user_data"] and response["user_data"][key]:
+                    profile_to_save[key] = response["user_data"][key]
+        
+        # Save profile to dedicated collection
+        if profile_to_save:
+            save_user_profile(org_id, request.session_id, profile_to_save)
+            print(f"Saved user profile: {profile_to_save}")
+    
     # Update session user data if provided in response
     if "user_data" in response:
+        # Preserve conversation history
+        conversation_history = session["user_data"].get("conversation_history", [])
         session["user_data"].update(response["user_data"])
+        if "conversation_history" not in session["user_data"]:
+            session["user_data"]["conversation_history"] = conversation_history
+        
         # Update visitor data
         update_visitor_data = {
             "metadata": {
@@ -128,6 +215,10 @@ async def ask_question(
     # Update session mode if it changed
     if "mode" in response and response["mode"] != session["current_mode"]:
         session["current_mode"] = response["mode"]
+    
+    # Ensure user_data is included in the response
+    if "user_data" not in response:
+        response["user_data"] = session["user_data"]
     
     return response
 
