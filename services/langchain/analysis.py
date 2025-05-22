@@ -148,6 +148,9 @@ def generate_response(query, user_info, conversation_summary, retrieved_context,
     2. Keep responses concise and to the point
     3. For appointments, be specific about dates and times
     4. Always verify user's intentions before finalizing appointments
+    5. Start with the user name Example : If the user name is Rayhan Al Mim Then you should start Like : "Rayhan, then Your Response"
+    7. Focus on providing valuable content immediately rather than using formal greetings
+    8. Never address the user by name at the beginning of your responses
     
     Provide a helpful, informative, and conversational response that directly addresses the user's query.
     If knowledge base information is available, incorporate it naturally into your response.
@@ -165,12 +168,43 @@ def generate_response(query, user_info, conversation_summary, retrieved_context,
         
         final_response = response_completion.choices[0].message.content.strip()
         
+        # Remove any leading "Hello [Name]," pattern
+        final_response = remove_greeting(final_response, user_info['name'])
+        
         return final_response
     except Exception as e:
         print(f"Error generating response: {str(e)}")
         if is_identity_query and retrieved_context:
-            return "I am Rayhan Al Mim, a legal professional with expertise in civil, corporate, and constitutional matters. How can I assist you today?"
-        return "I'm here to help with your questions and appointment scheduling. How can I assist you today?"
+            return "I am a legal professional with expertise in civil, corporate, and constitutional matters. How can I assist you today?"
+        return "How can I assist you today?"
+
+def remove_greeting(response, user_name):
+    """Remove greeting patterns from the beginning of responses"""
+    import re
+    
+    # Common greeting patterns
+    greeting_patterns = [
+        rf"^Hello,?\s*{user_name}[,.]?\s*",
+        rf"^Hi,?\s*{user_name}[,.]?\s*",
+        rf"^Hey,?\s*{user_name}[,.]?\s*",
+        r"^Hello,?\s*",
+        r"^Hi,?\s*",
+        r"^Hey,?\s*",
+        r"^Greetings,?\s*",
+        r"^Good morning,?\s*",
+        r"^Good afternoon,?\s*",
+        r"^Good evening,?\s*",
+    ]
+    
+    cleaned_response = response
+    for pattern in greeting_patterns:
+        cleaned_response = re.sub(pattern, "", cleaned_response, flags=re.IGNORECASE)
+    
+    # Capitalize the first letter if needed
+    if cleaned_response and cleaned_response[0].islower():
+        cleaned_response = cleaned_response[0].upper() + cleaned_response[1:]
+        
+    return cleaned_response
 
 def verify_identity(query, response, user_info, is_experience_query=False):
     """This function has been deprecated as we now want the AI to assume the identity from the documents"""

@@ -29,11 +29,11 @@ def handle_name_collection(query, user_data, mode, language):
         # Add this interaction to history
         user_data["conversation_history"].append({
             "role": "assistant", 
-            "content": "That's fine. Could you please share your email address so I can better assist you? (or type 'skip' if you prefer not to share)"
+            "content": "That's fine. Could you please share your email address so I can better assist you?"
         })
         
         return {
-            "answer": "That's fine. Could you please share your email address so I can better assist you? (or type 'skip' if you prefer not to share)",
+            "answer": "That's fine. Could you please share your email address so I can better assist you?",
             "mode": mode,
             "language": language,
             "user_data": user_data
@@ -44,11 +44,11 @@ def handle_name_collection(query, user_data, mode, language):
         # Add this interaction to history
         user_data["conversation_history"].append({
             "role": "assistant", 
-            "content": "Hello! Before we begin, may I know your name? (or type 'skip' if you prefer not to share)"
+            "content": "Hello! Before we begin, may I know your name?"
         })
         
         return {
-            "answer": "Hello! Before we begin, may I know your name? (or type 'skip' if you prefer not to share)",
+            "answer": "Hello! Before we begin, may I know your name?",
             "mode": mode,
             "language": language,
             "user_data": user_data
