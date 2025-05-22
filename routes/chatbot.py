@@ -87,7 +87,7 @@ async def ask_question(
     # Merge profile data with request user_data (request takes precedence)
     merged_user_data = {**profile_data, **request.user_data}
     
-    # Add conversation history to user_data
+    # Add conversation history to user_data - Use only MongoDB history, don't add to user_data yet
     merged_user_data["conversation_history"] = formatted_history
     
     # Add indicator for returning users
@@ -101,6 +101,9 @@ async def ask_question(
         "user_data": merged_user_data,
         "current_mode": request.mode
     })
+    
+    # Update user session with merged data but keep original conversation history
+    session["user_data"] = merged_user_data
     
     # Update user session
     user_sessions[session_key] = session
@@ -137,25 +140,7 @@ async def ask_question(
     if "status" in response and response["status"] == "error":
         return response
     
-    # Add user question to conversation history
-    if "conversation_history" not in session["user_data"]:
-        session["user_data"]["conversation_history"] = []
-    
-    # Add user message to conversation history (original question, not enhanced)
-    user_message = {
-        "role": "user",
-        "content": request.question
-    }
-    session["user_data"]["conversation_history"].append(user_message)
-    
-    # Add bot response to conversation history
-    bot_message = {
-        "role": "assistant",
-        "content": response["answer"]
-    }
-    session["user_data"]["conversation_history"].append(bot_message)
-    
-    # Store in MongoDB
+    # Store in MongoDB - Only store in MongoDB, not in session
     add_conversation_message(
         organization_id=org_id,
         visitor_id=visitor["id"],
@@ -200,11 +185,21 @@ async def ask_question(
     
     # Update session user data if provided in response
     if "user_data" in response:
-        # Preserve conversation history
-        conversation_history = session["user_data"].get("conversation_history", [])
+        # Get fresh conversation history from MongoDB after adding new messages
+        fresh_conversations = get_conversation_history(org_id, request.session_id)
+        fresh_formatted_history = []
+        for msg in fresh_conversations:
+            if "role" in msg and "content" in msg:
+                fresh_formatted_history.append({
+                    "role": msg.get("role"),
+                    "content": msg.get("content")
+                })
+        
+        # Update the user data from the response
         session["user_data"].update(response["user_data"])
-        if "conversation_history" not in session["user_data"]:
-            session["user_data"]["conversation_history"] = conversation_history
+        
+        # Replace the conversation history with the fresh one from MongoDB
+        session["user_data"]["conversation_history"] = fresh_formatted_history
         
         # Update visitor data
         update_visitor_data = {
@@ -219,9 +214,21 @@ async def ask_question(
     if "mode" in response and response["mode"] != session["current_mode"]:
         session["current_mode"] = response["mode"]
     
-    # Ensure user_data is included in the response
+    # Get fresh conversation history for the response
+    fresh_conversations = get_conversation_history(org_id, request.session_id)
+    fresh_formatted_history = []
+    for msg in fresh_conversations:
+        if "role" in msg and "content" in msg:
+            fresh_formatted_history.append({
+                "role": msg.get("role"),
+                "content": msg.get("content")
+            })
+    
+    # Use the fresh conversation history in the response
     if "user_data" not in response:
-        response["user_data"] = session["user_data"]
+        response["user_data"] = {}
+    
+    response["user_data"]["conversation_history"] = fresh_formatted_history
     
     return response
 
@@ -332,8 +339,28 @@ async def upload_document(
     file: Optional[UploadFile] = File(None),
     url: Optional[str] = Form(None),
     text: Optional[str] = Form(None),
+    scrape_website: Optional[bool] = Form(False),
+    max_pages: Optional[int] = Form(10),
     organization=Depends(get_organization_from_api_key)
 ):
+    """
+    Upload document to the vector database
+    
+    - file: Upload a PDF or text file directly
+    - url: Provide a URL to a webpage or PDF
+    - text: Provide raw text content
+    - scrape_website: Set to True to crawl and index an entire website (when URL is provided)
+    - max_pages: Maximum number of pages to scrape when scrape_website is True (default: 10)
+    
+    When scrape_website=True, the system will:
+    1. Start at the provided URL
+    2. Extract all text content from the page
+    3. Find links to other pages on the same domain
+    4. Crawl those pages up to max_pages limit
+    5. Index all content in the vector database
+    
+    All content is stored under the organization's namespace in the vector database.
+    """
     org_api_key = organization["api_key"]
     
     if file:
@@ -352,7 +379,15 @@ async def upload_document(
         return result
     
     elif url:
-        return add_document(url=url, api_key=org_api_key)
+        # Check if we should scrape the entire website
+        if scrape_website:
+            # Append parameters to URL to indicate scraping
+            scrape_url = f"{url}?scrape_website=true&max_pages={max_pages}"
+            print(f"Scraping website: {url} with max_pages={max_pages}")
+            return add_document(url=scrape_url, api_key=org_api_key)
+        else:
+            # Just process the single URL
+            return add_document(url=url, api_key=org_api_key)
     
     elif text:
         return add_document(text=text, api_key=org_api_key)

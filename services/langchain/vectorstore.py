@@ -8,6 +8,9 @@ import openai
 from services.database import get_organization_by_api_key
 import datetime
 import uuid
+import requests
+from bs4 import BeautifulSoup
+from urllib.parse import urljoin, urlparse
 
 def initialize_vectorstore(embeddings, api_key=None):
     """Initialize the Pinecone vector store with optional organization namespace"""
@@ -123,10 +126,32 @@ def add_document_to_vectorstore(vectorstore, pc, index_name, embeddings, api_key
                 
         elif url:
             print(f"Loading URL from {url}")
-            loader = WebBaseLoader(url)
-            documents = loader.load()
-            print(f"Loaded {len(documents)} documents from URL")
+            # Check if the URL contains a parameter for comprehensive scraping
+            if "scrape_website=true" in url.lower() or "scrape_site=true" in url.lower():
+                # Extract the actual URL without the parameters
+                base_url = url.split('?')[0] if '?' in url else url
+                
+                # Extract max_pages if specified
+                max_pages = 10  # Default
+                if "max_pages=" in url.lower():
+                    try:
+                        # Extract the max_pages value
+                        for param in url.split('?')[1].split('&'):
+                            if param.lower().startswith("max_pages="):
+                                max_pages = int(param.split('=')[1])
+                                break
+                    except:
+                        pass
+                
+                print(f"Performing comprehensive website scraping of {base_url} with max_pages={max_pages}")
+                documents = scrape_website_content(base_url, max_pages)
+            else:
+                # Use standard WebBaseLoader for single page
+                loader = WebBaseLoader(url)
+                documents = loader.load()
             
+            print(f"Loaded {len(documents)} documents from URL")
+        
         elif text:
             print(f"Processing text input of length: {len(text)}")
             text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
@@ -272,4 +297,101 @@ def add_document_to_vectorstore(vectorstore, pc, index_name, embeddings, api_key
             return {"status": "error", "message": "No documents were created from the provided source"}
     except Exception as e:
         print(f"Error processing documents: {str(e)}")
-        return {"status": "error", "message": str(e)} 
+        return {"status": "error", "message": str(e)}
+
+def scrape_website_content(base_url, max_pages=10):
+    """
+    Scrape content from a website, following internal links up to max_pages
+    
+    Args:
+        base_url: The starting URL to scrape
+        max_pages: Maximum number of pages to scrape
+        
+    Returns:
+        List of Document objects containing the website content
+    """
+    print(f"Starting comprehensive scraping of {base_url} (max {max_pages} pages)")
+    
+    # Track visited URLs to avoid duplicates
+    visited_urls = set()
+    to_visit = [base_url]
+    documents = []
+    count = 0
+    
+    # Parse the base domain to stay within the same website
+    base_domain = urlparse(base_url).netloc
+    
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+    }
+    
+    while to_visit and count < max_pages:
+        # Get the next URL to visit
+        current_url = to_visit.pop(0)
+        
+        # Skip if already visited
+        if current_url in visited_urls:
+            continue
+            
+        print(f"Scraping page {count+1}/{max_pages}: {current_url}")
+        
+        try:
+            # Fetch the page
+            response = requests.get(current_url, headers=headers, timeout=10)
+            response.raise_for_status()
+            
+            # Mark as visited
+            visited_urls.add(current_url)
+            count += 1
+            
+            # Parse the page
+            soup = BeautifulSoup(response.text, 'html.parser')
+            
+            # Extract text content
+            # Remove script and style elements
+            for script in soup(["script", "style", "nav", "footer", "header"]):
+                script.decompose()
+                
+            # Get the main content (prioritize main, article, or div with content)
+            main_content = soup.find("main") or soup.find("article") or soup.find("div", class_=lambda c: c and ("content" in c.lower() or "main" in c.lower()))
+            
+            if main_content:
+                text = main_content.get_text(separator="\n", strip=True)
+            else:
+                # Fallback to body if no main content identified
+                text = soup.get_text(separator="\n", strip=True)
+            
+            # Clean up text (remove excessive newlines)
+            text = "\n".join(line.strip() for line in text.split("\n") if line.strip())
+            
+            # Create metadata
+            metadata = {
+                "source": current_url,
+                "title": soup.title.string if soup.title else current_url,
+            }
+            
+            # Add to documents
+            documents.append(Document(page_content=text, metadata=metadata))
+            
+            # Find links to other pages on the same domain
+            if count < max_pages:
+                links = soup.find_all("a", href=True)
+                for link in links:
+                    href = link["href"]
+                    
+                    # Resolve relative URLs
+                    full_url = urljoin(current_url, href)
+                    
+                    # Check if the URL is on the same domain and not already visited
+                    parsed_url = urlparse(full_url)
+                    if (parsed_url.netloc == base_domain or not parsed_url.netloc) and \
+                       full_url not in visited_urls and \
+                       full_url not in to_visit and \
+                       not full_url.endswith(('.pdf', '.jpg', '.png', '.gif')):
+                        to_visit.append(full_url)
+        
+        except Exception as e:
+            print(f"Error scraping {current_url}: {str(e)}")
+    
+    print(f"Completed scraping {count} pages, extracted {len(documents)} documents")
+    return documents 

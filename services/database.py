@@ -157,7 +157,16 @@ def get_conversation_history(organization_id, session_id):
         
         # Convert cursor to list - maintain original document format
         conversation_history = []
+        seen_ids = set()  # Use a set to track seen message IDs
+        
         for doc in result:
+            # Skip duplicates (if any)
+            if doc["id"] in seen_ids:
+                continue
+                
+            # Track this ID
+            seen_ids.add(doc["id"])
+                
             # Convert MongoDB _id to string representation
             if "_id" in doc:
                 doc["_id"] = {"$oid": str(doc["_id"])}
