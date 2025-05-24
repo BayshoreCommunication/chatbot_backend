@@ -2,6 +2,16 @@ from fastapi import FastAPI, Request, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import os
 from dotenv import load_dotenv
+from routes.auth import router as auth_router
+from fastapi.responses import JSONResponse
+from bson import ObjectId
+import json
+
+class MongoJSONEncoder(json.JSONEncoder):
+    def default(self, o):
+        if isinstance(o, ObjectId):
+            return str(o)
+        return super().default(o)
 
 # Try to import routers, skip problematic ones
 try:
@@ -60,13 +70,26 @@ app = FastAPI(
     version="1.0.0"
 )
 
+# Configure CORS with more specific settings
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["http://localhost:5173"],  # Add your React app's URL
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"]
 )
+
+# Custom JSON response class for MongoDB ObjectId handling
+@app.middleware("http")
+async def custom_json_middleware(request: Request, call_next):
+    response = await call_next(request)
+    if isinstance(response, JSONResponse):
+        response.body = json.dumps(
+            response.body.decode(),
+            cls=MongoJSONEncoder
+        ).encode()
+    return response
 
 # Include available routers
 available_features = []
@@ -94,6 +117,8 @@ if organization_available:
 # Payment router is always included
 app.include_router(payment_router, prefix="/payment", tags=["Payment Processing"])
 available_features.append("Stripe Payment Processing")
+
+app.include_router(auth_router, prefix="/auth", tags=["auth"])
 
 @app.get("/")
 def read_root():
