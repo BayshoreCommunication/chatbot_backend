@@ -26,3 +26,4 @@ bcrypt
 cryptography
 redis
 tenacity
+stripe
