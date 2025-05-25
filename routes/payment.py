@@ -9,9 +9,12 @@ from services.database import (
     get_organization_by_user_id,
     update_organization_subscription,
     create_subscription,
-    get_subscription_by_stripe_id
+    get_subscription_by_stripe_id,
+    get_user_subscription,
+    db
 )
 from datetime import datetime
+from models.organization import Subscription
 
 load_dotenv()
 
@@ -235,4 +238,30 @@ async def get_subscription(subscription_id: str):
     except stripe.error.StripeError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail="Internal server error") 
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.get("/user-subscription/{user_id}")
+async def get_user_subscription_data(user_id: str):
+    """Get subscription data for a specific user"""
+    try:
+        print(f"Fetching subscription for user: {user_id}")
+        
+        # Direct MongoDB query (synchronous operation)
+        subscription = db.subscriptions.find_one({"user_id": user_id})
+        print(f"Found subscription: {subscription}")
+        
+        if not subscription:
+            print(f"No subscription found for user: {user_id}")
+            raise HTTPException(status_code=404, detail=f"No subscription found for user: {user_id}")
+        
+        # Convert ObjectId to string
+        subscription["_id"] = str(subscription["_id"])
+        
+        return {
+            "status": "success",
+            "data": subscription
+        }
+    except Exception as e:
+        print(f"Error fetching subscription: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e)) 

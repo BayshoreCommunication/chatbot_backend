@@ -343,11 +343,9 @@ def get_subscription_by_stripe_id(stripe_subscription_id: str) -> Optional[Dict[
     return serialize_subscription(subscription) if subscription else None
 
 def get_user_subscription(user_id: str) -> Optional[Dict[str, Any]]:
-    """Get active subscription for a user"""
-    return subscriptions.find_one({
-        "user_id": user_id,
-        "subscription_status": "active"
-    })
+    """Get subscription for a user"""
+    subscription = subscriptions.find_one({"user_id": user_id})
+    return serialize_subscription(subscription) if subscription else None
 
 def get_organization_subscription(organization_id: str) -> Optional[Dict[str, Any]]:
     """Get active subscription for an organization"""
