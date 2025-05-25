@@ -71,14 +71,30 @@ app = FastAPI(
 )
 
 # Configure CORS with more specific settings
+origins = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],  # Add your React app's URL
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["*"]
 )
+
+# Add security headers middleware
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["Cross-Origin-Opener-Policy"] = "unsafe-none"
+    response.headers["Cross-Origin-Embedder-Policy"] = "unsafe-none"
+    response.headers["Access-Control-Allow-Origin"] = request.headers.get("origin", origins[0])
+    response.headers["Access-Control-Allow-Credentials"] = "true"
+    return response
 
 # Custom JSON response class for MongoDB ObjectId handling
 @app.middleware("http")

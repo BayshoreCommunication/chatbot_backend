@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException, Depends, Request, Header
-from services.database import create_organization, get_organization_by_api_key, update_organization
+from services.database import create_organization, get_organization_by_api_key, update_organization, get_organization_by_user_id
 from models.organization import OrganizationCreate, OrganizationUpdate
 from typing import Optional
 import json
@@ -21,40 +21,62 @@ async def get_organization_from_api_key(api_key: Optional[str] = Header(None, al
 async def register_organization(organization_data: OrganizationCreate):
     """Register a new organization and generate API key"""
     try:
+        # Check if user already has an organization
+        existing_org = get_organization_by_user_id(organization_data.user_id)
+        if existing_org:
+            raise HTTPException(status_code=400, detail="User already has an organization")
+            
         org = create_organization(
             name=organization_data.name,
-            subscription_tier=organization_data.subscription_tier
+            subscription_tier=organization_data.subscription_tier,
+            user_id=organization_data.user_id,
+            stripe_subscription_id=organization_data.stripe_subscription_id if organization_data.stripe_subscription_id else None
         )
         
         # Return the organization with API key
+        response_org = {
+            "id": org["id"],
+            "name": org["name"],
+            "api_key": org["api_key"],
+            "subscription_tier": org["subscription_tier"],
+            "subscription_status": org["subscription_status"],
+            "pinecone_namespace": org["pinecone_namespace"],
+            "user_id": org["user_id"]
+        }
+        
+        # Only include stripe_subscription_id if it exists
+        if "stripe_subscription_id" in org:
+            response_org["stripe_subscription_id"] = org["stripe_subscription_id"]
+        
         return {
             "status": "success",
             "message": "Organization registered successfully",
-            "organization": {
-                "id": org["id"],
-                "name": org["name"],
-                "api_key": org["api_key"],
-                "subscription_tier": org["subscription_tier"],
-                "subscription_status": org["subscription_status"],
-                "pinecone_namespace": org["pinecone_namespace"]
-            }
+            "organization": response_org
         }
+    except HTTPException as e:
+        raise e
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/me")
 async def get_organization(organization=Depends(get_organization_from_api_key)):
     """Get organization details from API key"""
+    response_org = {
+        "id": organization["id"],
+        "name": organization["name"],
+        "subscription_tier": organization["subscription_tier"],
+        "subscription_status": organization["subscription_status"],
+        "pinecone_namespace": organization["pinecone_namespace"],
+        "settings": organization.get("settings", {})
+    }
+    
+    # Only include stripe_subscription_id if it exists
+    if "stripe_subscription_id" in organization:
+        response_org["stripe_subscription_id"] = organization["stripe_subscription_id"]
+    
     return {
         "status": "success",
-        "organization": {
-            "id": organization["id"],
-            "name": organization["name"],
-            "subscription_tier": organization["subscription_tier"],
-            "subscription_status": organization["subscription_status"],
-            "pinecone_namespace": organization["pinecone_namespace"],
-            "settings": organization.get("settings", {})
-        }
+        "organization": response_org
     }
 
 @router.put("/update")
@@ -76,16 +98,22 @@ async def update_organization_details(
         # Update organization
         updated_org = update_organization(organization["id"], update_dict)
         
+        response_org = {
+            "id": updated_org["id"],
+            "name": updated_org["name"],
+            "subscription_tier": updated_org["subscription_tier"],
+            "subscription_status": updated_org["subscription_status"],
+            "settings": updated_org.get("settings", {})
+        }
+        
+        # Only include stripe_subscription_id if it exists
+        if "stripe_subscription_id" in updated_org:
+            response_org["stripe_subscription_id"] = updated_org["stripe_subscription_id"]
+        
         return {
             "status": "success",
             "message": "Organization updated successfully",
-            "organization": {
-                "id": updated_org["id"],
-                "name": updated_org["name"],
-                "subscription_tier": updated_org["subscription_tier"],
-                "subscription_status": updated_org["subscription_status"],
-                "settings": updated_org.get("settings", {})
-            }
+            "organization": response_org
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

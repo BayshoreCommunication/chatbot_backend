@@ -1,12 +1,13 @@
 import os
 import pymongo
 from dotenv import load_dotenv
-from models.organization import Organization
+from models.organization import Organization, Subscription
 from models.visitor import Visitor, ConversationMessage
 import uuid
 import secrets
 import datetime  # Import Python's datetime module
 from typing import List, Dict, Any, Optional
+from bson import ObjectId
 
 # Load environment variables
 load_dotenv()
@@ -24,6 +25,8 @@ visitors = db.visitors
 conversations = db.conversations
 api_keys = db.api_keys
 user_profiles = db.user_profiles  # New collection for user profiles
+users = db.users  # Added users collection
+subscriptions = db.subscriptions  # Add subscriptions collection
 
 # Initialize the database with indexes
 def init_db():
@@ -52,12 +55,18 @@ def init_db():
         db.create_collection("documents")
         db.documents.create_index("organization_id")
         db.documents.create_index([("organization_id", pymongo.ASCENDING), ("document_id", pymongo.ASCENDING)], unique=True)
+    
+    # Subscription indexes
+    subscriptions.create_index("stripe_subscription_id", unique=True)
+    subscriptions.create_index("user_id")
+    subscriptions.create_index("organization_id")
+    subscriptions.create_index([("user_id", pymongo.ASCENDING), ("organization_id", pymongo.ASCENDING)])
 
 # Documents collection
 documents = db.documents
 
 # Organization methods
-def create_organization(name: str, subscription_tier: str = "free") -> Dict[str, Any]:
+def create_organization(name: str, subscription_tier: str = "free", user_id: str = None, stripe_subscription_id: str | None = None) -> Dict[str, Any]:
     """Create a new organization with a unique API key"""
     # Generate unique API key with org_ prefix
     api_key = f"org_sk_{secrets.token_hex(16)}"
@@ -68,11 +77,16 @@ def create_organization(name: str, subscription_tier: str = "free") -> Dict[str,
         "id": str(uuid.uuid4()),
         "name": name,
         "api_key": api_key,
+        "user_id": user_id,
         "subscription_tier": subscription_tier,
         "subscription_status": "active",
         "pinecone_namespace": pinecone_namespace,
         "settings": {}
     }
+    
+    # Only add stripe_subscription_id if it's not None
+    if stripe_subscription_id is not None:
+        org_data["stripe_subscription_id"] = stripe_subscription_id
     
     # Insert into database
     result = organizations.insert_one(org_data)
@@ -88,6 +102,20 @@ def get_organization_by_api_key(api_key: str) -> Optional[Dict[str, Any]]:
 def update_organization(org_id: str, update_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Update organization data"""
     organizations.update_one({"id": org_id}, {"$set": update_data})
+    return organizations.find_one({"id": org_id})
+
+def get_organization_by_user_id(user_id: str) -> Optional[Dict[str, Any]]:
+    """Get organization by user ID"""
+    return organizations.find_one({"user_id": user_id})
+
+def update_organization_subscription(org_id: str, stripe_subscription_id: str | None) -> Optional[Dict[str, Any]]:
+    """Update organization's Stripe subscription ID"""
+    update_data = {}
+    if stripe_subscription_id is not None:
+        update_data["stripe_subscription_id"] = stripe_subscription_id
+    
+    if update_data:
+        organizations.update_one({"id": org_id}, {"$set": update_data})
     return organizations.find_one({"id": org_id})
 
 # Visitor methods
@@ -259,6 +287,105 @@ def get_user_profile(organization_id: str, session_id: str) -> Optional[Dict[str
         "organization_id": organization_id,
         "session_id": session_id
     })
+
+def get_user_by_email(email: str) -> Optional[Dict[str, Any]]:
+    """Get user by email address"""
+    user = users.find_one({"email": email})
+    return user if user else None
+
+def create_subscription(
+    user_id: str,
+    organization_id: str,
+    stripe_subscription_id: str,
+    payment_amount: float,
+    subscription_tier: str,
+    current_period_start: datetime.datetime,
+    current_period_end: datetime.datetime
+) -> Dict[str, Any]:
+    """Create a new subscription record"""
+    # Verify user and organization exist
+    user = users.find_one({"id": user_id})
+    organization = organizations.find_one({"id": organization_id})
+    
+    if not user or not organization:
+        raise ValueError("User or organization not found")
+    
+    subscription_data = {
+        "id": str(uuid.uuid4()),
+        "user_id": user_id,
+        "organization_id": organization_id,
+        "stripe_subscription_id": stripe_subscription_id,
+        "payment_amount": payment_amount,
+        "subscription_tier": subscription_tier,
+        "subscription_status": "active",
+        "current_period_start": current_period_start,
+        "current_period_end": current_period_end,
+        "created_at": datetime.datetime.utcnow(),
+        "updated_at": datetime.datetime.utcnow()
+    }
+    
+    result = subscriptions.insert_one(subscription_data)
+    subscription_data["_id"] = str(result.inserted_id)
+    
+    return subscription_data
+
+def serialize_subscription(subscription: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Serialize subscription document for JSON response"""
+    if subscription:
+        # Convert ObjectId to string
+        if "_id" in subscription:
+            subscription["_id"] = str(subscription["_id"])
+    return subscription
+
+def get_subscription_by_stripe_id(stripe_subscription_id: str) -> Optional[Dict[str, Any]]:
+    """Get subscription by Stripe subscription ID"""
+    subscription = subscriptions.find_one({"stripe_subscription_id": stripe_subscription_id})
+    return serialize_subscription(subscription) if subscription else None
+
+def get_user_subscription(user_id: str) -> Optional[Dict[str, Any]]:
+    """Get active subscription for a user"""
+    return subscriptions.find_one({
+        "user_id": user_id,
+        "subscription_status": "active"
+    })
+
+def get_organization_subscription(organization_id: str) -> Optional[Dict[str, Any]]:
+    """Get active subscription for an organization"""
+    return subscriptions.find_one({
+        "organization_id": organization_id,
+        "subscription_status": "active"
+    })
+
+def update_subscription_status(stripe_subscription_id: str, status: str) -> Optional[Dict[str, Any]]:
+    """Update subscription status"""
+    subscriptions.update_one(
+        {"stripe_subscription_id": stripe_subscription_id},
+        {
+            "$set": {
+                "subscription_status": status,
+                "updated_at": datetime.datetime.utcnow()
+            }
+        }
+    )
+    return get_subscription_by_stripe_id(stripe_subscription_id)
+
+def update_subscription_period(
+    stripe_subscription_id: str,
+    current_period_start: datetime.datetime,
+    current_period_end: datetime.datetime
+) -> Optional[Dict[str, Any]]:
+    """Update subscription period dates"""
+    subscriptions.update_one(
+        {"stripe_subscription_id": stripe_subscription_id},
+        {
+            "$set": {
+                "current_period_start": current_period_start,
+                "current_period_end": current_period_end,
+                "updated_at": datetime.datetime.utcnow()
+            }
+        }
+    )
+    return get_subscription_by_stripe_id(stripe_subscription_id)
 
 # Initialize database on module import
 init_db() 
