@@ -4,6 +4,7 @@ from fastapi.staticfiles import StaticFiles
 import os
 from dotenv import load_dotenv
 from routes.auth import router as auth_router
+from routes.user import router as user_router
 from fastapi.responses import JSONResponse
 from bson import ObjectId
 import json
@@ -157,6 +158,7 @@ app.include_router(payment_router, prefix="/payment", tags=["Payment Processing"
 available_features.append("Stripe Payment Processing")
 
 app.include_router(auth_router, prefix="/auth", tags=["auth"])
+app.include_router(user_router, prefix="/user", tags=["User Profile"])
 
 @app.get("/")
 def read_root():

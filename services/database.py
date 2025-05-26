@@ -19,6 +19,10 @@ MONGO_URI = os.getenv("MONGO_URI")
 client = pymongo.MongoClient(MONGO_URI)
 db = client.saas_chatbot_db
 
+def get_database():
+    """Return the database instance"""
+    return db
+
 # Collections
 organizations = db.organizations
 visitors = db.visitors
