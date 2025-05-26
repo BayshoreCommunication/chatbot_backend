@@ -12,6 +12,14 @@ router = APIRouter()
 # User session storage (in a real application, use Redis for temporary storage)
 user_sessions = {}
 
+# Add new ChatWidgetSettings model
+class ChatWidgetSettings(BaseModel):
+    name: str
+    selectedColor: str
+    leadCapture: bool
+    botBehavior: str
+    avatarUrl: Optional[str] = None
+
 class ChatRequest(BaseModel):
     question: str
     session_id: str
@@ -428,3 +436,58 @@ async def escalate(
     }
     
     return escalate_to_human(query, escalation_context)
+
+@router.post("/save-settings")
+async def save_chat_widget_settings(
+    settings: ChatWidgetSettings,
+    organization=Depends(get_organization_from_api_key)
+):
+    try:
+        # Update organization in MongoDB with chat widget settings
+        from services.database import db
+        result = db.organizations.update_one(
+            {"_id": organization["_id"]},
+            {"$set": {
+                "chat_widget_settings": settings.dict()
+            }}
+        )
+        
+        if result.modified_count == 0:
+            raise HTTPException(status_code=500, detail="Failed to save chat widget settings")
+            
+        return {
+            "status": "success",
+            "message": "Chat widget settings saved successfully"
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/settings")
+async def get_chat_widget_settings(
+    organization=Depends(get_organization_from_api_key)
+):
+    try:
+        # Get organization from MongoDB
+        from services.database import db
+        org = db.organizations.find_one({"_id": organization["_id"]})
+        
+        if not org or "chat_widget_settings" not in org:
+            return {
+                "status": "success",
+                "settings": {
+                    "name": "Bay AI",
+                    "selectedColor": "black",
+                    "leadCapture": True,
+                    "botBehavior": "2",
+                    "avatarUrl": None
+                }
+            }
+            
+        return {
+            "status": "success",
+            "settings": org["chat_widget_settings"]
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

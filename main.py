@@ -1,11 +1,13 @@
 from fastapi import FastAPI, Request, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 import os
 from dotenv import load_dotenv
 from routes.auth import router as auth_router
 from fastapi.responses import JSONResponse
 from bson import ObjectId
 import json
+from pathlib import Path
 
 class MongoJSONEncoder(json.JSONEncoder):
     def default(self, o):
@@ -59,6 +61,13 @@ except Exception as e:
     print(f"Warning: Database service failed to import: {e}")
     database_available = False
 
+try:
+    from routes.upload import router as upload_router
+    upload_available = True
+except Exception as e:
+    print(f"Warning: Upload router failed to import: {e}")
+    upload_available = False
+
 # API credentials are now hardcoded in the respective service files
 # But we still need to load environment variables for configuration
 load_dotenv()
@@ -70,12 +79,21 @@ app = FastAPI(
     version="1.0.0"
 )
 
+# Mount uploads directory for static file serving
+uploads_dir = Path("uploads")
+uploads_dir.mkdir(parents=True, exist_ok=True)
+app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
+
 # Configure CORS with more specific settings
 origins = [
-    "http://localhost:5173",
+    "http://localhost:5173",  # Vite dev server
     "http://127.0.0.1:5173",
     "http://localhost:3000",
     "http://127.0.0.1:3000",
+    "https://checkout.stripe.com",
+    "https://js.stripe.com",
+    "https://hooks.stripe.com",
+    "https://accounts.google.com"
 ]
 
 app.add_middleware(
@@ -84,6 +102,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"]
 )
 
 # Add security headers middleware
@@ -110,8 +129,11 @@ async def custom_json_middleware(request: Request, call_next):
 # Include available routers
 available_features = []
 
+if upload_available:
+    app.include_router(upload_router, prefix="/api/upload", tags=["upload"])
+
 if chatbot_available:
-    app.include_router(chatbot_router, prefix="/chatbot", tags=["Chatbot"])
+    app.include_router(chatbot_router, prefix="/api/chatbot", tags=["chatbot"])
     available_features.append("AI FAQ Bot with knowledge base")
 
 if lead_available:

@@ -21,11 +21,27 @@ async def get_organization_from_api_key(api_key: Optional[str] = Header(None, al
 async def register_organization(organization_data: OrganizationCreate):
     """Register a new organization and generate API key"""
     try:
+        print(f"Attempting to register organization with data: {organization_data}")
+        
+        if not organization_data.user_id:
+            raise HTTPException(status_code=422, detail="user_id is required")
+            
         # Check if user already has an organization
         existing_org = get_organization_by_user_id(organization_data.user_id)
         if existing_org:
-            raise HTTPException(status_code=400, detail="User already has an organization")
+            print(f"Found existing organization for user {organization_data.user_id}")
+            # Convert ObjectId to string if present
+            if "_id" in existing_org:
+                existing_org["_id"] = str(existing_org["_id"])
             
+            # Return the existing organization
+            return {
+                "status": "success",
+                "message": "Found existing organization",
+                "organization": existing_org
+            }
+        
+        print(f"Creating new organization for user {organization_data.user_id}")
         org = create_organization(
             name=organization_data.name,
             subscription_tier=organization_data.subscription_tier,
@@ -33,29 +49,22 @@ async def register_organization(organization_data: OrganizationCreate):
             stripe_subscription_id=organization_data.stripe_subscription_id if organization_data.stripe_subscription_id else None
         )
         
-        # Return the organization with API key
-        response_org = {
-            "id": org["id"],
-            "name": org["name"],
-            "api_key": org["api_key"],
-            "subscription_tier": org["subscription_tier"],
-            "subscription_status": org["subscription_status"],
-            "pinecone_namespace": org["pinecone_namespace"],
-            "user_id": org["user_id"]
-        }
+        print(f"Created organization: {org}")
         
-        # Only include stripe_subscription_id if it exists
-        if "stripe_subscription_id" in org:
-            response_org["stripe_subscription_id"] = org["stripe_subscription_id"]
+        # Convert ObjectId to string if present
+        if "_id" in org:
+            org["_id"] = str(org["_id"])
         
         return {
             "status": "success",
             "message": "Organization registered successfully",
-            "organization": response_org
+            "organization": org
         }
     except HTTPException as e:
+        print(f"HTTP Exception in register_organization: {str(e)}")
         raise e
     except Exception as e:
+        print(f"Error in register_organization: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/me")
@@ -301,4 +310,26 @@ async def get_organization_usage(organization=Depends(get_organization_from_api_
                 "last_updated": datetime.now().isoformat(),
                 "error": f"General error: {str(e)}"
             }
-        } 
+        }
+
+@router.get("/user/{user_id}")
+async def get_organization_by_user(user_id: str):
+    """Get organization by user ID"""
+    try:
+        print(f"Fetching organization for user: {user_id}")
+        
+        # Use the database service function
+        organization = get_organization_by_user_id(user_id)
+        print(f"Found organization: {organization}")
+        
+        if not organization:
+            print(f"No organization found for user: {user_id}")
+            raise HTTPException(status_code=404, detail=f"No organization found for user: {user_id}")
+        
+        # Convert ObjectId to string
+        organization["_id"] = str(organization["_id"])
+        
+        return organization
+    except Exception as e:
+        print(f"Error fetching organization: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e)) 

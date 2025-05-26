@@ -28,6 +28,8 @@ class CheckoutSessionRequest(BaseModel):
     successUrl: str
     cancelUrl: str
     customerEmail: str = None
+    planId: str
+    organizationId: str  # Add organization ID to request
 
 class VerifySessionRequest(BaseModel):
     sessionId: str
@@ -79,6 +81,10 @@ async def create_checkout_session(request: CheckoutSessionRequest):
             cancel_url=request.cancelUrl,
             customer_email=request.customerEmail,
             allow_promotion_codes=True,
+            metadata={
+                'organization_id': request.organizationId,
+                'plan_id': request.planId
+            }
         )
         
         print(f"Session created successfully: {session.id}")
@@ -106,6 +112,11 @@ async def verify_session(request: VerifySessionRequest):
             subscription = stripe.Subscription.retrieve(session.subscription)
             print(f"Subscription ID: {subscription.id}")
             
+            # Get organization ID from session metadata
+            organization_id = session.metadata.get('organization_id')
+            if not organization_id:
+                raise HTTPException(status_code=400, detail="No organization ID found in session metadata")
+            
             # Check if subscription already exists in database
             existing_subscription = get_subscription_by_stripe_id(subscription.id)
             if existing_subscription:
@@ -122,7 +133,6 @@ async def verify_session(request: VerifySessionRequest):
             print(f"Customer email: {customer_email}")
             
             # Get price information from the subscription's first item
-            # List all subscription items
             items = stripe.SubscriptionItem.list(subscription=subscription.id)
             print(f"Found {len(items.data)} subscription items")
             
@@ -140,7 +150,7 @@ async def verify_session(request: VerifySessionRequest):
             print(f"Payment amount: ${payment_amount}")
             print(f"Subscription tier: {subscription_tier}")
             
-            # Update user subscription status in database
+            # Get user by email
             user = get_user_by_email(customer_email)
             print(f"Found user: {user}")
             if not user:
@@ -153,20 +163,14 @@ async def verify_session(request: VerifySessionRequest):
             })
             print(f"Updated user subscription status")
             
-            # Get organization and update subscription ID
-            organization = get_organization_by_user_id(user["id"])
-            print(f"Found organization: {organization}")
-            if not organization:
-                raise HTTPException(status_code=404, detail="Organization not found")
-
             # Update organization subscription
-            update_organization_subscription(organization["id"], subscription.id)
+            update_organization_subscription(organization_id, subscription.id)
             print(f"Updated organization subscription")
             
             # Create subscription record
             subscription_data = {
                 "user_id": user["id"],
-                "organization_id": organization["id"],
+                "organization_id": organization_id,
                 "stripe_subscription_id": subscription.id,
                 "payment_amount": payment_amount,
                 "subscription_tier": subscription_tier,
@@ -240,15 +244,17 @@ async def get_subscription(subscription_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail="Internal server error")
 
-
 @router.get("/user-subscription/{user_id}")
 async def get_user_subscription_data(user_id: str):
-    """Get subscription data for a specific user"""
+    """Get the most recent subscription data for a specific user"""
     try:
-        print(f"Fetching subscription for user: {user_id}")
+        print(f"Fetching most recent subscription for user: {user_id}")
         
-        # Direct MongoDB query (synchronous operation)
-        subscription = db.subscriptions.find_one({"user_id": user_id})
+        # Direct MongoDB query with sorting by created_at in descending order
+        subscription = db.subscriptions.find_one(
+            {"user_id": user_id},
+            sort=[("created_at", -1)]  # Sort by created_at in descending order
+        )
         print(f"Found subscription: {subscription}")
         
         if not subscription:
