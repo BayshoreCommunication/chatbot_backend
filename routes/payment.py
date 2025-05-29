@@ -41,51 +41,66 @@ async def create_checkout_session(request: CheckoutSessionRequest):
         # Debug: Print API key status
         print(f"Stripe API key set: {stripe.api_key[:20] + '...' if stripe.api_key else 'None'}")
         
-        # Map price IDs to amounts
+        # Map price IDs to amounts and intervals
         price_map = {
-            'price_starter_test': 2900,  # $29.00
-            'price_professional_test': 7900,  # $79.00
-            'price_enterprise_test': 19900,  # $199.00
+            'price_monthly': 4900,  # $49.00
+            'price_trial': 4900,    # $49.00 (charged after trial)
+            'price_yearly': 49900,  # $499.00
         }
         
         plan_names = {
-            'price_starter_test': 'AI Assistant - Starter Plan',
-            'price_professional_test': 'AI Assistant - Professional Plan', 
-            'price_enterprise_test': 'AI Assistant - Enterprise Plan',
+            'price_monthly': 'AI Assistant - Monthly Plan',
+            'price_trial': 'AI Assistant - Trial Plan',
+            'price_yearly': 'AI Assistant - Yearly Plan',
+        }
+
+        plan_intervals = {
+            'price_monthly': 'month',
+            'price_trial': 'month',
+            'price_yearly': 'year',
         }
         
-        amount = price_map.get(request.priceId, 2900)
+        amount = price_map.get(request.priceId, 4900)
         plan_name = plan_names.get(request.priceId, 'AI Assistant Subscription')
+        interval = plan_intervals.get(request.priceId, 'month')
         
-        print(f"Creating session for {plan_name} - ${amount/100}")
+        print(f"Creating session for {plan_name} - ${amount/100} per {interval}")
         
         # Create checkout session with dynamic pricing
-        session = stripe.checkout.Session.create(
-            payment_method_types=['card'],
-            line_items=[{
+        session_params = {
+            'payment_method_types': ['card'],
+            'line_items': [{
                 'price_data': {
                     'currency': 'usd',
                     'product_data': {
                         'name': plan_name,
-                        'description': f'Monthly subscription to {plan_name}',
+                        'description': f'Subscription to {plan_name}',
                     },
                     'unit_amount': amount,
                     'recurring': {
-                        'interval': 'month',
+                        'interval': interval,
                     },
                 },
                 'quantity': 1,
             }],
-            mode='subscription',
-            success_url=request.successUrl + '?session_id={CHECKOUT_SESSION_ID}',
-            cancel_url=request.cancelUrl,
-            customer_email=request.customerEmail,
-            allow_promotion_codes=True,
-            metadata={
+            'mode': 'subscription',
+            'success_url': request.successUrl + '?session_id={CHECKOUT_SESSION_ID}',
+            'cancel_url': request.cancelUrl,
+            'customer_email': request.customerEmail,
+            'allow_promotion_codes': True,
+            'metadata': {
                 'organization_id': request.organizationId,
                 'plan_id': request.planId
             }
-        )
+        }
+
+        # Add trial period for trial plan
+        if request.priceId == 'price_trial':
+            session_params['subscription_data'] = {
+                'trial_period_days': 30,
+            }
+        
+        session = stripe.checkout.Session.create(**session_params)
         
         print(f"Session created successfully: {session.id}")
         return {"sessionId": session.id}
