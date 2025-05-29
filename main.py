@@ -25,11 +25,18 @@ except Exception as e:
     chatbot_available = False
 
 try:
-    from routes.train_ai import router as train_ai_router
-    train_ai_available = True
+    from routes.faq import router as faq_router
+    faq_available = True
 except Exception as e:
-    print(f"Warning: Train AI router failed to import: {e}")
-    train_ai_available = False
+    print(f"Warning: FAQ router failed to import: {e}")
+    faq_available = False
+
+try:
+    from routes.instantReply import router as instant_reply_router
+    instant_reply_available = True
+except Exception as e:
+    print(f"Warning: Instant Reply router failed to import: {e}")
+    instant_reply_available = False
 
 try:
     from routes.lead import router as lead_router
@@ -144,9 +151,13 @@ if chatbot_available:
     app.include_router(chatbot_router, prefix="/api/chatbot", tags=["chatbot"])
     available_features.append("AI FAQ Bot with knowledge base")
 
-if train_ai_available:
-    app.include_router(train_ai_router, prefix="/api/train-ai", tags=["Train AI"])
-    available_features.append("AI Training and Configuration")
+if faq_available:
+    app.include_router(faq_router, prefix="/api/faq", tags=["FAQ Management"])
+    available_features.append("FAQ Management System")
+
+if instant_reply_available:
+    app.include_router(instant_reply_router, prefix="/api/instant-reply", tags=["Instant Reply"])
+    available_features.append("Instant Reply Configuration")
 
 if lead_available:
     app.include_router(lead_router, prefix="/lead", tags=["Lead Management"])

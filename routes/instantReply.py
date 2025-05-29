@@ -10,7 +10,7 @@ class InstantReplyUpdate(BaseModel):
     message: str
     isActive: bool
 
-@router.post("/instant-reply")
+@router.post("/")
 async def set_instant_reply(
     x_api_key: str = Header(...),
     data: InstantReplyUpdate = Body(...)
@@ -57,7 +57,7 @@ async def set_instant_reply(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.get("/instant-reply")
+@router.get("/")
 async def get_instant_reply(x_api_key: str = Header(...)):
     try:
         org = get_organization_by_api_key(x_api_key)
@@ -88,7 +88,7 @@ async def get_instant_reply(x_api_key: str = Header(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.delete("/instant-reply")
+@router.delete("/")
 async def delete_instant_reply(x_api_key: str = Header(...)):
     try:
         org = get_organization_by_api_key(x_api_key)
