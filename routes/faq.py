@@ -1,5 +1,6 @@
 from fastapi import APIRouter, HTTPException, Depends, Body, Header
 from services.database import db, get_organization_by_api_key
+from services.pinecone.faq_vectors import upsert_faq_embedding, delete_faq_embedding
 from typing import Optional, List
 from pydantic import BaseModel
 import pymongo
@@ -61,7 +62,18 @@ async def create_faq(
     result = faq_collection.insert_one(faq_data)
     
     if result.inserted_id:
-        faq_data["id"] = str(result.inserted_id)
+        faq_id = str(result.inserted_id)
+        faq_data["id"] = faq_id
+        
+        # Create vector embedding for the FAQ
+        namespace = organization.get("pinecone_namespace", "")
+        await upsert_faq_embedding(
+            faq_id=faq_id,
+            question=faq.question,
+            org_id=org_id,
+            namespace=namespace
+        )
+        
         return faq_data
     
     raise HTTPException(status_code=500, detail="Failed to create FAQ")
@@ -146,6 +158,16 @@ async def update_faq(
         if not result:
             raise HTTPException(status_code=500, detail="Failed to update FAQ")
         
+        # Update vector embedding if question changed
+        if faq.question != existing_faq.get("question"):
+            namespace = organization.get("pinecone_namespace", "")
+            await upsert_faq_embedding(
+                faq_id=faq_id,
+                question=faq.question,
+                org_id=org_id,
+                namespace=namespace
+            )
+        
         result["id"] = str(result.pop("_id"))
         return result
         
@@ -171,6 +193,10 @@ async def delete_faq(
         
         if result.deleted_count == 0:
             raise HTTPException(status_code=404, detail="FAQ not found")
+        
+        # Delete vector embedding
+        namespace = organization.get("pinecone_namespace", "")
+        await delete_faq_embedding(faq_id=faq_id, namespace=namespace)
         
         return {"status": "success", "message": "FAQ deleted successfully"}
         

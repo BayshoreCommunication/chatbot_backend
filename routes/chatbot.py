@@ -8,11 +8,15 @@ import os
 from pydantic import BaseModel
 from datetime import datetime
 import pymongo
+from services.faq_matcher import find_matching_faq, get_suggested_faqs
+from services.langchain.user_management import handle_name_collection, handle_email_collection
+import re
+import openai
 
 router = APIRouter()
 
 # Initialize instant replies collection and indexes
-instant_replies = db.instant_replies
+instant_replies = db.instant_reply
 instant_replies.create_index("org_id")
 instant_replies.create_index([("org_id", pymongo.ASCENDING), ("is_active", pymongo.ASCENDING)])
 
@@ -21,12 +25,14 @@ user_sessions = {}
 
 def is_first_message(org_id: str, session_id: str) -> bool:
     """Check if this is the first message in the conversation"""
-    conversation = db.conversations.find_one({
+    # Get count of all conversations for this session
+    conversations_count = db.conversations.count_documents({
         "organization_id": org_id,
-        "session_id": session_id,
-        "role": "user"
+        "session_id": session_id
     })
-    return conversation is None
+    
+    print(f"[DEBUG] Found {conversations_count} previous messages")
+    return conversations_count == 0
 
 # Add new ChatWidgetSettings model
 class ChatWidgetSettings(BaseModel):
@@ -62,38 +68,103 @@ async def ask_question(
     request: ChatRequest, 
     organization=Depends(get_organization_from_api_key)
 ):
-    # Get organization ID
+    """Process a chat message and return a response"""
     org_id = organization["id"]
-    org_api_key = organization["api_key"]
-    org_namespace = organization.get("pinecone_namespace", "")
-    
-    print(f"Processing request for organization: {org_id}")
-    print(f"Organization API key: {org_api_key[:8]}...")
-    print(f"Organization namespace: {org_namespace}")
-    
-    # Check if this is the first message and if instant reply is enabled
-    if is_first_message(org_id, request.session_id):
-        instant_reply = db.instant_reply.find_one({
-            "organization_id": org_id,
-            "type": "instant_reply",
-            "isActive": True
-        })
-        
-        if instant_reply and "message" in instant_reply:
-            # Get or create visitor
-            visitor = create_or_update_visitor(
-                organization_id=org_id,
-                session_id=request.session_id,
-                visitor_data={
-                    "last_active": None,
-                    "metadata": {
-                        "mode": request.mode,
-                        "user_data": request.user_data
-                    }
+    org_api_key = organization.get("api_key")
+    namespace = organization.get("pinecone_namespace", "")
+
+    try:
+        print(f"[DEBUG] Processing message: {request.question}")
+        print(f"[DEBUG] Session ID: {request.session_id}")
+
+        # Check if this is the first message BEFORE creating any records
+        is_first = is_first_message(org_id, request.session_id)
+        print(f"[DEBUG] Is first message: {is_first}")
+
+        # Get or create visitor
+        visitor = create_or_update_visitor(
+            organization_id=org_id,
+            session_id=request.session_id,
+            visitor_data={
+                "last_active": None,
+                "metadata": {
+                    "mode": request.mode,
+                    "user_data": request.user_data
                 }
-            )
+            }
+        )
+
+        # Initialize or get existing session data
+        if not request.user_data:
+            request.user_data = {}
+        
+        # Get previous conversations from MongoDB and initialize history
+        previous_conversations = get_conversation_history(org_id, request.session_id)
+        print(f"[DEBUG] Previous conversations count: {len(previous_conversations)}")
+        
+        # Always initialize conversation history from MongoDB
+        request.user_data["conversation_history"] = []
+        for msg in previous_conversations:
+            if "role" in msg and "content" in msg:
+                request.user_data["conversation_history"].append({
+                    "role": msg["role"],
+                    "content": msg["content"]
+                })
+
+        # Get user profile
+        user_profile = get_user_profile(org_id, request.session_id)
+        if user_profile and "profile_data" in user_profile:
+            request.user_data.update(user_profile["profile_data"])
+            request.user_data["returning_user"] = True
+
+        if is_first:
+            print("[DEBUG] Checking for instant reply")
+            instant_reply = instant_replies.find_one({
+                "organization_id": org_id,
+                "type": "instant_reply",
+                "isActive": True
+            })
+            print(f"[DEBUG] Found instant reply: {instant_reply}")
             
-            # Store the user's first message
+            if instant_reply:
+                print("[DEBUG] Processing instant reply")
+                # Store the user's first message
+                add_conversation_message(
+                    organization_id=org_id,
+                    visitor_id=visitor["id"],
+                    session_id=request.session_id,
+                    role="user",
+                    content=request.question,
+                    metadata={"mode": "faq"}
+                )
+                request.user_data["conversation_history"].append({
+                    "role": "user",
+                    "content": request.question
+                })
+
+                # Store the instant reply
+                add_conversation_message(
+                    organization_id=org_id,
+                    visitor_id=visitor["id"],
+                    session_id=request.session_id,
+                    role="assistant",
+                    content=instant_reply["message"],
+                    metadata={"mode": "faq", "type": "instant_reply"}
+                )
+                request.user_data["conversation_history"].append({
+                    "role": "assistant",
+                    "content": instant_reply["message"]
+                })
+
+                print("[DEBUG] Returning instant reply")
+                return {
+                    "answer": instant_reply["message"],
+                    "mode": "faq",
+                    "language": "en",
+                    "user_data": request.user_data
+                }
+        else:
+            # Add current user message to history if not first message
             add_conversation_message(
                 organization_id=org_id,
                 visitor_id=visitor["id"],
@@ -102,222 +173,379 @@ async def ask_question(
                 content=request.question,
                 metadata={"mode": request.mode}
             )
+            request.user_data["conversation_history"].append({
+                "role": "user",
+                "content": request.question
+            })
+
+        print("[DEBUG] Checking user information collection")
+        # Check if we need to collect user information
+        if "name" not in request.user_data or not request.user_data["name"]:
+            print("[DEBUG] Name not found, processing name collection")
+            # Use OpenAI to validate and extract name
+            name_extraction_prompt = f"""
+            Extract the person's name from the following text or detect if they are refusing to share their name.
             
-            # Store the instant reply
+            Text: "{request.question}"
+            
+            Rules:
+            1. If you find a name, return only the name
+            2. If the person is refusing to share their name (using words like "skip", "no", "don't want to", "won't", "refuse", etc.), return "REFUSED"
+            3. If no clear name or refusal is found, return "NO_NAME"
+            
+            Examples:
+            "My name is John" -> John
+            "I don't want to share my name" -> REFUSED
+            "skip this" -> REFUSED
+            "hello there" -> NO_NAME
+            """
+            
+            try:
+                name_response = openai.chat.completions.create(
+                    model="gpt-3.5-turbo",
+                    messages=[{"role": "user", "content": name_extraction_prompt}],
+                    max_tokens=20,
+                    temperature=0.1
+                )
+                
+                extracted_name = name_response.choices[0].message.content.strip()
+                print(f"[DEBUG] Extracted name response: {extracted_name}")
+                
+                if extracted_name == "REFUSED":
+                    print("[DEBUG] User refused to share name")
+                    request.user_data["name"] = "Anonymous User"
+                    save_user_profile(org_id, request.session_id, request.user_data)
+                    
+                    # Ask for email politely
+                    email_prompt = "That's perfectly fine! Would you mind sharing your email address so we can better assist you? You can also skip this if you prefer."
+                    
+                    # Store and add to history
+                    add_conversation_message(
+                        organization_id=org_id,
+                        visitor_id=visitor["id"],
+                        session_id=request.session_id,
+                        role="assistant",
+                        content=email_prompt,
+                        metadata={"mode": "faq"}
+                    )
+                    request.user_data["conversation_history"].append({
+                        "role": "assistant",
+                        "content": email_prompt
+                    })
+                    
+                    return {
+                        "answer": email_prompt,
+                        "mode": "faq",
+                        "language": "en",
+                        "user_data": request.user_data
+                    }
+                elif extracted_name != "NO_NAME":
+                    print("[DEBUG] Valid name found")
+                    request.user_data["name"] = extracted_name
+                    save_user_profile(org_id, request.session_id, request.user_data)
+                    
+                    # Ask for email
+                    email_prompt = f"Nice to meet you, {extracted_name}! Would you mind sharing your email address? You can skip this if you prefer."
+                    
+                    # Store and add to history
+                    add_conversation_message(
+                        organization_id=org_id,
+                        visitor_id=visitor["id"],
+                        session_id=request.session_id,
+                        role="assistant",
+                        content=email_prompt,
+                        metadata={"mode": "faq"}
+                    )
+                    request.user_data["conversation_history"].append({
+                        "role": "assistant",
+                        "content": email_prompt
+                    })
+                    
+                    return {
+                        "answer": email_prompt,
+                        "mode": "faq",
+                        "language": "en",
+                        "user_data": request.user_data
+                    }
+                else:
+                    print("[DEBUG] No valid name found")
+                    name_prompt = "Before proceeding, could you please tell me your name? You can skip this if you prefer not to share."
+                    
+                    # Store and add to history
+                    add_conversation_message(
+                        organization_id=org_id,
+                        visitor_id=visitor["id"],
+                        session_id=request.session_id,
+                        role="assistant",
+                        content=name_prompt,
+                        metadata={"mode": "faq"}
+                    )
+                    request.user_data["conversation_history"].append({
+                        "role": "assistant",
+                        "content": name_prompt
+                    })
+                    
+                    return {
+                        "answer": name_prompt,
+                        "mode": "faq",
+                        "language": "en",
+                        "user_data": request.user_data
+                    }
+                    
+            except Exception as e:
+                print(f"[DEBUG] Error in AI name extraction: {str(e)}")
+                return handle_name_collection(request.question, request.user_data, "faq", "en")
+                
+        elif "email" not in request.user_data or not request.user_data["email"]:
+            # Use OpenAI to validate and extract email
+            email_extraction_prompt = f"""
+            Extract and validate an email address from the following text or detect refusal.
+            
+            Text: "{request.question}"
+            
+            Rules:
+            1. If you find a valid email (format: username@domain.tld), return only the email
+            2. If the person is refusing or wants to skip (using words like "skip", "no", "don't want to", "won't", "refuse", etc.), return "REFUSED"
+            3. If no valid email or clear refusal is found, return "INVALID"
+            """
+            
+            try:
+                email_response = openai.chat.completions.create(
+                    model="gpt-3.5-turbo",
+                    messages=[{"role": "user", "content": email_extraction_prompt}],
+                    max_tokens=20,
+                    temperature=0.1
+                )
+                
+                extracted_email = email_response.choices[0].message.content.strip()
+                print(f"[DEBUG] Extracted email response: {extracted_email}")
+                
+                if "@" in extracted_email and "." in extracted_email:
+                    request.user_data["email"] = extracted_email
+                    save_user_profile(org_id, request.session_id, request.user_data)
+                    
+                    welcome = f"Thank you{' ' + request.user_data['name'] if request.user_data.get('name') and request.user_data['name'] != 'Anonymous User' else ''}! How can I assist you today?"
+                    
+                    # Store and add to history
+                    add_conversation_message(
+                        organization_id=org_id,
+                        visitor_id=visitor["id"],
+                        session_id=request.session_id,
+                        role="assistant",
+                        content=welcome,
+                        metadata={"mode": "faq"}
+                    )
+                    request.user_data["conversation_history"].append({
+                        "role": "assistant",
+                        "content": welcome
+                    })
+                    
+                    return {
+                        "answer": welcome,
+                        "mode": "faq",
+                        "language": "en",
+                        "user_data": request.user_data
+                    }
+                elif extracted_email == "REFUSED":
+                    request.user_data["email"] = "anonymous@user.com"
+                    save_user_profile(org_id, request.session_id, request.user_data)
+                    
+                    welcome = f"No problem at all{' ' + request.user_data['name'] if request.user_data.get('name') and request.user_data['name'] != 'Anonymous User' else ''}! How can I assist you today?"
+                    
+                    # Store and add to history
+                    add_conversation_message(
+                        organization_id=org_id,
+                        visitor_id=visitor["id"],
+                        session_id=request.session_id,
+                        role="assistant",
+                        content=welcome,
+                        metadata={"mode": "faq"}
+                    )
+                    request.user_data["conversation_history"].append({
+                        "role": "assistant",
+                        "content": welcome
+                    })
+                    
+                    return {
+                        "answer": welcome,
+                        "mode": "faq",
+                        "language": "en",
+                        "user_data": request.user_data
+                    }
+                else:
+                    email_prompt = "Please provide a valid email address or just type 'skip' if you prefer not to share."
+                    
+                    # Store and add to history
+                    add_conversation_message(
+                        organization_id=org_id,
+                        visitor_id=visitor["id"],
+                        session_id=request.session_id,
+                        role="assistant",
+                        content=email_prompt,
+                        metadata={"mode": "faq"}
+                    )
+                    request.user_data["conversation_history"].append({
+                        "role": "assistant",
+                        "content": email_prompt
+                    })
+                    
+                    return {
+                        "answer": email_prompt,
+                        "mode": "faq",
+                        "language": "en",
+                        "user_data": request.user_data
+                    }
+
+            except Exception as e:
+                print(f"[DEBUG] Error in AI email validation: {str(e)}")
+                # Fall back to regex validation
+                email_match = re.search(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}", request.question)
+                if email_match or request.question.lower() in ["skip", "no", "pass"]:
+                    if email_match:
+                        request.user_data["email"] = email_match.group(0)
+                    else:
+                        request.user_data["email"] = "anonymous@user.com"
+                    
+                    save_user_profile(org_id, request.session_id, request.user_data)
+                    
+                    welcome = f"Thank you{' ' + request.user_data['name'] if request.user_data.get('name') and request.user_data['name'] != 'Anonymous User' else ''}! How can I assist you today?"
+                    
+                    # Store and add to history
+                    add_conversation_message(
+                        organization_id=org_id,
+                        visitor_id=visitor["id"],
+                        session_id=request.session_id,
+                        role="assistant",
+                        content=welcome,
+                        metadata={"mode": "faq"}
+                    )
+                    request.user_data["conversation_history"].append({
+                        "role": "assistant",
+                        "content": welcome
+                    })
+                    
+                    return {
+                        "answer": welcome,
+                        "mode": "faq",
+                        "language": "en",
+                        "user_data": request.user_data
+                    }
+
+        # Try to find matching FAQ only after user info is collected
+        matching_faq = await find_matching_faq(
+            query=request.question,
+            org_id=org_id,
+            namespace=namespace
+        )
+
+        # If we found a good FAQ match, return it
+        if matching_faq:
+            # Store the user's message
+            add_conversation_message(
+                organization_id=org_id,
+                visitor_id=visitor["id"],
+                session_id=request.session_id,
+                role="user",
+                content=request.question,
+                metadata={"mode": "faq"}
+            )
+
+            # Store the FAQ response
             add_conversation_message(
                 organization_id=org_id,
                 visitor_id=visitor["id"],
                 session_id=request.session_id,
                 role="assistant",
-                content=instant_reply["message"],
-                metadata={"mode": request.mode, "type": "instant_reply"}
-            )
-            
-            # Return the instant reply response
-            return {
-                "answer": instant_reply["message"],
-                "mode": request.mode,
-                "language": "en",
-                "user_data": {
-                    "conversation_history": [
-                        {"role": "user", "content": request.question},
-                        {"role": "assistant", "content": instant_reply["message"]}
-                    ]
+                content=matching_faq["response"],
+                metadata={
+                    "mode": "faq",
+                    "type": "faq_match",
+                    "faq_id": matching_faq["id"],
+                    "similarity_score": matching_faq["similarity_score"]
                 }
+            )
+
+            # Update conversation history
+            request.user_data["conversation_history"].extend([
+                {"role": "user", "content": request.question},
+                {"role": "assistant", "content": matching_faq["response"]}
+            ])
+
+            # Get suggested FAQs for follow-up
+            suggested_faqs = await get_suggested_faqs(org_id)
+
+            return {
+                "answer": matching_faq["response"],
+                "mode": "faq",
+                "language": "en",
+                "user_data": request.user_data,
+                "suggested_faqs": suggested_faqs
             }
-    
-    # Get previous conversations from MongoDB
-    previous_conversations = get_conversation_history(org_id, request.session_id)
-    
-    # Get or create visitor
-    visitor = create_or_update_visitor(
-        organization_id=org_id,
-        session_id=request.session_id,
-        visitor_data={
-            "last_active": None,  # MongoDB will set this
-            "metadata": {
-                "mode": request.mode,
-                "user_data": request.user_data
-            }
-        }
-    )
-    
-    # Convert MongoDB conversations to desired format for client
-    formatted_history = []
-    for msg in previous_conversations:
-        if "role" in msg and "content" in msg:
-            formatted_history.append({
-                "role": msg.get("role"),
-                "content": msg.get("content")
-            })
-    
-    # Get user profile from dedicated collection
-    user_profile = get_user_profile(org_id, request.session_id)
-    profile_data = {}
-    
-    if user_profile and "profile_data" in user_profile:
-        profile_data = user_profile["profile_data"]
-        print(f"Found existing user profile: {profile_data}")
-    
-    # Initialize user_data if not provided
-    if not request.user_data:
-        request.user_data = {}
-    
-    # Merge profile data with request user_data (request takes precedence)
-    merged_user_data = {**profile_data, **request.user_data}
-    
-    # Add conversation history to user_data - Use only MongoDB history, don't add to user_data yet
-    merged_user_data["conversation_history"] = formatted_history
-    
-    # Add indicator for returning users
-    if "name" in merged_user_data and merged_user_data["name"]:
-        merged_user_data["returning_user"] = True
-        print(f"Recognized returning user: {merged_user_data['name']}")
-    
-    # Get or create session (in-memory for now)
-    session_key = f"{org_id}:{request.session_id}"
-    session = user_sessions.get(session_key, {
-        "user_data": merged_user_data,
-        "current_mode": request.mode
-    })
-    
-    # Update user session with merged data but keep original conversation history
-    session["user_data"] = merged_user_data
-    
-    # Update user session
-    user_sessions[session_key] = session
-    
-    # Print debugging info about the question
-    print(f"Question: '{request.question}'")
-    if "unique identifier" in request.question.lower() or "test-doc" in request.question.lower():
-        print(f"UNIQUE IDENTIFIER QUESTION DETECTED!")
-    
-    # Prepare context for the bot to understand returning users
-    user_context = ""
-    if "name" in session["user_data"] and session["user_data"]["name"]:
-        user_context = f"The user's name is {session['user_data']['name']}. "
-    if "email" in session["user_data"] and session["user_data"]["email"]:
-        user_context += f"The user's email is {session['user_data']['email']}. "
-    
-    # If we have user context, modify the question to include it
-    enhanced_query = request.question
-    if user_context and "returning_user" in session["user_data"] and session["user_data"]["returning_user"]:
-        print(f"Adding user context to query: {user_context}")
-        enhanced_query = f"{user_context}The user, who you already know, asks: {request.question}"
-    
-    # Get response based on mode
-    response = ask_bot(
-        query=enhanced_query,  # Use enhanced query with user context
-        mode=session["current_mode"],
-        user_data=session["user_data"],  # Pass existing user data with conversation history
-        available_slots=request.available_slots,
-        session_id=request.session_id,
-        api_key=org_api_key
-    )
-    
-    # Check if we received an error response
-    if "status" in response and response["status"] == "error":
+
+        # If no FAQ match, proceed with normal chatbot flow
+        # Prepare context for the bot
+        user_context = ""
+        if "name" in request.user_data and request.user_data["name"]:
+            user_context = f"The user's name is {request.user_data['name']}. "
+        if "email" in request.user_data and request.user_data["email"]:
+            user_context += f"The user's email is {request.user_data['email']}. "
+
+        # Enhance query with user context if needed
+        enhanced_query = request.question
+        if user_context and request.user_data.get("returning_user"):
+            enhanced_query = f"{user_context}The user, who you already know, asks: {request.question}"
+
+        response = await ask_bot(
+            query=enhanced_query,
+            mode=request.mode,
+            user_data=request.user_data,
+            available_slots=request.available_slots,
+            session_id=request.session_id,
+            api_key=org_api_key
+        )
+
+        # Store messages in MongoDB
+        add_conversation_message(
+            organization_id=org_id,
+            visitor_id=visitor["id"],
+            session_id=request.session_id,
+            role="user",
+            content=request.question,
+            metadata={"mode": request.mode}
+        )
+
+        add_conversation_message(
+            organization_id=org_id,
+            visitor_id=visitor["id"],
+            session_id=request.session_id,
+            role="assistant",
+            content=response["answer"],
+            metadata={"mode": request.mode}
+        )
+
+        # Update conversation history
+        request.user_data["conversation_history"].extend([
+            {"role": "user", "content": request.question},
+            {"role": "assistant", "content": response["answer"]}
+        ])
+
+        # Get suggested FAQs
+        suggested_faqs = await get_suggested_faqs(org_id)
+        response["suggested_faqs"] = suggested_faqs
+        response["user_data"] = request.user_data
+
         return response
-    
-    # Store in MongoDB - Only store in MongoDB, not in session
-    add_conversation_message(
-        organization_id=org_id,
-        visitor_id=visitor["id"],
-        session_id=request.session_id,
-        role="user",
-        content=request.question,
-        metadata={"mode": session["current_mode"]}
-    )
-    
-    add_conversation_message(
-        organization_id=org_id,
-        visitor_id=visitor["id"],
-        session_id=request.session_id,
-        role="assistant",
-        content=response["answer"],
-        metadata={"mode": session["current_mode"]}
-    )
-    
-    # Check if the user data contains important profile information
-    profile_keys = ["name", "email", "phone", "preferences"]
-    profile_updated = False
-    profile_to_save = {}
-    
-    # Extract profile data from user_data
-    for key in profile_keys:
-        if key in session["user_data"] and session["user_data"][key]:
-            profile_updated = True
-            profile_to_save[key] = session["user_data"][key]
-    
-    # Update profile if needed
-    if profile_updated or (response.get("user_data") and any(key in response["user_data"] for key in profile_keys)):
-        # Add additional profile data from response
-        if "user_data" in response:
-            for key in profile_keys:
-                if key in response["user_data"] and response["user_data"][key]:
-                    profile_to_save[key] = response["user_data"][key]
-        
-        # Save profile to dedicated collection
-        if profile_to_save:
-            save_user_profile(org_id, request.session_id, profile_to_save)
-            print(f"Saved user profile: {profile_to_save}")
-    
-    # Update session user data if provided in response
-    if "user_data" in response:
-        # Get fresh conversation history from MongoDB after adding new messages
-        fresh_conversations = get_conversation_history(org_id, request.session_id)
-        fresh_formatted_history = []
-        for msg in fresh_conversations:
-            if "role" in msg and "content" in msg:
-                fresh_formatted_history.append({
-                    "role": msg.get("role"),
-                    "content": msg.get("content")
-                })
-        
-        # Update the user data from the response
-        session["user_data"].update(response["user_data"])
-        
-        # Replace the conversation history with the fresh one from MongoDB
-        session["user_data"]["conversation_history"] = fresh_formatted_history
-        
-        # Update visitor data
-        update_visitor_data = {
-            "metadata": {
-                "mode": session["current_mode"],
-                "user_data": session["user_data"]
-            }
-        }
-        create_or_update_visitor(org_id, request.session_id, update_visitor_data)
-    
-    # Update session mode if it changed
-    if "mode" in response and response["mode"] != session["current_mode"]:
-        session["current_mode"] = response["mode"]
-    
-    # Get fresh conversation history for the response
-    fresh_conversations = get_conversation_history(org_id, request.session_id)
-    fresh_formatted_history = []
-    for msg in fresh_conversations:
-        if "role" in msg and "content" in msg:
-            fresh_formatted_history.append({
-                "role": msg.get("role"),
-                "content": msg.get("content")
-            })
-    
-    # Use the fresh conversation history in the response
-    if "user_data" not in response:
-        response["user_data"] = {}
-    
-    response["user_data"]["conversation_history"] = fresh_formatted_history
-    
-    return response
+
+    except Exception as e:
+        print(f"Error processing chat message: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/history/{session_id}")
 async def get_chat_history(
     session_id: str,
     organization=Depends(get_organization_from_api_key)
 ):
-    """Retrieve chat history using session key"""
-    # Get organization ID
+    """Retrieve chat history for a session"""
     org_id = organization["id"]
     
     # Get fresh conversation data from MongoDB
@@ -328,14 +556,14 @@ async def get_chat_history(
     if not visitor:
         raise HTTPException(status_code=404, detail="Session not found")
     
-    # Get user profile from dedicated collection
+    # Get user profile
     user_profile = get_user_profile(org_id, session_id)
     profile_data = {}
     
     if user_profile and "profile_data" in user_profile:
         profile_data = user_profile["profile_data"]
     
-    # Convert MongoDB conversations to desired format for client
+    # Format conversation history
     formatted_history = []
     for msg in previous_conversations:
         if "role" in msg and "content" in msg:
@@ -344,31 +572,32 @@ async def get_chat_history(
                 "content": msg.get("content")
             })
     
-    # Determine current mode from visitor metadata
-    current_mode = "faq"  # Default mode
+    # Get current mode
+    current_mode = "faq"
     if visitor and "metadata" in visitor and "mode" in visitor["metadata"]:
         current_mode = visitor["metadata"]["mode"]
     
-    # Get last assistant answer (if available)
+    # Get last assistant message
     last_answer = ""
     for msg in reversed(formatted_history):
         if msg["role"] == "assistant":
             last_answer = msg["content"]
             break
     
-    # Build user data object with the most recent conversation history
-    user_data = {
-        **profile_data,
-        "conversation_history": formatted_history,
-        "returning_user": "name" in profile_data and bool(profile_data.get("name"))
-    }
+    # Get suggested FAQs
+    suggested_faqs = await get_suggested_faqs(org_id)
     
-    # Construct response in the required format
+    # Build response
     response = {
         "answer": last_answer,
         "mode": current_mode,
-        "language": "en",  # Default language
-        "user_data": user_data
+        "language": "en",
+        "user_data": {
+            **profile_data,
+            "conversation_history": formatted_history,
+            "returning_user": "name" in profile_data and bool(profile_data.get("name"))
+        },
+        "suggested_faqs": suggested_faqs
     }
     
     return response
