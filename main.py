@@ -25,6 +25,13 @@ except Exception as e:
     chatbot_available = False
 
 try:
+    from routes.train_ai import router as train_ai_router
+    train_ai_available = True
+except Exception as e:
+    print(f"Warning: Train AI router failed to import: {e}")
+    train_ai_available = False
+
+try:
     from routes.lead import router as lead_router
     lead_available = True
 except Exception as e:
@@ -136,6 +143,10 @@ if upload_available:
 if chatbot_available:
     app.include_router(chatbot_router, prefix="/api/chatbot", tags=["chatbot"])
     available_features.append("AI FAQ Bot with knowledge base")
+
+if train_ai_available:
+    app.include_router(train_ai_router, prefix="/api/train-ai", tags=["Train AI"])
+    available_features.append("AI Training and Configuration")
 
 if lead_available:
     app.include_router(lead_router, prefix="/lead", tags=["Lead Management"])

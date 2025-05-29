@@ -1,16 +1,32 @@
-from fastapi import APIRouter, Request, UploadFile, File, Form, HTTPException, Depends, Header
+from fastapi import APIRouter, Request, UploadFile, File, Form, HTTPException, Depends, Header, Body
 from services.langchain.engine import ask_bot, add_document, escalate_to_human
 from services.language_detect import detect_language
-from services.database import get_organization_by_api_key, create_or_update_visitor, add_conversation_message, get_visitor, get_conversation_history, save_user_profile, get_user_profile
+from services.database import get_organization_by_api_key, create_or_update_visitor, add_conversation_message, get_visitor, get_conversation_history, save_user_profile, get_user_profile, db
 from typing import Optional, Dict, Any
 import json
 import os
 from pydantic import BaseModel
+from datetime import datetime
+import pymongo
 
 router = APIRouter()
 
+# Initialize instant replies collection and indexes
+instant_replies = db.instant_replies
+instant_replies.create_index("org_id")
+instant_replies.create_index([("org_id", pymongo.ASCENDING), ("is_active", pymongo.ASCENDING)])
+
 # User session storage (in a real application, use Redis for temporary storage)
 user_sessions = {}
+
+def is_first_message(org_id: str, session_id: str) -> bool:
+    """Check if this is the first message in the conversation"""
+    conversation = db.conversations.find_one({
+        "organization_id": org_id,
+        "session_id": session_id,
+        "role": "user"
+    })
+    return conversation is None
 
 # Add new ChatWidgetSettings model
 class ChatWidgetSettings(BaseModel):
@@ -54,6 +70,61 @@ async def ask_question(
     print(f"Processing request for organization: {org_id}")
     print(f"Organization API key: {org_api_key[:8]}...")
     print(f"Organization namespace: {org_namespace}")
+    
+    # Check if this is the first message and if instant reply is enabled
+    if is_first_message(org_id, request.session_id):
+        instant_reply = db.instant_reply.find_one({
+            "organization_id": org_id,
+            "type": "instant_reply",
+            "isActive": True
+        })
+        
+        if instant_reply and "message" in instant_reply:
+            # Get or create visitor
+            visitor = create_or_update_visitor(
+                organization_id=org_id,
+                session_id=request.session_id,
+                visitor_data={
+                    "last_active": None,
+                    "metadata": {
+                        "mode": request.mode,
+                        "user_data": request.user_data
+                    }
+                }
+            )
+            
+            # Store the user's first message
+            add_conversation_message(
+                organization_id=org_id,
+                visitor_id=visitor["id"],
+                session_id=request.session_id,
+                role="user",
+                content=request.question,
+                metadata={"mode": request.mode}
+            )
+            
+            # Store the instant reply
+            add_conversation_message(
+                organization_id=org_id,
+                visitor_id=visitor["id"],
+                session_id=request.session_id,
+                role="assistant",
+                content=instant_reply["message"],
+                metadata={"mode": request.mode, "type": "instant_reply"}
+            )
+            
+            # Return the instant reply response
+            return {
+                "answer": instant_reply["message"],
+                "mode": request.mode,
+                "language": "en",
+                "user_data": {
+                    "conversation_history": [
+                        {"role": "user", "content": request.question},
+                        {"role": "assistant", "content": instant_reply["message"]}
+                    ]
+                }
+            }
     
     # Get previous conversations from MongoDB
     previous_conversations = get_conversation_history(org_id, request.session_id)
@@ -444,7 +515,6 @@ async def save_chat_widget_settings(
 ):
     try:
         # Update organization in MongoDB with chat widget settings
-        from services.database import db
         result = db.organizations.update_one(
             {"_id": organization["_id"]},
             {"$set": {
@@ -469,7 +539,6 @@ async def get_chat_widget_settings(
 ):
     try:
         # Get organization from MongoDB
-        from services.database import db
         org = db.organizations.find_one({"_id": organization["_id"]})
         
         if not org or "chat_widget_settings" not in org:
