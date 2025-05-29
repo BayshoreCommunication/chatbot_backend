@@ -6,11 +6,11 @@ from bson import ObjectId
 # Initialize collections
 faq_collection = db.faqs
 
-async def find_matching_faq(
+def find_matching_faq(
     query: str,
     org_id: str,
     namespace: str = "",
-    similarity_threshold: float = 0.7
+    similarity_threshold: float = 0.85
 ) -> Optional[Dict[str, Any]]:
     """
     Find the best matching FAQ for a given query using semantic search.
@@ -18,7 +18,7 @@ async def find_matching_faq(
     """
     try:
         # Search for similar questions using vector similarity
-        similar_faqs = await search_faq_embeddings(
+        similar_faqs = search_faq_embeddings(
             query=query,
             org_id=org_id,
             namespace=namespace,
@@ -55,7 +55,7 @@ async def find_matching_faq(
         print(f"Error finding matching FAQ: {str(e)}")
         return None
 
-async def get_suggested_faqs(
+def get_suggested_faqs(
     org_id: str,
     limit: int = 5
 ) -> List[Dict[str, Any]]:

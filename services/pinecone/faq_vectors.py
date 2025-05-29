@@ -123,7 +123,7 @@ async def delete_faq_embedding(faq_id: str, namespace: str):
         print(f"Error deleting FAQ embedding: {str(e)}")
         return False
 
-async def search_faq_embeddings(
+def search_faq_embeddings(
     query: str,
     org_id: str,
     namespace: str,

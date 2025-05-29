@@ -432,14 +432,17 @@ async def ask_question(
                     }
 
         # Try to find matching FAQ only after user info is collected
-        matching_faq = await find_matching_faq(
+        print("[DEBUG] Starting FAQ matching process...")
+        matching_faq = find_matching_faq(
             query=request.question,
             org_id=org_id,
             namespace=namespace
         )
+        print(f"[DEBUG] find_matching_faq returned: {matching_faq}")
 
         # If we found a good FAQ match, return it
         if matching_faq:
+            print("[DEBUG] Found matching FAQ, preparing response...")
             # Store the user's message
             add_conversation_message(
                 organization_id=org_id,
@@ -472,8 +475,11 @@ async def ask_question(
             ])
 
             # Get suggested FAQs for follow-up
-            suggested_faqs = await get_suggested_faqs(org_id)
+            print("[DEBUG] Getting suggested FAQs...")
+            suggested_faqs = get_suggested_faqs(org_id)
+            print(f"[DEBUG] Found {len(suggested_faqs)} suggested FAQs")
 
+            print("[DEBUG] Returning FAQ response...")
             return {
                 "answer": matching_faq["response"],
                 "mode": "faq",
@@ -495,7 +501,7 @@ async def ask_question(
         if user_context and request.user_data.get("returning_user"):
             enhanced_query = f"{user_context}The user, who you already know, asks: {request.question}"
 
-        response = await ask_bot(
+        response = ask_bot(
             query=enhanced_query,
             mode=request.mode,
             user_data=request.user_data,
@@ -530,7 +536,7 @@ async def ask_question(
         ])
 
         # Get suggested FAQs
-        suggested_faqs = await get_suggested_faqs(org_id)
+        suggested_faqs = get_suggested_faqs(org_id)
         response["suggested_faqs"] = suggested_faqs
         response["user_data"] = request.user_data
 
@@ -585,7 +591,7 @@ async def get_chat_history(
             break
     
     # Get suggested FAQs
-    suggested_faqs = await get_suggested_faqs(org_id)
+    suggested_faqs = get_suggested_faqs(org_id)
     
     # Build response
     response = {
