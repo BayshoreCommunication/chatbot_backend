@@ -2,7 +2,7 @@ from fastapi import APIRouter, Request, UploadFile, File, Form, HTTPException, D
 from services.langchain.engine import ask_bot, add_document, escalate_to_human
 from services.language_detect import detect_language
 from services.database import get_organization_by_api_key, create_or_update_visitor, add_conversation_message, get_visitor, get_conversation_history, save_user_profile, get_user_profile, db
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 import json
 import os
 from pydantic import BaseModel
@@ -19,6 +19,11 @@ router = APIRouter()
 instant_replies = db.instant_reply
 instant_replies.create_index("org_id")
 instant_replies.create_index([("org_id", pymongo.ASCENDING), ("is_active", pymongo.ASCENDING)])
+
+# Initialize upload history collection and indexes
+upload_history_collection = db.upload_history
+upload_history_collection.create_index("org_id")
+upload_history_collection.create_index([("org_id", pymongo.ASCENDING), ("created_at", pymongo.DESCENDING)])
 
 # User session storage (in a real application, use Redis for temporary storage)
 user_sessions = {}
@@ -51,6 +56,15 @@ class ChatRequest(BaseModel):
 
 class ChatHistoryRequest(BaseModel):
     session_id: str
+
+class UploadHistoryResponse(BaseModel):
+    id: Optional[str]
+    org_id: str
+    url: Optional[str]
+    file_name: Optional[str]
+    status: str
+    type: str  # "url" or "pdf"
+    created_at: datetime
 
 async def get_organization_from_api_key(api_key: Optional[str] = Header(None, alias="X-API-Key")):
     """Dependency to get organization from API key"""
@@ -648,6 +662,23 @@ async def change_mode(
     
     return {"status": "success", "mode": new_mode}
 
+@router.get("/upload_history", response_model=List[UploadHistoryResponse])
+async def get_upload_history(
+    organization=Depends(get_organization_from_api_key)
+):
+    """Get upload history for an organization"""
+    org_id = organization["id"]
+    
+    history = []
+    for item in upload_history_collection.find(
+        {"org_id": org_id},
+        sort=[("created_at", pymongo.DESCENDING)]
+    ):
+        item["id"] = str(item.pop("_id"))
+        history.append(item)
+    
+    return history
+
 @router.post("/upload_document")
 async def upload_document(
     file: Optional[UploadFile] = File(None),
@@ -675,39 +706,109 @@ async def upload_document(
     
     All content is stored under the organization's namespace in the vector database.
     """
+    org_id = organization["id"]
     org_api_key = organization["api_key"]
     
-    if file:
-        # Save uploaded file temporarily
-        file_path = f"temp_{file.filename}"
-        with open(file_path, "wb") as f:
-            content = await file.read()
-            f.write(content)
+    try:
+        if file:
+            # Save uploaded file temporarily
+            file_path = f"temp_{file.filename}"
+            with open(file_path, "wb") as f:
+                content = await file.read()
+                f.write(content)
+            
+            # Add to vectorstore with organization namespace
+            result = add_document(file_path=file_path, api_key=org_api_key)
+            
+            # Store upload history
+            upload_history_collection.insert_one({
+                "org_id": org_id,
+                "file_name": file.filename,
+                "type": "pdf",
+                "status": "Used",
+                "created_at": datetime.utcnow()
+            })
+            
+            # Clean up temporary file
+            os.remove(file_path)
+            
+            return result
         
-        # Add to vectorstore with organization namespace
-        result = add_document(file_path=file_path, api_key=org_api_key)
+        elif url:
+            # Check if we should scrape the entire website
+            if scrape_website:
+                # Append parameters to URL to indicate scraping
+                scrape_url = f"{url}?scrape_website=true&max_pages={max_pages}"
+                print(f"Scraping website: {url} with max_pages={max_pages}")
+                result = add_document(url=scrape_url, api_key=org_api_key)
+            else:
+                # Just process the single URL
+                result = add_document(url=url, api_key=org_api_key)
+            
+            # Store upload history
+            upload_history_collection.insert_one({
+                "org_id": org_id,
+                "url": url,
+                "type": "url",
+                "status": "Used",
+                "created_at": datetime.utcnow()
+            })
+            
+            return result
         
-        # Clean up temporary file
-        os.remove(file_path)
+        elif text:
+            result = add_document(text=text, api_key=org_api_key)
+            
+            # Store upload history for text content
+            upload_history_collection.insert_one({
+                "org_id": org_id,
+                "type": "text",
+                "status": "Used",
+                "created_at": datetime.utcnow()
+            })
+            
+            return result
         
-        return result
-    
-    elif url:
-        # Check if we should scrape the entire website
-        if scrape_website:
-            # Append parameters to URL to indicate scraping
-            scrape_url = f"{url}?scrape_website=true&max_pages={max_pages}"
-            print(f"Scraping website: {url} with max_pages={max_pages}")
-            return add_document(url=scrape_url, api_key=org_api_key)
         else:
-            # Just process the single URL
-            return add_document(url=url, api_key=org_api_key)
+            raise HTTPException(status_code=400, detail="No document source provided")
+            
+    except Exception as e:
+        # Store failed upload in history
+        error_data = {
+            "org_id": org_id,
+            "status": "Failed",
+            "created_at": datetime.utcnow()
+        }
+        
+        if file:
+            error_data["file_name"] = file.filename
+            error_data["type"] = "pdf"
+        elif url:
+            error_data["url"] = url
+            error_data["type"] = "url"
+        else:
+            error_data["type"] = "text"
+            
+        upload_history_collection.insert_one(error_data)
+        
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/has_previous_uploads")
+async def check_previous_uploads(
+    organization=Depends(get_organization_from_api_key)
+):
+    """Check if organization has any previous successful uploads"""
+    org_id = organization["id"]
     
-    elif text:
-        return add_document(text=text, api_key=org_api_key)
+    # Check for any successful uploads
+    count = upload_history_collection.count_documents({
+        "org_id": org_id,
+        "status": "Used"
+    })
     
-    else:
-        raise HTTPException(status_code=400, detail="No document source provided")
+    return {
+        "has_previous_uploads": count > 0
+    }
 
 @router.post("/escalate")
 async def escalate(
