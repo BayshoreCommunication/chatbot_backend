@@ -108,7 +108,8 @@ origins = [
     "https://checkout.stripe.com",
     "https://js.stripe.com",
     "https://hooks.stripe.com",
-    "https://accounts.google.com"
+    "https://accounts.google.com",
+    "https://ai-user-dashboard.vercel.app"
 ]
 
 app.add_middleware(
