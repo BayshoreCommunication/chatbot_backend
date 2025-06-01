@@ -131,6 +131,20 @@ async def ask_question(
             request.user_data.update(user_profile["profile_data"])
             request.user_data["returning_user"] = True
 
+        # Store the current user message ONCE at the beginning
+        add_conversation_message(
+            organization_id=org_id,
+            visitor_id=visitor["id"],
+            session_id=request.session_id,
+            role="user",
+            content=request.question,
+            metadata={"mode": request.mode}
+        )
+        request.user_data["conversation_history"].append({
+            "role": "user",
+            "content": request.question
+        })
+
         if is_first:
             print("[DEBUG] Checking for instant reply")
             instant_reply = instant_replies.find_one({
@@ -142,21 +156,8 @@ async def ask_question(
             
             if instant_reply:
                 print("[DEBUG] Processing instant reply")
-                # Store the user's first message
-                add_conversation_message(
-                    organization_id=org_id,
-                    visitor_id=visitor["id"],
-                    session_id=request.session_id,
-                    role="user",
-                    content=request.question,
-                    metadata={"mode": "faq"}
-                )
-                request.user_data["conversation_history"].append({
-                    "role": "user",
-                    "content": request.question
-                })
-
-                # Store the instant reply
+                # Remove duplicate message storage
+                # Store only the instant reply
                 add_conversation_message(
                     organization_id=org_id,
                     visitor_id=visitor["id"],
@@ -178,19 +179,8 @@ async def ask_question(
                     "user_data": request.user_data
                 }
         else:
-            # Add current user message to history if not first message
-            add_conversation_message(
-                organization_id=org_id,
-                visitor_id=visitor["id"],
-                session_id=request.session_id,
-                role="user",
-                content=request.question,
-                metadata={"mode": request.mode}
-            )
-            request.user_data["conversation_history"].append({
-                "role": "user",
-                "content": request.question
-            })
+            # Remove duplicate message storage here since we already stored it at the beginning
+            pass
 
         print("[DEBUG] Checking user information collection")
         # Check if we need to collect user information
@@ -230,7 +220,7 @@ async def ask_question(
                     request.user_data["name"] = "Anonymous User"
                     save_user_profile(org_id, request.session_id, request.user_data)
                     
-                    # Ask for email politely
+                    # Remove duplicate message storage, only store the response
                     email_prompt = "That's perfectly fine! Would you mind sharing your email address so we can better assist you? You can also skip this if you prefer."
                     
                     # Store and add to history
@@ -258,7 +248,7 @@ async def ask_question(
                     request.user_data["name"] = extracted_name
                     save_user_profile(org_id, request.session_id, request.user_data)
                     
-                    # Ask for email
+                    # Remove duplicate message storage, only store the response
                     email_prompt = f"Nice to meet you, {extracted_name}! Would you mind sharing your email address? You can skip this if you prefer."
                     
                     # Store and add to history
@@ -283,6 +273,8 @@ async def ask_question(
                     }
                 else:
                     print("[DEBUG] No valid name found")
+                    
+                    # Remove duplicate message storage, only store the response
                     name_prompt = "Before proceeding, could you please tell me your name? You can skip this if you prefer not to share."
                     
                     # Store and add to history
@@ -515,6 +507,7 @@ async def ask_question(
         if user_context and request.user_data.get("returning_user"):
             enhanced_query = f"{user_context}The user, who you already know, asks: {request.question}"
 
+        # Don't add the enhanced query to conversation history - use original question
         response = ask_bot(
             query=enhanced_query,
             mode=request.mode,
@@ -524,13 +517,13 @@ async def ask_question(
             api_key=org_api_key
         )
 
-        # Store messages in MongoDB
+        # Store messages in MongoDB - use original question
         add_conversation_message(
             organization_id=org_id,
             visitor_id=visitor["id"],
             session_id=request.session_id,
-            role="user",
-            content=request.question,
+            role="user", 
+            content=request.question,  # Use original question
             metadata={"mode": request.mode}
         )
 
@@ -543,9 +536,9 @@ async def ask_question(
             metadata={"mode": request.mode}
         )
 
-        # Update conversation history
+        # Update conversation history - use original question
         request.user_data["conversation_history"].extend([
-            {"role": "user", "content": request.question},
+            {"role": "user", "content": request.question},  # Use original question
             {"role": "assistant", "content": response["answer"]}
         ])
 
@@ -569,7 +562,8 @@ async def get_chat_history(
     org_id = organization["id"]
     
     # Get fresh conversation data from MongoDB
-    previous_conversations = get_conversation_history(org_id, session_id)
+    previous_conversations = get_conversation_history(organization_id =org_id, session_id=session_id)
+    print(f"[DEBUG] previous_conversations: {previous_conversations} organization: {org_id}")
     
     # Get visitor information
     visitor = get_visitor(org_id, session_id)
