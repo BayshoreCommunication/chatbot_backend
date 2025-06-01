@@ -58,10 +58,10 @@ class ChatHistoryRequest(BaseModel):
     session_id: str
 
 class UploadHistoryResponse(BaseModel):
-    id: Optional[str]
+    id: Optional[str] = None
     org_id: str
-    url: Optional[str]
-    file_name: Optional[str]
+    url: Optional[str] = None
+    file_name: Optional[str] = None
     status: str
     type: str  # "url" or "pdf"
     created_at: datetime
