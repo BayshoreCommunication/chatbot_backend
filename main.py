@@ -100,23 +100,12 @@ uploads_dir.mkdir(parents=True, exist_ok=True)
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
 # Configure CORS with more specific settings
-origins = [
-    "http://localhost:5173",  # Vite dev server
-    "http://127.0.0.1:5173",
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
-    "https://checkout.stripe.com",
-    "https://js.stripe.com",
-    "https://hooks.stripe.com",
-    "https://accounts.google.com",
-    "https://ai-user-dashboard.vercel.app",
-    "https://aibotwizard.vercel.app",
-]
+origins = ["*"]  # Allow all origins
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
-    allow_credentials=True,
+    allow_origins=["*"],
+    allow_credentials=False,  # Must be False when allow_origins=["*"]
     allow_methods=["*"],
     allow_headers=["*"],
     expose_headers=["*"]
@@ -126,10 +115,9 @@ app.add_middleware(
 @app.middleware("http")
 async def add_security_headers(request: Request, call_next):
     response = await call_next(request)
+    response.headers["Access-Control-Allow-Origin"] = "*"
     response.headers["Cross-Origin-Opener-Policy"] = "unsafe-none"
     response.headers["Cross-Origin-Embedder-Policy"] = "unsafe-none"
-    response.headers["Access-Control-Allow-Origin"] = request.headers.get("origin", origins[0])
-    response.headers["Access-Control-Allow-Credentials"] = "true"
     return response
 
 # Custom JSON response class for MongoDB ObjectId handling
