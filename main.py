@@ -110,7 +110,7 @@ origins = [
     "https://hooks.stripe.com",
     "https://accounts.google.com",
     "https://ai-user-dashboard.vercel.app",
-    "https://aibotwizard.vercel.app"
+    "https://aibotwizard.vercel.app",
 ]
 
 app.add_middleware(
