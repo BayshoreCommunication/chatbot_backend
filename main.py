@@ -100,27 +100,41 @@ uploads_dir.mkdir(parents=True, exist_ok=True)
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
 # Configure CORS with more specific settings
-origins = ["*"]  # Allow all origins
+origins = [
+    "http://localhost:5173",  # Vite dev server
+    "http://127.0.0.1:5173",
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "https://checkout.stripe.com",
+    "https://js.stripe.com",
+    "https://hooks.stripe.com",
+    "https://accounts.google.com",
+    "https://ai-user-dashboard.vercel.app",
+    "https://aibotwizard.vercel.app",
+    "https://chatbot.bayshorecommunication.com",
+    "http://chatbot.bayshorecommunication.com",
+    "*"  # Allow all origins as fallback
+]
 
-# Add CORS middleware first, before any other middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,
+    allow_origins=origins,
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["*"]
+    expose_headers=["*"],
+    max_age=3600
 )
 
 # Add security headers middleware
 @app.middleware("http")
 async def add_security_headers(request: Request, call_next):
-    print(f"Incoming request from origin: {request.headers.get('origin')}")  # Debug log
     response = await call_next(request)
-    response.headers["Access-Control-Allow-Origin"] = "*"
+    origin = request.headers.get("origin", "*")
+    response.headers["Access-Control-Allow-Origin"] = origin
+    response.headers["Access-Control-Allow-Credentials"] = "true"
     response.headers["Cross-Origin-Opener-Policy"] = "unsafe-none"
     response.headers["Cross-Origin-Embedder-Policy"] = "unsafe-none"
-    print(f"Response headers: {dict(response.headers)}")  # Debug log
     return response
 
 # Move all other middleware after CORS
