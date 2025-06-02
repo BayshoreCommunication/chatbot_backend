@@ -113,6 +113,8 @@ origins = [
     "https://aibotwizard.vercel.app",
     "https://chatbot.bayshorecommunication.com",
     "http://chatbot.bayshorecommunication.com",
+    "https://botapi.bayshorecommunication.org",
+    "http://botapi.bayshorecommunication.org",
     "*"  # Allow all origins as fallback
 ]
 
