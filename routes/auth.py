@@ -13,6 +13,12 @@ from services.auth import (
     get_user_by_google_id,
     verify_password
 )
+import logging
+from bson.objectid import ObjectId
+
+# Configure logging
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger(__name__)
 
 # Load environment variables
 load_dotenv()
@@ -76,36 +82,60 @@ async def options_login():
 @router.post("/login")
 async def login(request: Request, user: UserLogin):
     try:
+        logger.debug(f"Login attempt for email: {user.email}")
+        
         # Get user from database
         db_user = get_user_by_email(user.email)
+        logger.debug(f"Database user found: {bool(db_user)}")
+        
         if not db_user:
+            logger.warning(f"Login failed: Email not registered - {user.email}")
             raise HTTPException(status_code=400, detail="Email not registered")
         
         # Verify password
-        if not verify_password(user.password, db_user["hashed_password"]):
+        is_valid = verify_password(user.password, db_user["hashed_password"])
+        logger.debug(f"Password verification result: {is_valid}")
+        
+        if not is_valid:
+            logger.warning(f"Login failed: Incorrect password for {user.email}")
             raise HTTPException(status_code=400, detail="Incorrect password")
         
-        # Remove sensitive data
-        user_data = {k: v for k, v in db_user.items() if k != "hashed_password"}
+        # Remove sensitive data and ensure all fields are JSON serializable
+        user_data = {}
+        for k, v in db_user.items():
+            if k != "hashed_password":
+                if isinstance(v, ObjectId):
+                    user_data[k] = str(v)
+                elif isinstance(v, datetime):
+                    user_data[k] = v.isoformat()
+                else:
+                    user_data[k] = v
+        
+        logger.debug("User data prepared for response")
         
         # Create access token
         access_token = create_access_token(
             data={"sub": user.email},
             expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
         )
+        logger.debug("Access token created successfully")
+        
+        response_data = {
+            "access_token": access_token,
+            "token_type": "bearer",
+            "user": user_data
+        }
+        logger.info(f"Login successful for user: {user.email}")
         
         return JSONResponse(
-            content={
-                "access_token": access_token,
-                "token_type": "bearer",
-                "user": user_data
-            },
+            content=response_data,
             headers={
                 "Access-Control-Allow-Origin": "*",
                 "Access-Control-Allow-Credentials": "false"
             }
         )
     except HTTPException as e:
+        logger.error(f"HTTP Exception during login: {str(e)}")
         return JSONResponse(
             status_code=e.status_code,
             content={"detail": e.detail},
@@ -115,9 +145,10 @@ async def login(request: Request, user: UserLogin):
             }
         )
     except Exception as e:
+        logger.error(f"Unexpected error during login: {str(e)}", exc_info=True)
         return JSONResponse(
             status_code=500,
-            content={"detail": "Internal server error"},
+            content={"detail": f"Internal server error: {str(e)}"},
             headers={
                 "Access-Control-Allow-Origin": "*",
                 "Access-Control-Allow-Credentials": "false"
