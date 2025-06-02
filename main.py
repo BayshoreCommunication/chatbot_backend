@@ -102,10 +102,11 @@ app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 # Configure CORS with more specific settings
 origins = ["*"]  # Allow all origins
 
+# Add CORS middleware first, before any other middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=False,  # Must be False when allow_origins=["*"]
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
     expose_headers=["*"]
@@ -114,13 +115,15 @@ app.add_middleware(
 # Add security headers middleware
 @app.middleware("http")
 async def add_security_headers(request: Request, call_next):
+    print(f"Incoming request from origin: {request.headers.get('origin')}")  # Debug log
     response = await call_next(request)
     response.headers["Access-Control-Allow-Origin"] = "*"
     response.headers["Cross-Origin-Opener-Policy"] = "unsafe-none"
     response.headers["Cross-Origin-Embedder-Policy"] = "unsafe-none"
+    print(f"Response headers: {dict(response.headers)}")  # Debug log
     return response
 
-# Custom JSON response class for MongoDB ObjectId handling
+# Move all other middleware after CORS
 @app.middleware("http")
 async def custom_json_middleware(request: Request, call_next):
     response = await call_next(request)

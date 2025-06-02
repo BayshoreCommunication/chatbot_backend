@@ -1,5 +1,7 @@
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Request
 from fastapi.security import OAuth2PasswordBearer
+from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime, timedelta
 from typing import Optional
 import jwt
@@ -24,6 +26,16 @@ ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("JWT_ACCESS_TOKEN_EXPIRE_MINUTES", "30"))
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+
+# Add CORS middleware specifically for auth routes
+router.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+    expose_headers=["*"]
+)
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     to_encode = data.copy()
@@ -60,31 +72,68 @@ async def register(user: UserCreate):
         "user": user_data
     }
 
-@router.post("/login")
-async def login(user: UserLogin):
-    # Get user from database
-    db_user = get_user_by_email(user.email)
-    if not db_user:
-        raise HTTPException(status_code=400, detail="Email not registered")
-    
-    # Verify password
-    if not verify_password(user.password, db_user["hashed_password"]):
-        raise HTTPException(status_code=400, detail="Incorrect password")
-    
-    # Remove sensitive data
-    user_data = {k: v for k, v in db_user.items() if k != "hashed_password"}
-    
-    # Create access token
-    access_token = create_access_token(
-        data={"sub": user.email},
-        expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+@router.options("/login")
+async def options_login():
+    """Handle OPTIONS request for login endpoint"""
+    return JSONResponse(
+        content={},
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "POST, OPTIONS",
+            "Access-Control-Allow-Headers": "*"
+        }
     )
-    
-    return {
-        "access_token": access_token,
-        "token_type": "bearer",
-        "user": user_data
-    }
+
+@router.post("/login")
+async def login(request: Request, user: UserLogin):
+    try:
+        # Get user from database
+        db_user = get_user_by_email(user.email)
+        if not db_user:
+            raise HTTPException(status_code=400, detail="Email not registered")
+        
+        # Verify password
+        if not verify_password(user.password, db_user["hashed_password"]):
+            raise HTTPException(status_code=400, detail="Incorrect password")
+        
+        # Remove sensitive data
+        user_data = {k: v for k, v in db_user.items() if k != "hashed_password"}
+        
+        # Create access token
+        access_token = create_access_token(
+            data={"sub": user.email},
+            expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        )
+        
+        return JSONResponse(
+            content={
+                "access_token": access_token,
+                "token_type": "bearer",
+                "user": user_data
+            },
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Credentials": "false"
+            }
+        )
+    except HTTPException as e:
+        return JSONResponse(
+            status_code=e.status_code,
+            content={"detail": e.detail},
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Credentials": "false"
+            }
+        )
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"detail": "Internal server error"},
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Credentials": "false"
+            }
+        )
 
 @router.post("/google")
 async def google_auth(user: UserGoogle):
