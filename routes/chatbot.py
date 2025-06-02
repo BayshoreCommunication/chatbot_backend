@@ -844,23 +844,36 @@ async def save_chat_widget_settings(
     organization=Depends(get_organization_from_api_key)
 ):
     try:
+        
+        # Validate organization ID
+        if not organization.get("_id"):
+            raise HTTPException(status_code=500, detail="Organization ID is missing")
+            
         # Update organization in MongoDB with chat widget settings
+        update_data = {"chat_widget_settings": settings.dict()}
+        
         result = db.organizations.update_one(
             {"_id": organization["_id"]},
-            {"$set": {
-                "chat_widget_settings": settings.dict()
-            }}
+            {"$set": update_data}
         )
         
-        if result.modified_count == 0:
-            raise HTTPException(status_code=500, detail="Failed to save chat widget settings")
+        
+        if result.matched_count == 0:
+            print("[ERROR] No matching document found")
+            raise HTTPException(status_code=404, detail="Organization not found")
             
+        # Even if modified_count is 0, if we matched a document, consider it a success
+        # This handles cases where the new settings are identical to existing ones
         return {
             "status": "success",
             "message": "Chat widget settings saved successfully"
         }
         
     except Exception as e:
+        print(f"[ERROR] Exception in save_chat_widget_settings: {str(e)}")
+        print(f"[ERROR] Exception type: {type(e)}")
+        import traceback
+        print(f"[ERROR] Traceback: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/settings")

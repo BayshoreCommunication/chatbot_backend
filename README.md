@@ -71,7 +71,7 @@ A powerful AI-driven chatbot backend for businesses with multiple modes and inte
 uvicorn main:app --reload
 ```
 
-The API will be available at https://chatbot.bayshorecommunication.com, and the interactive documentation at https://chatbot.bayshorecommunication.com/docs.
+The API will be available at http://localhost:8000, and the interactive documentation at http://localhost:8000/docs.
 
 ## API Endpoints
 

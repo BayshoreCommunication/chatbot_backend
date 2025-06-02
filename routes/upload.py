@@ -5,6 +5,7 @@ import boto3
 from botocore.config import Config
 import uuid
 from dotenv import load_dotenv
+from typing import Dict
 
 # Load environment variables
 load_dotenv()
@@ -31,8 +32,14 @@ s3_client = boto3.client('s3',
     region_name=SPACE_REGION
 )
 
-@router.post("/upload-avatar")
-async def upload_avatar(file: UploadFile = File(...)):
+@router.post("/upload-avatar", 
+    response_model=Dict[str, str],
+    summary="Upload User Avatar",
+    description="Upload a user avatar image. Accepts image files only. Returns a URL to the uploaded image.",
+    response_description="Returns a success status and the URL of the uploaded avatar",
+    tags=["Upload"]
+)
+async def upload_avatar(file: UploadFile = File(..., description="The image file to upload as avatar")):
     try:
         # Validate file type
         if not file.content_type.startswith('image/'):

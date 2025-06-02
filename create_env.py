@@ -10,5 +10,12 @@ with open('.env', 'w') as f:
     f.write('PINECONE_ENV=us-east-1-aws\n')
     f.write('PINECONE_INDEX=bayshoreai\n')
     f.write('MONGO_URI=mongodb+srv://iotcom:aZ6DZBszmjtT9cGY@cluster0.tdvw5wt.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0\n')
+    
+    # Add DigitalOcean Spaces credentials
+    f.write('DO_SPACES_BUCKET=bayshore\n')
+    f.write('DO_SPACES_REGION=nyc3\n')
+    f.write('DO_SPACES_KEY=DO00HFNWVPYJBRTBVZZJ\n') 
+    f.write('DO_SPACES_SECRET=VTaTd4LASdw+OjDylmiBOPa4GOD956R/25597C7ULX8\n') 
+    f.write('DO_FOLDER_NAME=ai_bot\n')
 
 print("Created .env file successfully!") 
