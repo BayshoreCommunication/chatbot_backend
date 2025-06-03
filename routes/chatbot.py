@@ -46,6 +46,7 @@ class ChatWidgetSettings(BaseModel):
     leadCapture: bool
     botBehavior: str
     avatarUrl: Optional[str] = None
+    is_bot_connected: Optional[bool] = False
 
 class ChatRequest(BaseModel):
     question: str
@@ -844,33 +845,55 @@ async def save_chat_widget_settings(
     organization=Depends(get_organization_from_api_key)
 ):
     try:
+        print("\n=== Starting save_chat_widget_settings ===")
+        print(f"Organization ID: {organization.get('_id')}")
         
         # Validate organization ID
         if not organization.get("_id"):
+            print("[ERROR] Organization ID is missing")
             raise HTTPException(status_code=500, detail="Organization ID is missing")
             
+        # Convert settings to dict and ensure is_bot_connected is included
+        settings_dict = settings.dict()
+        print(f"\n[DEBUG] Incoming settings: {settings_dict}")
+        
         # Update organization in MongoDB with chat widget settings
-        update_data = {"chat_widget_settings": settings.dict()}
+        update_data = {
+            "$set": {
+                "chat_widget_settings": settings_dict
+            },
+            # Remove the old settings field if it exists
+            "$unset": {
+                "settings": ""
+            }
+        }
+        
+        print(f"\n[DEBUG] Update operation: {update_data}")
         
         result = db.organizations.update_one(
             {"_id": organization["_id"]},
-            {"$set": update_data}
+            update_data
         )
         
+        print(f"\n[DEBUG] MongoDB update result: {result.raw_result}")
         
         if result.matched_count == 0:
             print("[ERROR] No matching document found")
             raise HTTPException(status_code=404, detail="Organization not found")
             
-        # Even if modified_count is 0, if we matched a document, consider it a success
-        # This handles cases where the new settings are identical to existing ones
+        # Verify the update by retrieving the updated document
+        updated_org = db.organizations.find_one({"_id": organization["_id"]})
+        print(f"\n[DEBUG] Updated organization document: {updated_org}")
+        print(f"\n[DEBUG] Updated chat_widget_settings: {updated_org.get('chat_widget_settings')}")
+        print("\n=== Completed save_chat_widget_settings ===\n")
+            
         return {
             "status": "success",
             "message": "Chat widget settings saved successfully"
         }
         
     except Exception as e:
-        print(f"[ERROR] Exception in save_chat_widget_settings: {str(e)}")
+        print(f"\n[ERROR] Exception in save_chat_widget_settings: {str(e)}")
         print(f"[ERROR] Exception type: {type(e)}")
         import traceback
         print(f"[ERROR] Traceback: {traceback.format_exc()}")
@@ -883,17 +906,29 @@ async def get_chat_widget_settings(
     try:
         # Get organization from MongoDB
         org = db.organizations.find_one({"_id": organization["_id"]})
+        print(f"[DEBUG] Retrieved org: {org}")  # Debug log
+        print(f"[DEBUG] Retrieved chat_widget_settings: {org.get('chat_widget_settings') if org else None}")  # Debug log
         
         if not org or "chat_widget_settings" not in org:
+            default_settings = {
+                "name": "Bay AI",
+                "selectedColor": "black",
+                "leadCapture": True,
+                "botBehavior": "2",
+                "avatarUrl": None,
+                "is_bot_connected": False
+            }
+            
+            # If no settings exist, save the default settings
+            if org:
+                db.organizations.update_one(
+                    {"_id": organization["_id"]},
+                    {"$set": {"chat_widget_settings": default_settings}}
+                )
+            
             return {
                 "status": "success",
-                "settings": {
-                    "name": "Bay AI",
-                    "selectedColor": "black",
-                    "leadCapture": True,
-                    "botBehavior": "2",
-                    "avatarUrl": None
-                }
+                "settings": default_settings
             }
             
         return {
@@ -902,4 +937,5 @@ async def get_chat_widget_settings(
         }
         
     except Exception as e:
+        print(f"[ERROR] Exception in get_chat_widget_settings: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))

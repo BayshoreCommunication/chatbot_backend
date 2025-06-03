@@ -114,7 +114,7 @@ origins = [
     "https://chatbot.bayshorecommunication.com",
     "http://chatbot.bayshorecommunication.com",
     "https://botapi.bayshorecommunication.org",
-    "http://botapi.bayshorecommunication.org",
+    "https://botapi.bayshorecommunication.org",
     "*"  # Allow all origins as fallback
 ]
 
@@ -204,8 +204,3 @@ def read_root():
 def health_check():
     """Health check endpoint for monitoring"""
     return {"status": "healthy"}
-
-# Create a new directory 'models/' if it doesn't exist
-models_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models")
-if not os.path.exists(models_dir):
-    os.makedirs(models_dir)

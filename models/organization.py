@@ -47,7 +47,14 @@ class Organization(BaseModel):
     created_at: datetime = Field(default_factory=datetime.now)
     updated_at: datetime = Field(default_factory=datetime.now)
     pinecone_namespace: str  # Namespace in vector DB for organization's data
-    settings: dict = Field(default_factory=dict)
+    chat_widget_settings: dict = Field(default_factory=lambda: {
+        "name": "Bay AI",
+        "selectedColor": "black",
+        "leadCapture": True,
+        "botBehavior": "2",
+        "avatarUrl": None,
+        "is_bot_connected": False
+    })
     
     class Config:
         json_schema_extra = {
@@ -57,7 +64,15 @@ class Organization(BaseModel):
                 "subscription_tier": "standard",
                 "subscription_status": "active",
                 "user_id": "user_123",
-                "stripe_subscription_id": "sub_1234567890"
+                "stripe_subscription_id": "sub_1234567890",
+                "chat_widget_settings": {
+                    "name": "Bay AI",
+                    "selectedColor": "black",
+                    "leadCapture": True,
+                    "botBehavior": "2",
+                    "avatarUrl": None,
+                    "is_bot_connected": False
+                }
             }
         }
 
