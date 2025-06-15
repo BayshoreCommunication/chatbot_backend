@@ -45,6 +45,7 @@ class ChatWidgetSettings(BaseModel):
     selectedColor: str
     leadCapture: bool
     botBehavior: str
+    ai_behavior: str
     avatarUrl: Optional[str] = None
     is_bot_connected: Optional[bool] = False
 
@@ -502,6 +503,11 @@ async def ask_question(
             user_context = f"The user's name is {request.user_data['name']}. "
         if "email" in request.user_data and request.user_data["email"]:
             user_context += f"The user's email is {request.user_data['email']}. "
+
+        # Get AI behavior from organization settings
+        ai_behavior = organization.get("chat_widget_settings", {}).get("ai_behavior", "")
+        if ai_behavior:
+            user_context += f"\nAI Behavior Instructions: {ai_behavior}\n"
 
         # Enhance query with user context if needed
         enhanced_query = request.question

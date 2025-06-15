@@ -143,12 +143,22 @@ async def get_organization_usage(organization=Depends(get_organization_from_api_
         
         # Import directly from vectorstore module to avoid circular imports
         from pinecone import Pinecone
+        from services.database import db
         
         pinecone_api_key = os.getenv("PINECONE_API_KEY")
         index_name = os.getenv("PINECONE_INDEX", "bayshoreai")
         
         print(f"Getting usage stats for organization {org_id} with namespace {namespace}")
         print(f"Connecting to Pinecone index: {index_name}")
+        
+        # Get total users (visitors) for this organization
+        total_users = db.visitors.count_documents({"organization_id": org_id})
+        
+        # Get total conversations
+        total_conversations = db.conversations.count_documents({"organization_id": org_id})
+        
+        # Get total API calls from conversations
+        total_api_calls = total_conversations
         
         # Create a fresh Pinecone connection
         pc = Pinecone(api_key=pinecone_api_key)
@@ -257,9 +267,6 @@ async def get_organization_usage(organization=Depends(get_organization_from_api_
             # Safe calculation with reasonable defaults
             storage_bytes = vector_count * (dimensions or 1024) * 4  # Float32 is 4 bytes
             
-            # Always provide at least approximate stats
-            api_calls = organization.get("api_calls", 0)
-            
             # Count any documents that might be present
             document_count = 0
             try:
@@ -274,10 +281,12 @@ async def get_organization_usage(organization=Depends(get_organization_from_api_
             return {
                 "status": "success",
                 "usage": {
-                    "api_calls": api_calls,
+                    "api_calls": total_api_calls,
                     "vector_embeddings": vector_count,
                     "storage_used": storage_bytes,
                     "documents": document_count,
+                    "total_users": total_users,
+                    "total_conversations": total_conversations,
                     "last_updated": datetime.now().isoformat()
                 }
             }
@@ -288,10 +297,12 @@ async def get_organization_usage(organization=Depends(get_organization_from_api_
             return {
                 "status": "success",
                 "usage": {
-                    "api_calls": organization.get("api_calls", 0),
+                    "api_calls": total_api_calls,
                     "vector_embeddings": 0,
                     "storage_used": 0,
                     "documents": 0,
+                    "total_users": total_users,
+                    "total_conversations": total_conversations,
                     "last_updated": datetime.now().isoformat(),
                     "error": f"Error accessing vector database: {str(e)}"
                 }
@@ -307,6 +318,8 @@ async def get_organization_usage(organization=Depends(get_organization_from_api_
                 "vector_embeddings": 0,
                 "storage_used": 0,
                 "documents": 0,
+                "total_users": 0,
+                "total_conversations": 0,
                 "last_updated": datetime.now().isoformat(),
                 "error": f"General error: {str(e)}"
             }

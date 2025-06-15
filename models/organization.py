@@ -53,7 +53,8 @@ class Organization(BaseModel):
         "leadCapture": True,
         "botBehavior": "2",
         "avatarUrl": None,
-        "is_bot_connected": False
+        "is_bot_connected": False,
+        "ai_behavior": "You are a helpful and friendly AI assistant. You should be professional, concise, and focus on providing accurate information while maintaining a warm and engaging tone."
     })
     
     class Config:
@@ -71,7 +72,8 @@ class Organization(BaseModel):
                     "leadCapture": True,
                     "botBehavior": "2",
                     "avatarUrl": None,
-                    "is_bot_connected": False
+                    "is_bot_connected": False,
+                    "ai_behavior": "You are a helpful and friendly AI assistant. You should be professional, concise, and focus on providing accurate information while maintaining a warm and engaging tone."
                 }
             }
         }

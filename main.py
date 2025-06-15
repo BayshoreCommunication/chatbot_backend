@@ -5,6 +5,7 @@ import os
 from dotenv import load_dotenv
 from routes.auth import router as auth_router
 from routes.user import router as user_router
+from routes.dashboard import router as dashboard_router
 from fastapi.responses import JSONResponse
 from bson import ObjectId
 import json
@@ -113,8 +114,8 @@ origins = [
     "https://aibotwizard.vercel.app",
     "https://chatbot.bayshorecommunication.com",
     "http://chatbot.bayshorecommunication.com",
-    "https://botapi.bayshorecommunication.org",
-    "https://botapi.bayshorecommunication.org",
+    "http://localhost:8000",
+    "http://localhost:8000",
     "*"  # Allow all origins as fallback
 ]
 
@@ -183,6 +184,10 @@ if sales_available:
 if organization_available:
     app.include_router(organization_router, prefix="/organization", tags=["Organization Management"])
     available_features.append("Multi-tenant organization support")
+
+# Dashboard router is always included
+app.include_router(dashboard_router, prefix="/api", tags=["Dashboard"])
+available_features.append("Dashboard Analytics")
 
 # Payment router is always included
 app.include_router(payment_router, prefix="/payment", tags=["Payment Processing"])
