@@ -66,6 +66,13 @@ except Exception as e:
     appointment_available = False
 
 try:
+    from routes.appointment_availability import router as appointment_availability_router
+    appointment_availability_available = True
+except Exception as e:
+    print(f"Warning: Appointment Availability router failed to import: {e}")
+    appointment_availability_available = False
+
+try:
     from routes.sales import router as sales_router
     sales_available = True
 except Exception as e:
@@ -197,6 +204,10 @@ if lead_available:
 if appointment_available:
     app.include_router(appointment_router, prefix="/appointment", tags=["Appointment Booking"])
     available_features.append("Appointment & Booking Integration")
+
+if appointment_availability_available:
+    app.include_router(appointment_availability_router, prefix="/api/appointments", tags=["Appointment Availability"])
+    available_features.append("Appointment Availability Configuration")
 
 if sales_available:
     app.include_router(sales_router, prefix="/sales", tags=["Sales Assistant"])

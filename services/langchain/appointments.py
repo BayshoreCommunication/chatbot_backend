@@ -3,6 +3,38 @@ import random
 import json
 import openai
 import re
+from functools import lru_cache
+import hashlib
+import time
+
+# Add caching for API calls to prevent repeated requests
+_analysis_cache = {}
+_slot_extraction_cache = {}
+_cache_timestamps = {}
+
+def get_cache_key(query, available_slots=None):
+    """Generate a cache key for the query and slots"""
+    content = query
+    if available_slots:
+        content += str(available_slots)
+    return hashlib.md5(content.encode()).hexdigest()
+
+def cleanup_cache():
+    """Clean up old cache entries (older than 1 hour)"""
+    current_time = time.time()
+    expired_keys = []
+    
+    for key, timestamp in _cache_timestamps.items():
+        if current_time - timestamp > 3600:  # 1 hour
+            expired_keys.append(key)
+    
+    for key in expired_keys:
+        _analysis_cache.pop(key, None)
+        _slot_extraction_cache.pop(key, None)
+        _cache_timestamps.pop(key, None)
+    
+    if expired_keys:
+        print(f"[CACHE] Cleaned up {len(expired_keys)} expired cache entries")
 
 def get_available_slots():
     """Get available appointment slots from calendar or return mock data"""
@@ -56,108 +88,105 @@ def get_available_slots():
     # Filter out unavailable slots
     available_slots = [slot for slot in slots if slot["available"]]
     
-    # Group slots by date for better readability
+    # Format slots for display
+    formatted_slots = "Available appointment slots:\n\n"
+    
+    # Group by date
     slots_by_date = {}
     for slot in available_slots:
-        if slot["date_display"] not in slots_by_date:
-            slots_by_date[slot["date_display"]] = []
-        slots_by_date[slot["date_display"]].append(slot)
-    
-    # Format slots for display in chat
-    slots_formatted = "Available appointment slots:\n\n"
-    
-    for date, date_slots in slots_by_date.items():
-        slots_formatted += f"📅 {date}\n"
+        date_display = slot["date_display"]
+        if date_display not in slots_by_date:
+            slots_by_date[date_display] = {"morning": [], "afternoon": []}
         
-        morning_slots = [slot for slot in date_slots if slot["period"] == "morning"]
-        if morning_slots:
-            slots_formatted += "  Morning:\n"
-            for slot in morning_slots:
-                display_hour = int(slot["time"].split(":")[0])
-                am_pm = "AM"
-                slots_formatted += f"    • {display_hour}:00 {am_pm} (ID: {slot['id']})\n"
+        # Format time for display
+        hour = int(slot["time"].split(":")[0])
+        display_hour = hour if hour <= 12 else hour - 12
+        am_pm = "AM" if hour < 12 else "PM"
+        time_display = f"{display_hour}:00 {am_pm}"
         
-        afternoon_slots = [slot for slot in date_slots if slot["period"] == "afternoon"]
-        if afternoon_slots:
-            slots_formatted += "  Afternoon:\n"
-            for slot in afternoon_slots:
-                display_hour = int(slot["time"].split(":")[0])
-                if display_hour > 12:
-                    display_hour -= 12
-                slots_formatted += f"    • {display_hour}:00 PM (ID: {slot['id']})\n"
-        
-        slots_formatted += "\n"
+        period = "morning" if hour < 12 else "afternoon"
+        slots_by_date[date_display][period].append(f"    • {time_display} (ID: {slot['id']})")
     
-    return slots_formatted
+    # Build formatted output
+    for date_display, periods in slots_by_date.items():
+        formatted_slots += f"📅 {date_display}\n"
+        if periods["morning"]:
+            formatted_slots += "  Morning:\n" + "\n".join(periods["morning"]) + "\n"
+        if periods["afternoon"]:
+            formatted_slots += "  Afternoon:\n" + "\n".join(periods["afternoon"]) + "\n"
+        formatted_slots += "\n"
+    
+    return formatted_slots.strip()
 
 def extract_slot_info(query, available_slots):
-    """Extract date, time, or slot ID from user query"""
+    """Extract date, time, or slot ID from user query with caching"""
+    
+    # Clean up old cache entries periodically
+    cleanup_cache()
+    
+    # Check cache first
+    cache_key = get_cache_key(query, available_slots)
+    if cache_key in _slot_extraction_cache:
+        print(f"[CACHE] Using cached slot extraction for query: {query[:50]}...")
+        return _slot_extraction_cache[cache_key]
+    
+    print(f"[API] Extracting slot info from query: {query}")
+    
     # First, analyze available slots to understand the date/time format
     all_dates = []
     all_times = []
     all_slot_ids = []
-    all_days = []
-    all_months = []
-
-    # Parse available slots to extract date, time and slot ID information
-    if isinstance(available_slots, str):
-        # Extract dates, times, and slot IDs from available_slots string
-        for line in available_slots.split('\n'):
-            if "📅" in line:
-                date_match = line.replace("📅", "").strip()
-                all_dates.append(date_match)
+    
+    # Parse available slots string to extract available options
+    lines = available_slots.split('\n')
+    for line in lines:
+        if "📅" in line:
+            # Extract date
+            date_part = line.replace("📅", "").strip()
+            all_dates.append(date_part)
+        elif "• " in line and "ID: " in line:
+            # Extract time and slot ID
+            try:
+                time_match = re.search(r'(\d+:\d+\s*(?:AM|PM))', line)
+                if time_match:
+                    all_times.append(time_match.group(1))
                 
-                # Extract day, month information for later matching
-                try:
-                    date_parts = date_match.split(",")[0].strip().split(" ")
-                    if len(date_parts) > 0:
-                        day_name = date_parts[0]
-                        if day_name not in all_days:
-                            all_days.append(day_name)
-                    
-                    if len(date_parts) > 1 and "," in date_match:
-                        month_name = date_match.split(",")[1].strip().split(" ")[0]
-                        if month_name not in all_months:
-                            all_months.append(month_name)
-                except:
-                    pass
-                    
-            if "ID: slot_" in line:
-                slot_id = line.split("(ID: ")[1].split(")")[0].strip()
-                all_slot_ids.append(slot_id)
-                # Extract time from this line too
-                if "AM" in line or "PM" in line:
-                    try:
-                        time_part = line.split("•")[1].split("(ID:")[0].strip()
-                        if time_part and time_part not in all_times:
-                            all_times.append(time_part)
-                    except:
-                        pass
+                slot_id_match = re.search(r'ID:\s*(slot_[^)]+)', line)
+                if slot_id_match:
+                    all_slot_ids.append(slot_id_match.group(1))
+            except:
+                pass
+    
+    # Remove duplicates while preserving order
+    all_dates = list(dict.fromkeys(all_dates))
+    all_times = list(dict.fromkeys(all_times))
+    all_slot_ids = list(dict.fromkeys(all_slot_ids))
+    
+    # Extract available days and months from dates
+    available_days = []
+    available_months = []
+    for date_str in all_dates:
+        try:
+            # Parse date string like "Tuesday, June 17, 2025"
+            day_match = re.search(r'^(\w+),', date_str)
+            if day_match:
+                available_days.append(day_match.group(1))
             
-            # Extract time directly
-            if "AM" in line or "PM" in line:
-                try:
-                    if ":" in line:
-                        time_matches = re.findall(r'(\d+:\d+\s*(?:AM|PM))', line)
-                        for match in time_matches:
-                            if match and match not in all_times:
-                                all_times.append(match)
-                    else:
-                        time_matches = re.findall(r'(\d+\s*(?:AM|PM))', line)
-                        for match in time_matches:
-                            if match and match not in all_times:
-                                all_times.append(match)
-                except:
-                    pass
+            month_match = re.search(r',\s*(\w+)\s+\d+,', date_str)
+            if month_match:
+                available_months.append(month_match.group(1))
+        except:
+            pass
     
-    # Check for direct slot ID in query
-    slot_id_match = None
-    for sid in all_slot_ids:
-        if sid in query:
-            slot_id_match = sid
-            break
+    # Remove duplicates
+    available_days = list(dict.fromkeys(available_days))
+    available_months = list(dict.fromkeys(available_months))
     
-    # Build a comprehensive prompt that includes examples and knowledge about available options
+    # Look for direct slot ID match first (most reliable)
+    slot_id_pattern = r'\b(slot_\d{4}-\d{2}-\d{2}_\d+_\d+)\b'
+    slot_id_match = re.search(slot_id_pattern, query)
+    
+    # Build comprehensive prompt for slot extraction
     slot_selection_prompt = f"""
     Extract the date and time from the following user request for an appointment booking.
     If a specific slot or slot ID is mentioned, identify it.
@@ -169,8 +198,8 @@ def extract_slot_info(query, available_slots):
     User Request: "{query}"
     
     Available Dates: {', '.join(all_dates)}
-    Available Days: {', '.join(all_days)}
-    Available Months: {', '.join(all_months)}
+    Available Days: {', '.join(available_days)}
+    Available Months: {', '.join(available_months)}
     Available Times: {', '.join(all_times)}
     Available Slot IDs: {', '.join(all_slot_ids[:5])} (and more...)
     
@@ -224,12 +253,16 @@ def extract_slot_info(query, available_slots):
         slot_info = json.loads(slot_response.choices[0].message.content)
         print(f"AI Extracted Slot Info: {slot_info}")
         
+        # Cache the result with timestamp
+        _slot_extraction_cache[cache_key] = slot_info
+        _cache_timestamps[cache_key] = time.time()
+        
         # If we have a direct slot ID match from regex, use it with high confidence
         if slot_id_match:
-            slot_info["slot_id"] = slot_id_match
+            slot_info["slot_id"] = slot_id_match.group(1)
             slot_info["confidence"] = "high"
             slot_info["is_booking_confirmation"] = True
-            print(f"Found direct slot ID match: {slot_id_match}")
+            print(f"Found direct slot ID match: {slot_id_match.group(1)}")
             return slot_info
         
         # Double-check the date against available options to improve matching
@@ -251,164 +284,55 @@ def extract_slot_info(query, available_slots):
                 slot_info["confidence"] = "high"
                 print(f"Improved date match: {target_date} → {best_match}")
         
-        # Check for booking confirmation language
-        confirmation_phrases = ["i'll take", "i will take", "i'll pick", "i will pick", "book me", 
-                               "let's do", "want to book", "confirm", "i pick", "i want", "give me",
-                               "i'd like", "i would like", "i like", "works for me", "good for me",
-                               "i can do"]
-        
-        if any(phrase in query.lower() for phrase in confirmation_phrases):
-            slot_info["is_booking_confirmation"] = True
-            # Increase confidence if we have a date and time
-            if (slot_info.get("date") and slot_info["date"] != "null" and 
-                slot_info.get("time") and slot_info["time"] != "null"):
-                slot_info["confidence"] = "high"
-                
-        # Special case for day numbers and month names (like "26 may" or "may 26")
-        if not slot_info.get("date") or slot_info["date"] == "null":
-            # Look for patterns like "26 may", "may 26", etc.
-            month_names = ["january", "february", "march", "april", "may", "june", 
-                          "july", "august", "september", "october", "november", "december"]
-            month_abbr = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"]
-            
-            # Pattern for "26 may" or "26th may"
-            day_month_pattern = r'(\d{1,2})(?:st|nd|rd|th)?\s+(?:of\s+)?([a-zA-Z]+)'
-            # Pattern for "may 26" or "may 26th"
-            month_day_pattern = r'([a-zA-Z]+)\s+(\d{1,2})(?:st|nd|rd|th)?'
-            
-            day_month_match = re.search(day_month_pattern, query.lower())
-            month_day_match = re.search(month_day_pattern, query.lower())
-            
-            if day_month_match:
-                day_num = day_month_match.group(1)
-                month_text = day_month_match.group(2).lower()
-                
-                # Match with available months
-                matched_month = None
-                for month in all_months:
-                    if month.lower().startswith(month_text[:3]):
-                        matched_month = month
-                        break
-                
-                if matched_month:
-                    # Find the full date in available_dates
-                    for date_str in all_dates:
-                        if matched_month in date_str and f" {day_num}," in date_str:
-                            slot_info["date"] = date_str
-                            slot_info["confidence"] = "high"
-                            slot_info["is_booking_confirmation"] = True
-                            break
-            
-            elif month_day_match:
-                month_text = month_day_match.group(1).lower()
-                day_num = month_day_match.group(2)
-                
-                # Match with available months
-                matched_month = None
-                for month in all_months:
-                    if month.lower().startswith(month_text[:3]):
-                        matched_month = month
-                        break
-                
-                if matched_month:
-                    # Find the full date in available_dates
-                    for date_str in all_dates:
-                        if matched_month in date_str and f" {day_num}," in date_str:
-                            slot_info["date"] = date_str
-                            slot_info["confidence"] = "high"
-                            slot_info["is_booking_confirmation"] = True
-                            break
-        
-        # Add day of week matching for cases like "Monday at 4pm"
-        if (not slot_info.get("date") or slot_info["date"] == "null") and all_days:
-            days_of_week = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
-            days_of_week_abbr = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
-            
-            for i, day in enumerate(days_of_week):
-                day_abbr = days_of_week_abbr[i]
-                if day in query.lower() or day_abbr in query.lower():
-                    # Find matching day in available dates
-                    for date in all_dates:
-                        if day.capitalize() in date or day_abbr.capitalize() in date.split(",")[0]:
-                            slot_info["date"] = date
-                            slot_info["confidence"] = "high"
-                            break
-                    break
-                
-        # Check for selection phrases specifically mentioning times
-        time_selection_phrases = [
-            "want the", "want to book", "pick the", "pick", "book the", "take the", 
-            "choose the", "prefer the", "like the", "select the", "book me for",
-            "reserve the", "go with the", "schedule the", "sign me up for",
-            "want to pick", "want to select", "would like the", "can i pick",
-            "can i take", "can i book", "can i get"
-        ]
-        
-        combined_time_pattern = '|'.join(time_selection_phrases)
-        for time in all_times:
-            # Extract just the hour part (e.g. "4" from "4:00 PM")
-            hour_match = re.search(r'(\d{1,2})', time)
-            if hour_match:
-                hour = hour_match.group(1)
-                
-                # Look for phrases like "I want the 4pm slot" or "I pick 4 PM"
-                time_selection_pattern = fr'({combined_time_pattern})\s*{hour}\s*(?::\d{{2}})?\s*(?:am|pm|AM|PM)'
-                if re.search(time_selection_pattern, query.lower()):
-                    time_match = time
-                    is_booking_confirmation = True
-                    break
-        
         return slot_info
+        
     except Exception as e:
-        print(f"Error in extract_slot_info: {str(e)}")
-        # Return an empty result as fallback
-        return {
+        print(f"Error in AI slot extraction: {str(e)}")
+        # Return basic extraction as fallback
+        fallback_result = {
             "date": None,
             "time": None,
-            "slot_id": None,
-            "is_booking_confirmation": False,
-            "confidence": "low"
+            "slot_id": slot_id_match.group(1) if slot_id_match else None,
+            "is_booking_confirmation": bool(slot_id_match),
+            "confidence": "high" if slot_id_match else "low"
         }
+        
+        # Cache the fallback result too
+        _slot_extraction_cache[cache_key] = fallback_result
+        _cache_timestamps[cache_key] = time.time()
+        return fallback_result
 
 def analyze_appointment_query(query):
-    """
-    Analyze the user's query to determine intent related to appointment booking.
-    This specialized function uses a combination of regex patterns and AI to determine
-    appointment-related intents.
+    """Analyze user query to determine intent with caching"""
     
-    Args:
-        query (str): The user's query text
-        
-    Returns:
-        dict: A dictionary containing the analysis results
-    """
-    # Define common patterns and keywords for different intents
-    booking_keywords = ["book", "reserve", "schedule", "make appointment", "get appointment", 
-                       "set up meeting", "arrange", "setup", "get a slot"]
+    # Clean up old cache entries periodically
+    cleanup_cache()
     
-    availability_keywords = ["available", "open slot", "free time", "when can", "what time", 
-                            "what day", "possible time", "slot", "schedule", "calendar", "show me"]
+    # Check cache first
+    cache_key = get_cache_key(query)
+    if cache_key in _analysis_cache:
+        print(f"[CACHE] Using cached analysis for query: {query[:50]}...")
+        return _analysis_cache[cache_key]
     
-    # Check for day-specific queries like "show me Monday" or "Monday slots"
-    weekday_names = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
-    weekday_abbr = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+    print(f"[API] Analyzing appointment query: {query}")
     
-    # Check if this is a day-specific availability query (e.g., "show me Monday")
-    has_day_specific_query = False
+    # Pattern-based pre-analysis for common day queries
     specific_day = None
-    
-    for i, day in enumerate(weekday_names):
-        if day in query.lower() or weekday_abbr[i] in query.lower():
-            specific_day = day.capitalize()
-            has_day_specific_query = True
-            break
-    
-    # Check for "show me" or "slots for" patterns with day names
+    has_day_specific_query = False
     day_query_patterns = [
         r"(?:show|list|display|get|give|what)(?:\s+\w+){0,3}\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)",
         r"(?:available|show|slots?)(?:\s+\w+){0,3}\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)",
         r"(monday|tuesday|wednesday|thursday|friday|saturday|sunday)(?:\s+\w+){0,3}(?:slots?|times?|appointments?)"
     ]
+    
+    weekday_names = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+    
+    # Check if query mentions a specific day
+    for day in weekday_names:
+        if day in query.lower():
+            specific_day = day
+            has_day_specific_query = True
+            break
     
     for pattern in day_query_patterns:
         matches = re.findall(pattern, query.lower())
@@ -455,12 +379,16 @@ def analyze_appointment_query(query):
         intent_info["is_day_specific_query"] = has_day_specific_query
         intent_info["specific_day"] = specific_day or intent_info.get("specific_day")
         
+        # Cache the result with timestamp
+        _analysis_cache[cache_key] = intent_info
+        _cache_timestamps[cache_key] = time.time()
+        
         return intent_info
         
     except Exception as e:
         print(f"Error in AI query analysis: {str(e)}")
         # Return a default intent if analysis fails
-        return {
+        fallback_result = {
             "intent": "general_question",
             "specific_day": specific_day,
             "specific_date": None,
@@ -470,9 +398,46 @@ def analyze_appointment_query(query):
             "confidence": "low",
             "is_day_specific_query": has_day_specific_query
         }
+        
+        # Cache the fallback result too
+        _analysis_cache[cache_key] = fallback_result
+        _cache_timestamps[cache_key] = time.time()
+        return fallback_result
 
 def handle_booking(query, user_data, available_slots, language):
-    """Handle the appointment booking process"""
+    """Handle the appointment booking process with loop prevention"""
+    
+    # Circuit breaker - prevent infinite loops
+    if "api_call_count" not in user_data:
+        user_data["api_call_count"] = 0
+    
+    user_data["api_call_count"] += 1
+    
+    # If we've made too many API calls, return a simple response
+    if user_data["api_call_count"] > 3:
+        print(f"[CIRCUIT_BREAKER] Too many API calls ({user_data['api_call_count']}), returning simple response")
+        
+        simple_response = f"I'd be happy to help you schedule an appointment. Here are the available slots:\n\n{available_slots}\n\nPlease reply with your preferred date and time."
+        
+        # Reset counter for next conversation
+        user_data["api_call_count"] = 0
+        
+        # Add this interaction to history
+        user_data["conversation_history"].append({
+            "role": "assistant", 
+            "content": simple_response
+        })
+        
+        return {
+            "answer": simple_response,
+            "mode": "appointment",
+            "language": language,
+            "user_data": user_data,
+            "available_slots": available_slots
+        }
+    
+    print(f"[DEBUG] handle_booking called with query: '{query[:100]}...' (API call #{user_data['api_call_count']})")
+    
     # If available_slots is not provided, get them
     if not available_slots:
         available_slots = get_available_slots()
@@ -484,7 +449,44 @@ def handle_booking(query, user_data, available_slots, language):
     
     # Debug information
     print(f"Current appointment context before processing: {user_data.get('appointment_context', {})}")
-    print(f"User query: '{query}'")
+    
+    # Check for simple booking intent first - if user says "book appointment" without specifics, show slots
+    simple_booking_phrases = [
+        "book an appointment", "book appointment", "schedule appointment", 
+        "make an appointment", "make appointment", "i want to book", "help me book",
+        "can you help me book", "book me", "schedule me"
+    ]
+    
+    if any(phrase in query.lower() for phrase in simple_booking_phrases):
+        # Check if the query is just asking for help booking without specific details
+        has_specific_details = any([
+            re.search(r'\d+:\d+', query),  # Has time like 10:30
+            re.search(r'\d+\s*(am|pm)', query.lower()),  # Has time like 10 am
+            any(day in query.lower() for day in ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]),
+            re.search(r'slot_\d{4}-\d{2}-\d{2}_\d+_\d+', query),  # Has slot ID
+        ])
+        
+        if not has_specific_details:
+            print(f"[DEBUG] Simple booking request without specifics - showing available slots")
+            
+            response = f"I'd be happy to help you schedule an appointment! Here are the available slots:\n\n{available_slots}\n\nPlease let me know which date and time works best for you."
+            
+            # Add this interaction to history
+            user_data["conversation_history"].append({
+                "role": "assistant", 
+                "content": response
+            })
+            
+            # Reset API call counter since we handled this without API calls
+            user_data["api_call_count"] = 0
+            
+            return {
+                "answer": response,
+                "mode": "appointment",
+                "language": language,
+                "user_data": user_data,
+                "available_slots": available_slots
+            }
     
     # TIME SELECTION DETECTION
     # Before analyzing intent, check if this is a direct time selection based on context
@@ -556,6 +558,9 @@ def handle_booking(query, user_data, available_slots, language):
                     
                     # Clear appointment context since booking is complete
                     user_data["appointment_context"] = {}
+                    
+                    # Reset API call counter after successful booking
+                    user_data["api_call_count"] = 0
                     
                     return {
                         "answer": confirmation,
@@ -630,6 +635,9 @@ def handle_booking(query, user_data, available_slots, language):
                     
                     # Clear appointment context since booking is complete
                     user_data["appointment_context"] = {}
+                    
+                    # Reset API call counter after successful booking
+                    user_data["api_call_count"] = 0
                     
                     return {
                         "answer": confirmation,
@@ -717,6 +725,9 @@ def handle_booking(query, user_data, available_slots, language):
                     # Clear appointment context since booking is complete
                     user_data["appointment_context"] = {}
                     
+                    # Reset API call counter after successful booking
+                    user_data["api_call_count"] = 0
+                    
                     return {
                         "answer": confirmation,
                         "mode": "faq",  # Reset to FAQ mode after booking
@@ -781,6 +792,9 @@ def handle_booking(query, user_data, available_slots, language):
                 
                 # Clear appointment context since booking is complete
                 user_data["appointment_context"] = {}
+                
+                # Reset API call counter after successful booking
+                user_data["api_call_count"] = 0
                 
                 return {
                     "answer": confirmation,
@@ -857,6 +871,9 @@ def handle_booking(query, user_data, available_slots, language):
                         
                         # Clear appointment context since booking is complete
                         user_data["appointment_context"] = {}
+                        
+                        # Reset API call counter after successful booking
+                        user_data["api_call_count"] = 0
                         
                         return {
                             "answer": confirmation,
