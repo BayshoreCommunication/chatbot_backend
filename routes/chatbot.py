@@ -1,29 +1,68 @@
+import logging
+logging.getLogger('pymongo').setLevel(logging.WARNING)
+
 from fastapi import APIRouter, Request, UploadFile, File, Form, HTTPException, Depends, Header, Body
-from services.langchain.engine import ask_bot, add_document, escalate_to_human
-from services.language_detect import detect_language
-from services.database import get_organization_by_api_key, create_or_update_visitor, add_conversation_message, get_visitor, get_conversation_history, save_user_profile, get_user_profile, db
+import sys
+import traceback
+
+# Try to import required services with error handling
+try:
+    from services.langchain.engine import ask_bot, add_document, escalate_to_human
+    from services.language_detect import detect_language
+    from services.database import get_organization_by_api_key, create_or_update_visitor, add_conversation_message, get_visitor, get_conversation_history, save_user_profile, get_user_profile, db
+    from services.faq_matcher import find_matching_faq, get_suggested_faqs
+    from services.langchain.user_management import handle_name_collection, handle_email_collection
+    SERVICES_AVAILABLE = True
+except Exception as e:
+    print(f"Error importing services: {str(e)}")
+    print(traceback.format_exc())
+    SERVICES_AVAILABLE = False
+
 from typing import Optional, Dict, Any, List
 import json
 import os
 from pydantic import BaseModel
 from datetime import datetime
 import pymongo
-from services.faq_matcher import find_matching_faq, get_suggested_faqs
-from services.langchain.user_management import handle_name_collection, handle_email_collection
 import re
 import openai
+from fastapi_socketio import SocketManager
+from fastapi import FastAPI
 
 router = APIRouter()
+socket_manager = None
 
-# Initialize instant replies collection and indexes
-instant_replies = db.instant_reply
-instant_replies.create_index("org_id")
-instant_replies.create_index([("org_id", pymongo.ASCENDING), ("is_active", pymongo.ASCENDING)])
+# Initialize socket.io
+def init_socketio(app: FastAPI):
+    global socket_manager
+    socket_manager = SocketManager(app)
+    
+    @socket_manager.on('connect')
+    async def handle_connect(sid, environ):
+        print(f"Client connected: {sid}")
 
-# Initialize upload history collection and indexes
-upload_history_collection = db.upload_history
-upload_history_collection.create_index("org_id")
-upload_history_collection.create_index([("org_id", pymongo.ASCENDING), ("created_at", pymongo.DESCENDING)])
+    @socket_manager.on('disconnect')
+    async def handle_disconnect(sid):
+        print(f"Client disconnected: {sid}")
+
+    @socket_manager.on('join_room')
+    async def handle_join_room(sid, data):
+        room = data.get('room')
+        if room:
+            await socket_manager.enter_room(sid, room)
+            print(f"Client {sid} joined room: {room}")
+    
+    return socket_manager
+
+# Initialize collections and indexes
+if SERVICES_AVAILABLE:
+    instant_replies = db.instant_reply
+    instant_replies.create_index("org_id")
+    instant_replies.create_index([("org_id", pymongo.ASCENDING), ("is_active", pymongo.ASCENDING)])
+
+    upload_history_collection = db.upload_history
+    upload_history_collection.create_index("org_id")
+    upload_history_collection.create_index([("org_id", pymongo.ASCENDING), ("created_at", pymongo.DESCENDING)])
 
 # User session storage (in a real application, use Redis for temporary storage)
 user_sessions = {}
@@ -147,6 +186,17 @@ async def ask_question(
             "content": request.question
         })
 
+        # Emit user message to dashboard
+        await socket_manager.emit('new_message', {
+            'session_id': request.session_id,
+            'message': {
+                'role': 'user',
+                'content': request.question,
+                'timestamp': datetime.utcnow().isoformat()
+            },
+            'organization_id': org_id
+        }, room=f"org_{org_id}")
+
         if is_first:
             print("[DEBUG] Checking for instant reply")
             instant_reply = instant_replies.find_one({
@@ -172,6 +222,17 @@ async def ask_question(
                     "role": "assistant",
                     "content": instant_reply["message"]
                 })
+
+                # Emit bot reply to dashboard
+                await socket_manager.emit('new_message', {
+                    'session_id': request.session_id,
+                    'message': {
+                        'role': 'assistant',
+                        'content': instant_reply["message"],
+                        'timestamp': datetime.utcnow().isoformat()
+                    },
+                    'organization_id': org_id
+                }, room=f"org_{org_id}")
 
                 print("[DEBUG] Returning instant reply")
                 return {
@@ -553,6 +614,17 @@ async def ask_question(
         suggested_faqs = get_suggested_faqs(org_id)
         response["suggested_faqs"] = suggested_faqs
         response["user_data"] = request.user_data
+
+        # After getting bot response, emit it to dashboard
+        await socket_manager.emit('new_message', {
+            'session_id': request.session_id,
+            'message': {
+                'role': 'assistant',
+                'content': response["answer"],
+                'timestamp': datetime.utcnow().isoformat()
+            },
+            'organization_id': org_id
+        }, room=f"org_{org_id}")
 
         return response
 

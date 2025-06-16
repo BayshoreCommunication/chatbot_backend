@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 from bson import ObjectId
 import json
 from pathlib import Path
+import traceback
 
 class MongoJSONEncoder(json.JSONEncoder):
     def default(self, o):
@@ -17,12 +18,23 @@ class MongoJSONEncoder(json.JSONEncoder):
             return str(o)
         return super().default(o)
 
+# Create the FastAPI app
+app = FastAPI(
+    title="AI Chatbot SaaS Platform",
+    description="Multi-tenant SaaS platform for AI-powered business chatbots",
+    version="1.0.0"
+)
+
 # Try to import routers, skip problematic ones
 try:
-    from routes.chatbot import router as chatbot_router
+    from routes.chatbot import router as chatbot_router, init_socketio
     chatbot_available = True
+    # Initialize socket.io with the app
+    socket_manager = init_socketio(app)
+    print("Successfully initialized socket.io")
 except Exception as e:
     print(f"Warning: Chatbot router failed to import: {e}")
+    print(traceback.format_exc())
     chatbot_available = False
 
 try:
@@ -84,16 +96,16 @@ except Exception as e:
     print(f"Warning: Upload router failed to import: {e}")
     upload_available = False
 
+try:
+    from routes.conversations import router as conversations_router
+    conversations_available = True
+except Exception as e:
+    print(f"Warning: Conversations router failed to import: {e}")
+    conversations_available = False
+
 # API credentials are now hardcoded in the respective service files
 # But we still need to load environment variables for configuration
 load_dotenv()
-
-# Create the FastAPI app
-app = FastAPI(
-    title="AI Chatbot SaaS Platform",
-    description="Multi-tenant SaaS platform for AI-powered business chatbots",
-    version="1.0.0"
-)
 
 # Mount uploads directory for static file serving
 uploads_dir = Path("uploads")
@@ -157,9 +169,18 @@ available_features = []
 if upload_available:
     app.include_router(upload_router, prefix="/api/upload", tags=["upload"])
 
+if conversations_available:
+    app.include_router(conversations_router, prefix="/api", tags=["Conversations"])
+    available_features.append("Conversation Management")
+
 if chatbot_available:
-    app.include_router(chatbot_router, prefix="/api/chatbot", tags=["chatbot"])
-    available_features.append("AI FAQ Bot with knowledge base")
+    try:
+        app.include_router(chatbot_router, prefix="/api/chatbot", tags=["chatbot"])
+        available_features.append("AI FAQ Bot with knowledge base")
+        print("Successfully included chatbot router")
+    except Exception as e:
+        print(f"Error including chatbot router: {e}")
+        print(traceback.format_exc())
 
 if faq_available:
     app.include_router(faq_router, prefix="/api/faq", tags=["FAQ Management"])
