@@ -26,33 +26,78 @@ from datetime import datetime
 import pymongo
 import re
 import openai
-from fastapi_socketio import SocketManager
+import socketio
 from fastapi import FastAPI
 
 router = APIRouter()
-socket_manager = None
+sio = None
 
 # Initialize socket.io
 def init_socketio(app: FastAPI):
-    global socket_manager
-    socket_manager = SocketManager(app)
+    global sio
+    sio = socketio.AsyncServer(
+        cors_allowed_origins="*",  # Simplified CORS for testing
+        async_mode='asgi',
+        logger=True,
+        engineio_logger=True
+    )
     
-    @socket_manager.on('connect')
-    async def handle_connect(sid, environ):
-        print(f"Client connected: {sid}")
+    @sio.event
+    async def connect(sid, environ, auth):
+        print(f"[SOCKET.IO] Client connected: {sid}")
+        print(f"[SOCKET.IO] Auth: {auth}")
+        print(f"[SOCKET.IO] Environ keys: {list(environ.keys())[:10]}")
+        
+        # Get API key from auth or query params
+        api_key = None
+        if auth and isinstance(auth, dict):
+            api_key = auth.get('apiKey')
+        
+        if not api_key:
+            # Try to get from query params
+            query_string = environ.get('QUERY_STRING', '')
+            print(f"[SOCKET.IO] Query string: {query_string}")
+            if 'apiKey=' in query_string:
+                for param in query_string.split('&'):
+                    if param.startswith('apiKey='):
+                        api_key = param.split('=')[1]
+                        break
+        
+        if api_key:
+            # Auto-join organization room using API key
+            room_name = f"org_{api_key}"
+            await sio.enter_room(sid, room_name)
+            print(f"[SOCKET.IO] Client {sid} auto-joined room: {room_name}")
+            
+            # Send a welcome message to confirm connection
+            await sio.emit('connection_confirmed', {
+                'status': 'connected',
+                'room': room_name,
+                'message': 'Socket.IO connection established successfully'
+            }, room=sid)
+        else:
+            print(f"[SOCKET.IO] Warning: Client {sid} connected without API key")
 
-    @socket_manager.on('disconnect')
-    async def handle_disconnect(sid):
-        print(f"Client disconnected: {sid}")
+    @sio.event
+    async def disconnect(sid):
+        print(f"[SOCKET.IO] Client disconnected: {sid}")
 
-    @socket_manager.on('join_room')
-    async def handle_join_room(sid, data):
+    @sio.event
+    async def join_room(sid, data):
         room = data.get('room')
         if room:
-            await socket_manager.enter_room(sid, room)
-            print(f"Client {sid} joined room: {room}")
+            await sio.enter_room(sid, room)
+            print(f"[SOCKET.IO] Client {sid} explicitly joined room: {room}")
+            
+            # Confirm room join
+            await sio.emit('room_joined', {
+                'room': room,
+                'status': 'joined'
+            }, room=sid)
     
-    return socket_manager
+    # Mount Socket.IO on the FastAPI app at /socket.io/
+    socket_asgi_app = socketio.ASGIApp(sio, app, socketio_path='/socket.io')
+    return socket_asgi_app
 
 # Initialize collections and indexes
 if SERVICES_AVAILABLE:
@@ -187,7 +232,7 @@ async def ask_question(
         })
 
         # Emit user message to dashboard
-        await socket_manager.emit('new_message', {
+        await sio.emit('new_message', {
             'session_id': request.session_id,
             'message': {
                 'role': 'user',
@@ -195,7 +240,7 @@ async def ask_question(
                 'timestamp': datetime.utcnow().isoformat()
             },
             'organization_id': org_id
-        }, room=f"org_{org_id}")
+        }, room=f"org_{org_api_key}")
 
         if is_first:
             print("[DEBUG] Checking for instant reply")
@@ -208,8 +253,7 @@ async def ask_question(
             
             if instant_reply:
                 print("[DEBUG] Processing instant reply")
-                # Remove duplicate message storage
-                # Store only the instant reply
+                # Store the instant reply
                 add_conversation_message(
                     organization_id=org_id,
                     visitor_id=visitor["id"],
@@ -224,7 +268,7 @@ async def ask_question(
                 })
 
                 # Emit bot reply to dashboard
-                await socket_manager.emit('new_message', {
+                await sio.emit('new_message', {
                     'session_id': request.session_id,
                     'message': {
                         'role': 'assistant',
@@ -232,7 +276,7 @@ async def ask_question(
                         'timestamp': datetime.utcnow().isoformat()
                     },
                     'organization_id': org_id
-                }, room=f"org_{org_id}")
+                }, room=f"org_{org_api_key}")
 
                 print("[DEBUG] Returning instant reply")
                 return {
@@ -241,9 +285,6 @@ async def ask_question(
                     "language": "en",
                     "user_data": request.user_data
                 }
-        else:
-            # Remove duplicate message storage here since we already stored it at the beginning
-            pass
 
         print("[DEBUG] Checking user information collection")
         # Check if we need to collect user information
@@ -283,7 +324,6 @@ async def ask_question(
                     request.user_data["name"] = "Anonymous User"
                     save_user_profile(org_id, request.session_id, request.user_data)
                     
-                    # Remove duplicate message storage, only store the response
                     email_prompt = "That's perfectly fine! Would you mind sharing your email address so we can better assist you? You can also skip this if you prefer."
                     
                     # Store and add to history
@@ -300,6 +340,17 @@ async def ask_question(
                         "content": email_prompt
                     })
                     
+                    # Emit assistant message to dashboard
+                    await sio.emit('new_message', {
+                        'session_id': request.session_id,
+                        'message': {
+                            'role': 'assistant',
+                            'content': email_prompt,
+                            'timestamp': datetime.utcnow().isoformat()
+                        },
+                        'organization_id': org_id
+                    }, room=f"org_{org_api_key}")
+                    
                     return {
                         "answer": email_prompt,
                         "mode": "faq",
@@ -311,7 +362,6 @@ async def ask_question(
                     request.user_data["name"] = extracted_name
                     save_user_profile(org_id, request.session_id, request.user_data)
                     
-                    # Remove duplicate message storage, only store the response
                     email_prompt = f"Nice to meet you, {extracted_name}! Would you mind sharing your email address? You can skip this if you prefer."
                     
                     # Store and add to history
@@ -328,6 +378,17 @@ async def ask_question(
                         "content": email_prompt
                     })
                     
+                    # Emit assistant message to dashboard
+                    await sio.emit('new_message', {
+                        'session_id': request.session_id,
+                        'message': {
+                            'role': 'assistant',
+                            'content': email_prompt,
+                            'timestamp': datetime.utcnow().isoformat()
+                        },
+                        'organization_id': org_id
+                    }, room=f"org_{org_api_key}")
+                    
                     return {
                         "answer": email_prompt,
                         "mode": "faq",
@@ -337,7 +398,6 @@ async def ask_question(
                 else:
                     print("[DEBUG] No valid name found")
                     
-                    # Remove duplicate message storage, only store the response
                     name_prompt = "Before proceeding, could you please tell me your name? You can skip this if you prefer not to share."
                     
                     # Store and add to history
@@ -353,6 +413,17 @@ async def ask_question(
                         "role": "assistant",
                         "content": name_prompt
                     })
+                    
+                    # Emit assistant message to dashboard
+                    await sio.emit('new_message', {
+                        'session_id': request.session_id,
+                        'message': {
+                            'role': 'assistant',
+                            'content': name_prompt,
+                            'timestamp': datetime.utcnow().isoformat()
+                        },
+                        'organization_id': org_id
+                    }, room=f"org_{org_api_key}")
                     
                     return {
                         "answer": name_prompt,
@@ -409,6 +480,17 @@ async def ask_question(
                         "content": welcome
                     })
                     
+                    # Emit assistant message to dashboard
+                    await sio.emit('new_message', {
+                        'session_id': request.session_id,
+                        'message': {
+                            'role': 'assistant',
+                            'content': welcome,
+                            'timestamp': datetime.utcnow().isoformat()
+                        },
+                        'organization_id': org_id
+                    }, room=f"org_{org_api_key}")
+                    
                     return {
                         "answer": welcome,
                         "mode": "faq",
@@ -435,6 +517,17 @@ async def ask_question(
                         "content": welcome
                     })
                     
+                    # Emit assistant message to dashboard
+                    await sio.emit('new_message', {
+                        'session_id': request.session_id,
+                        'message': {
+                            'role': 'assistant',
+                            'content': welcome,
+                            'timestamp': datetime.utcnow().isoformat()
+                        },
+                        'organization_id': org_id
+                    }, room=f"org_{org_api_key}")
+                    
                     return {
                         "answer": welcome,
                         "mode": "faq",
@@ -457,6 +550,17 @@ async def ask_question(
                         "role": "assistant",
                         "content": email_prompt
                     })
+                    
+                    # Emit assistant message to dashboard
+                    await sio.emit('new_message', {
+                        'session_id': request.session_id,
+                        'message': {
+                            'role': 'assistant',
+                            'content': email_prompt,
+                            'timestamp': datetime.utcnow().isoformat()
+                        },
+                        'organization_id': org_id
+                    }, room=f"org_{org_api_key}")
                     
                     return {
                         "answer": email_prompt,
@@ -493,6 +597,17 @@ async def ask_question(
                         "content": welcome
                     })
                     
+                    # Emit assistant message to dashboard
+                    await sio.emit('new_message', {
+                        'session_id': request.session_id,
+                        'message': {
+                            'role': 'assistant',
+                            'content': welcome,
+                            'timestamp': datetime.utcnow().isoformat()
+                        },
+                        'organization_id': org_id
+                    }, room=f"org_{org_api_key}")
+                    
                     return {
                         "answer": welcome,
                         "mode": "faq",
@@ -512,16 +627,7 @@ async def ask_question(
         # If we found a good FAQ match, return it
         if matching_faq:
             print("[DEBUG] Found matching FAQ, preparing response...")
-            # Store the user's message
-            add_conversation_message(
-                organization_id=org_id,
-                visitor_id=visitor["id"],
-                session_id=request.session_id,
-                role="user",
-                content=request.question,
-                metadata={"mode": "faq"}
-            )
-
+            
             # Store the FAQ response
             add_conversation_message(
                 organization_id=org_id,
@@ -538,10 +644,21 @@ async def ask_question(
             )
 
             # Update conversation history
-            request.user_data["conversation_history"].extend([
-                {"role": "user", "content": request.question},
-                {"role": "assistant", "content": matching_faq["response"]}
-            ])
+            request.user_data["conversation_history"].append({
+                "role": "assistant", 
+                "content": matching_faq["response"]
+            })
+
+            # Emit assistant message to dashboard
+            await sio.emit('new_message', {
+                'session_id': request.session_id,
+                'message': {
+                    'role': 'assistant',
+                    'content': matching_faq["response"],
+                    'timestamp': datetime.utcnow().isoformat()
+                },
+                'organization_id': org_id
+            }, room=f"org_{org_api_key}")
 
             # Get suggested FAQs for follow-up
             print("[DEBUG] Getting suggested FAQs...")
@@ -585,16 +702,6 @@ async def ask_question(
             api_key=org_api_key
         )
 
-        # Store messages in MongoDB - use original question
-        add_conversation_message(
-            organization_id=org_id,
-            visitor_id=visitor["id"],
-            session_id=request.session_id,
-            role="user", 
-            content=request.question,  # Use original question
-            metadata={"mode": request.mode}
-        )
-
         add_conversation_message(
             organization_id=org_id,
             visitor_id=visitor["id"],
@@ -604,11 +711,11 @@ async def ask_question(
             metadata={"mode": request.mode}
         )
 
-        # Update conversation history - use original question
-        request.user_data["conversation_history"].extend([
-            {"role": "user", "content": request.question},  # Use original question
-            {"role": "assistant", "content": response["answer"]}
-        ])
+        # Update conversation history
+        request.user_data["conversation_history"].append({
+            "role": "assistant", 
+            "content": response["answer"]
+        })
 
         # Get suggested FAQs
         suggested_faqs = get_suggested_faqs(org_id)
@@ -616,7 +723,7 @@ async def ask_question(
         response["user_data"] = request.user_data
 
         # After getting bot response, emit it to dashboard
-        await socket_manager.emit('new_message', {
+        await sio.emit('new_message', {
             'session_id': request.session_id,
             'message': {
                 'role': 'assistant',
@@ -624,7 +731,7 @@ async def ask_question(
                 'timestamp': datetime.utcnow().isoformat()
             },
             'organization_id': org_id
-        }, room=f"org_{org_id}")
+        }, room=f"org_{org_api_key}")
 
         return response
 

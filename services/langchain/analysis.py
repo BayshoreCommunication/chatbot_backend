@@ -102,19 +102,19 @@ def generate_response(query, user_info, conversation_summary, retrieved_context,
     
     is_identity_query = any(keyword in query.lower() for keyword in identity_keywords)
     
+    #     USER INFORMATION:
+    # - Name: {user_info['name']}
+    # - Email: {user_info['email']}
+    # - Has booked appointment: {user_info['has_appointment']}
+    # {f"- Appointment details: {user_info['appointment_details']}" if user_info['has_appointment'] else ""}
+
     # Build a prompt that includes all relevant context
     final_prompt = f"""
     You are responding to a user's query based on information in your knowledge base.
     
     USER QUERY: "{query}"
     
-    USER INFORMATION:
-    - Name: {user_info['name']}
-    - Email: {user_info['email']}
-    - Has booked appointment: {user_info['has_appointment']}
-    {f"- Appointment details: {user_info['appointment_details']}" if user_info['has_appointment'] else ""}
-    
-    CONVERSATION HISTORY:
+    CONVERSATION HISTORY(Last 6 messages):
     {conversation_summary}
     
     {"RETRIEVED INFORMATION:" if retrieved_context else ""}
@@ -123,8 +123,7 @@ def generate_response(query, user_info, conversation_summary, retrieved_context,
     {"PERSONAL INFORMATION FOUND:" if personal_information else ""}
     {json.dumps(personal_information) if personal_information else ""}
     
-    CURRENT MODE: {analysis["appropriate_mode"]}
-    USER INTENT: {analysis["intent"]}
+    USER INTENT: {analysis["intent"]}   
     """
     
     # Add special instruction for identity queries

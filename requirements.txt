@@ -31,4 +31,4 @@ python-jose[cryptography]==3.3.0
 passlib[bcrypt]==1.7.4
 PyJWT==2.10.1
 boto3
-fastapi-socketio==0.0.10
+python-socketio==5.11.0

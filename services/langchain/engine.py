@@ -194,10 +194,7 @@ def ask_bot(query: str, mode="faq", user_data=None, available_slots=None, sessio
     # Record conversation history if not present in user_data
     if "conversation_history" not in user_data:
         user_data["conversation_history"] = []
-    
-    # Append current query to history
-    user_data["conversation_history"].append({"role": "user", "content": query})
-    
+
     # Create a comprehensive context for the AI to analyze
     has_booked_appointment = "appointment_slot" in user_data and user_data["appointment_slot"]
     needs_info = "name" not in user_data or "email" not in user_data
@@ -221,9 +218,36 @@ def ask_bot(query: str, mode="faq", user_data=None, available_slots=None, sessio
         "appointment_details": user_data.get("appointment_slot", "None")
     }
     
-    # Extract past few conversation turns for context
-    conversation_context = user_data["conversation_history"][-5:] if len(user_data["conversation_history"]) > 0 else []
-    conversation_summary = "\n".join([f"{'User' if msg['role'] == 'user' else 'AI'}: {msg['content']}" for msg in conversation_context])
+    # Get the latest 6 conversations from database for context instead of in-memory history
+    conversation_summary = ""
+    if session_id and api_key:
+        try:
+            from services.database import get_conversation_history
+            organization = get_organization_by_api_key(api_key)
+            if organization:
+                org_id = organization["id"]
+                # Get all conversations and take the latest 6 (excluding current message)
+                db_conversations = get_conversation_history(org_id, session_id)
+                # Exclude the current user message if it exists (it was just added to DB)
+                previous_conversations = db_conversations[:-1] if len(db_conversations) > 0 else []
+                # Take the latest 6 previous conversations
+                latest_conversations = previous_conversations[-6:] if len(previous_conversations) > 6 else previous_conversations
+                
+                # Create conversation summary from database conversations
+                conversation_summary = "\n".join([
+                    f"{'User' if msg['role'] == 'user' else 'AI'}: {msg['content']}" 
+                    for msg in latest_conversations
+                ])
+                print(f"[DEBUG] Using latest {len(latest_conversations)} previous conversations from database for context")
+        except Exception as e:
+            print(f"[DEBUG] Error fetching conversation history from DB: {str(e)}")
+            # Fallback to in-memory conversation history (last 5)
+            conversation_context = user_data["conversation_history"][-5:] if len(user_data["conversation_history"]) > 0 else []
+            conversation_summary = "\n".join([f"{'User' if msg['role'] == 'user' else 'AI'}: {msg['content']}" for msg in conversation_context])
+    else:
+        # Fallback to in-memory conversation history (last 5)
+        conversation_context = user_data["conversation_history"][-5:] if len(user_data["conversation_history"]) > 0 else []
+        conversation_summary = "\n".join([f"{'User' if msg['role'] == 'user' else 'AI'}: {msg['content']}" for msg in conversation_context])
     
     # STEP 0: If this is first message and we need user info, always collect name first
     is_first_message = len(user_data["conversation_history"]) <= 1
@@ -287,12 +311,6 @@ def ask_bot(query: str, mode="faq", user_data=None, available_slots=None, sessio
             language
         )
         
-        # Add this interaction to history
-        user_data["conversation_history"].append({
-            "role": "assistant", 
-            "content": identity_response
-        })
-        
         return {
             "answer": identity_response,
             "mode": "faq",
@@ -310,12 +328,6 @@ def ask_bot(query: str, mode="faq", user_data=None, available_slots=None, sessio
         analysis, 
         language
     )
-    
-    # Add this interaction to history
-    user_data["conversation_history"].append({
-        "role": "assistant", 
-        "content": final_response
-    })
     
     # Determine final mode for response
     final_mode = analysis["appropriate_mode"]

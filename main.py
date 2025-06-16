@@ -29,8 +29,8 @@ app = FastAPI(
 try:
     from routes.chatbot import router as chatbot_router, init_socketio
     chatbot_available = True
-    # Initialize socket.io with the app
-    socket_manager = init_socketio(app)
+    # Initialize socket.io with the app - this returns the socket app wrapper
+    socket_app = init_socketio(app)
     print("Successfully initialized socket.io")
 except Exception as e:
     print(f"Warning: Chatbot router failed to import: {e}")
@@ -230,3 +230,12 @@ def read_root():
 def health_check():
     """Health check endpoint for monitoring"""
     return {"status": "healthy"}
+
+# Create the final app instance
+if chatbot_available and 'socket_app' in locals():
+    # If Socket.IO is available, use the wrapped app
+    app = socket_app  # This ensures uvicorn uses the Socket.IO wrapped app
+    print("Using Socket.IO wrapped application")
+else:
+    # Fallback to regular FastAPI app - app is already defined above
+    print("Using regular FastAPI application")
