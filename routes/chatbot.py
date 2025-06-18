@@ -702,6 +702,7 @@ async def ask_question(
             api_key=org_api_key
         )
 
+        # Save assistant message to database FIRST
         add_conversation_message(
             organization_id=org_id,
             visitor_id=visitor["id"],
@@ -711,8 +712,8 @@ async def ask_question(
             metadata={"mode": request.mode}
         )
 
-        # Update conversation history
-        request.user_data["conversation_history"].append({
+        # Then update conversation history in user_data to match database order
+        response["user_data"]["conversation_history"].append({
             "role": "assistant", 
             "content": response["answer"]
         })
@@ -720,7 +721,6 @@ async def ask_question(
         # Get suggested FAQs
         suggested_faqs = get_suggested_faqs(org_id)
         response["suggested_faqs"] = suggested_faqs
-        response["user_data"] = request.user_data
 
         # After getting bot response, emit it to dashboard
         await sio.emit('new_message', {

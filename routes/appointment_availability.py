@@ -1,56 +1,40 @@
 from fastapi import APIRouter, Request, HTTPException, Depends, Header
 from pydantic import BaseModel
 from typing import Optional, List
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 import pymongo
+import requests
+import json
+import uuid
 from services.database import get_organization_by_api_key, db
 
 router = APIRouter()
 
-# Initialize appointment availability collection
-appointment_availability_collection = db.appointment_availability
-appointment_availability_collection.create_index("organization_id")
-appointment_availability_collection.create_index([("organization_id", pymongo.ASCENDING), ("date", pymongo.ASCENDING)])
+# Initialize calendly settings collection
+calendly_settings_collection = db.calendly_settings
+calendly_settings_collection.create_index("organization_id", unique=True)
 
-def convert_24_to_12_hour(time_str: str) -> str:
-    """Convert 24-hour format to 12-hour AM/PM format"""
-    try:
-        time_obj = datetime.strptime(time_str, "%H:%M")
-        return time_obj.strftime("%I:%M %p")
-    except ValueError:
-        # If it's already in AM/PM format, return as is
-        return time_str
+class CalendlySettings(BaseModel):
+    calendly_url: Optional[str] = None
+    calendly_access_token: str
+    event_type_uri: Optional[str] = None
+    auto_embed: Optional[bool] = True
 
-def convert_12_to_24_hour(time_str: str) -> str:
-    """Convert 12-hour AM/PM format to 24-hour format for validation"""
-    try:
-        # If already in 24-hour format
-        datetime.strptime(time_str, "%H:%M")
-        return time_str
-    except ValueError:
-        try:
-            # Convert from AM/PM format to 24-hour
-            time_obj = datetime.strptime(time_str, "%I:%M %p")
-            return time_obj.strftime("%H:%M")
-        except ValueError:
-            raise ValueError(f"Invalid time format: {time_str}")
+class CalendlyTestConnectionRequest(BaseModel):
+    access_token: str
 
-class TimeSlot(BaseModel):
-    id: str
+class CalendlyEvent(BaseModel):
+    uri: str
+    name: str
+    slug: str
+    duration: int
+    status: str
+    booking_url: str
+
+class AvailableSlot(BaseModel):
     start_time: str
     end_time: str
-
-class AppointmentAvailabilityRequest(BaseModel):
-    date: str
-    time_slots: List[TimeSlot]
-
-class AppointmentAvailabilityResponse(BaseModel):
-    date: str
-    time_slots: List[TimeSlot]
-
-class DeleteTimeSlotRequest(BaseModel):
-    date: str
-    slot_id: str
+    scheduling_url: str
 
 async def get_organization_from_api_key(api_key: Optional[str] = Header(None, alias="X-API-Key")):
     """Dependency to get organization from API key"""
@@ -63,320 +47,280 @@ async def get_organization_from_api_key(api_key: Optional[str] = Header(None, al
     
     return organization
 
-@router.post("/availability")
-async def save_appointment_availability(
-    request: AppointmentAvailabilityRequest,
+def make_calendly_api_request(endpoint: str, access_token: str, params: dict = None):
+    """Make authenticated request to Calendly API"""
+    headers = {
+        'Authorization': f'Bearer {access_token}',
+        'Content-Type': 'application/json'
+    }
+    
+    try:
+        response = requests.get(f'https://api.calendly.com/{endpoint}', headers=headers, params=params)
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        print(f"Calendly API error: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"Calendly API error: {str(e)}")
+
+@router.post("/calendly/settings")
+async def save_calendly_settings(
+    settings: CalendlySettings,
     organization=Depends(get_organization_from_api_key)
 ):
-    """Save or update appointment availability for a specific date"""
+    """Save Calendly integration settings"""
     org_id = organization["id"]
     
     try:
-        # Validate date format
-        try:
-            parsed_date = datetime.strptime(request.date, "%Y-%m-%d").date()
-        except ValueError:
-            raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
+        # Test the access token before saving
+        user_data = make_calendly_api_request('users/me', settings.calendly_access_token)
         
-        # Check if date is in the past
-        if parsed_date < date.today():
-            raise HTTPException(status_code=400, detail="Cannot set availability for past dates")
+        settings_data = {
+            "organization_id": org_id,
+            "calendly_url": settings.calendly_url,
+            "calendly_access_token": settings.calendly_access_token,
+            "event_type_uri": settings.event_type_uri,
+            "auto_embed": settings.auto_embed,
+            "user_uri": user_data.get('resource', {}).get('uri'),
+            "updated_at": datetime.utcnow()
+        }
         
-        # Validate time slots and convert to AM/PM format
-        processed_time_slots = []
-        for slot in request.time_slots:
-            try:
-                # Convert to 24-hour format for validation
-                start_24 = convert_12_to_24_hour(slot.start_time)
-                end_24 = convert_12_to_24_hour(slot.end_time)
-                
-                start_time = datetime.strptime(start_24, "%H:%M").time()
-                end_time = datetime.strptime(end_24, "%H:%M").time()
-                
-                if start_time >= end_time:
-                    raise HTTPException(status_code=400, detail=f"End time must be after start time for slot {slot.id}")
-                
-                # Convert to AM/PM format for storage
-                start_ampm = convert_24_to_12_hour(start_24)
-                end_ampm = convert_24_to_12_hour(end_24)
-                
-                processed_time_slots.append({
-                    "id": slot.id,
-                    "start_time": start_ampm,
-                    "end_time": end_ampm
-                })
-                    
-            except ValueError as e:
-                raise HTTPException(status_code=400, detail=f"Invalid time format for slot {slot.id}. Use HH:MM or HH:MM AM/PM format")
-        
-        # Update or insert availability
-        result = appointment_availability_collection.update_one(
-            {
-                "organization_id": org_id,
-                "date": request.date
-            },
-            {
-                "$set": {
-                    "organization_id": org_id,
-                    "date": request.date,
-                    "time_slots": processed_time_slots,
-                    "updated_at": datetime.utcnow()
-                }
-            },
+        calendly_settings_collection.update_one(
+            {"organization_id": org_id},
+            {"$set": settings_data},
             upsert=True
         )
         
         return {
             "status": "success",
-            "message": "Appointment availability saved successfully",
-            "date": request.date,
-            "time_slots_count": len(processed_time_slots)
+            "message": "Calendly settings saved successfully"
         }
         
     except Exception as e:
-        print(f"Error saving appointment availability: {str(e)}")
+        print(f"Error saving Calendly settings: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.delete("/availability/slot")
-async def delete_time_slot(
-    request: DeleteTimeSlotRequest,
+@router.get("/calendly/settings")
+async def get_calendly_settings(
     organization=Depends(get_organization_from_api_key)
 ):
-    """Delete a specific time slot from a date"""
+    """Get Calendly integration settings"""
     org_id = organization["id"]
     
     try:
-        # Validate date format
-        try:
-            datetime.strptime(request.date, "%Y-%m-%d")
-        except ValueError:
-            raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
-        
-        # Find the availability document
-        availability = appointment_availability_collection.find_one({
-            "organization_id": org_id,
-            "date": request.date
-        })
-        
-        if not availability:
-            raise HTTPException(status_code=404, detail="No availability found for the specified date")
-        
-        # Remove the specific time slot
-        updated_slots = [
-            slot for slot in availability.get("time_slots", [])
-            if slot.get("id") != request.slot_id
-        ]
-        
-        if len(updated_slots) == len(availability.get("time_slots", [])):
-            raise HTTPException(status_code=404, detail="Time slot not found")
-        
-        # Update the document with the remaining slots
-        if updated_slots:
-            # Update with remaining slots
-            appointment_availability_collection.update_one(
-                {
-                    "organization_id": org_id,
-                    "date": request.date
-                },
-                {
-                    "$set": {
-                        "time_slots": updated_slots,
-                        "updated_at": datetime.utcnow()
-                    }
-                }
-            )
-        else:
-            # Delete the entire availability document if no slots remain
-            appointment_availability_collection.delete_one({
-                "organization_id": org_id,
-                "date": request.date
-            })
-        
-        return {
-            "status": "success",
-            "message": "Time slot deleted successfully",
-            "remaining_slots": len(updated_slots)
-        }
-        
-    except Exception as e:
-        print(f"Error deleting time slot: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@router.get("/availability", response_model=List[AppointmentAvailabilityResponse])
-async def get_appointment_availability(
-    start_date: Optional[str] = None,
-    end_date: Optional[str] = None,
-    organization=Depends(get_organization_from_api_key)
-):
-    """Get appointment availability for an organization"""
-    org_id = organization["id"]
-    
-    try:
-        # Build query
-        query = {"organization_id": org_id}
-        
-        # Add date range filter if provided
-        if start_date or end_date:
-            date_filter = {}
-            if start_date:
-                try:
-                    datetime.strptime(start_date, "%Y-%m-%d")
-                    date_filter["$gte"] = start_date
-                except ValueError:
-                    raise HTTPException(status_code=400, detail="Invalid start_date format. Use YYYY-MM-DD")
-                    
-            if end_date:
-                try:
-                    datetime.strptime(end_date, "%Y-%m-%d")
-                    date_filter["$lte"] = end_date
-                except ValueError:
-                    raise HTTPException(status_code=400, detail="Invalid end_date format. Use YYYY-MM-DD")
-                    
-            if date_filter:
-                query["date"] = date_filter
-        
-        # Get availabilities from database
-        availabilities = list(appointment_availability_collection.find(
-            query,
-            {"_id": 0}  # Exclude MongoDB _id field
-        ).sort("date", 1))
-        
-        # Convert to response format
-        result = []
-        for availability in availabilities:
-            time_slots = [
-                TimeSlot(
-                    id=slot["id"],
-                    start_time=slot["start_time"],
-                    end_time=slot["end_time"]
-                )
-                for slot in availability.get("time_slots", [])
-            ]
-            
-            result.append(AppointmentAvailabilityResponse(
-                date=availability["date"],
-                time_slots=time_slots
-            ))
-        
-        return result
-        
-    except Exception as e:
-        print(f"Error getting appointment availability: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@router.delete("/availability/{date}")
-async def delete_appointment_availability(
-    date: str,
-    organization=Depends(get_organization_from_api_key)
-):
-    """Delete appointment availability for a specific date"""
-    org_id = organization["id"]
-    
-    try:
-        # Validate date format
-        try:
-            datetime.strptime(date, "%Y-%m-%d")
-        except ValueError:
-            raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
-        
-        # Delete availability
-        result = appointment_availability_collection.delete_one({
-            "organization_id": org_id,
-            "date": date
-        })
-        
-        if result.deleted_count == 0:
-            raise HTTPException(status_code=404, detail="No availability found for the specified date")
-        
-        return {
-            "status": "success",
-            "message": f"Appointment availability for {date} deleted successfully"
-        }
-        
-    except Exception as e:
-        print(f"Error deleting appointment availability: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@router.get("/availability/{date}", response_model=AppointmentAvailabilityResponse)
-async def get_appointment_availability_by_date(
-    date: str,
-    organization=Depends(get_organization_from_api_key)
-):
-    """Get appointment availability for a specific date"""
-    org_id = organization["id"]
-    
-    try:
-        # Validate date format
-        try:
-            datetime.strptime(date, "%Y-%m-%d")
-        except ValueError:
-            raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
-        
-        # Get availability from database
-        availability = appointment_availability_collection.find_one({
-            "organization_id": org_id,
-            "date": date
-        }, {"_id": 0})
-        
-        if not availability:
-            raise HTTPException(status_code=404, detail="No availability found for the specified date")
-        
-        # Convert to response format
-        time_slots = [
-            TimeSlot(
-                id=slot["id"],
-                start_time=slot["start_time"],
-                end_time=slot["end_time"]
-            )
-            for slot in availability.get("time_slots", [])
-        ]
-        
-        return AppointmentAvailabilityResponse(
-            date=availability["date"],
-            time_slots=time_slots
+        settings = calendly_settings_collection.find_one(
+            {"organization_id": org_id},
+            {"_id": 0}
         )
         
+        if settings:
+            # Don't expose the full access token in response
+            safe_settings = {
+                "calendly_url": settings.get("calendly_url"),
+                "calendly_access_token": settings.get("calendly_access_token", ""),
+                "event_type_uri": settings.get("event_type_uri"),
+                "auto_embed": settings.get("auto_embed", True)
+            }
+            return {"settings": safe_settings}
+        else:
+            return {"settings": None}
+            
     except Exception as e:
-        print(f"Error getting appointment availability by date: {str(e)}")
+        print(f"Error getting Calendly settings: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.get("/availability/stats")
-async def get_availability_stats(
+@router.post("/calendly/test-connection")
+async def test_calendly_connection(
+    request: CalendlyTestConnectionRequest,
     organization=Depends(get_organization_from_api_key)
 ):
-    """Get statistics about appointment availability"""
+    """Test Calendly API connection"""
+    try:
+        user_data = make_calendly_api_request('users/me', request.access_token)
+        
+        return {
+            "valid": True,
+            "user": {
+                "name": user_data.get('resource', {}).get('name'),
+                "email": user_data.get('resource', {}).get('email'),
+                "uri": user_data.get('resource', {}).get('uri')
+            }
+        }
+        
+    except HTTPException:
+        return {"valid": False}
+    except Exception as e:
+        print(f"Error testing Calendly connection: {str(e)}")
+        return {"valid": False}
+
+@router.get("/calendly/events")
+async def get_calendly_events(
+    organization=Depends(get_organization_from_api_key)
+):
+    """Get user's event types from Calendly"""
     org_id = organization["id"]
     
     try:
-        # Get total number of days with availability
-        total_days = appointment_availability_collection.count_documents({
-            "organization_id": org_id
-        })
+        settings = calendly_settings_collection.find_one({"organization_id": org_id})
+        if not settings or not settings.get("calendly_access_token"):
+            raise HTTPException(status_code=400, detail="Calendly not configured")
         
-        # Get total number of time slots
-        pipeline = [
-            {"$match": {"organization_id": org_id}},
-            {"$project": {"slot_count": {"$size": "$time_slots"}}},
-            {"$group": {"_id": None, "total_slots": {"$sum": "$slot_count"}}}
-        ]
+        # Get user info first
+        user_data = make_calendly_api_request('users/me', settings["calendly_access_token"])
+        user_uri = user_data.get('resource', {}).get('uri')
         
-        result = list(appointment_availability_collection.aggregate(pipeline))
-        total_slots = result[0]["total_slots"] if result else 0
+        # Get event types
+        event_types_data = make_calendly_api_request(
+            'event_types',
+            settings["calendly_access_token"],
+            {'user': user_uri}
+        )
         
-        # Get upcoming availability (future dates)
-        today = date.today().strftime("%Y-%m-%d")
-        upcoming_days = appointment_availability_collection.count_documents({
-            "organization_id": org_id,
-            "date": {"$gte": today}
-        })
+        print(f"[CALENDLY EVENTS DEBUG] Raw event types data: {event_types_data}")
+        
+        events = []
+        for event in event_types_data.get('collection', []):
+            print(f"[CALENDLY EVENTS DEBUG] Processing event: {event}")
+            events.append({
+                "uri": event.get('uri'),
+                "name": event.get('name'),
+                "slug": event.get('slug'),
+                "duration": event.get('duration'),
+                "status": event.get('status'),
+                "booking_url": event.get('scheduling_url')
+            })
+        
+        print(f"[CALENDLY EVENTS DEBUG] Processed {len(events)} events")
+        return {"events": events}
+        
+    except Exception as e:
+        print(f"Error getting Calendly events: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/calendly/availability")
+async def get_calendly_availability(
+    event_type_uri: str,
+    organization=Depends(get_organization_from_api_key)
+):
+    """Get available time slots for a specific event type"""
+    org_id = organization["id"]
+    
+    try:
+        settings = calendly_settings_collection.find_one({"organization_id": org_id})
+        if not settings or not settings.get("calendly_access_token"):
+            raise HTTPException(status_code=400, detail="Calendly not configured")
+        
+        # Calculate date range - start from now + 30 seconds to ensure future time
+        # and limit to 6 days 23 hours to stay under 7-day limit
+        start_time = datetime.utcnow() + timedelta(seconds=30)
+        end_time = start_time + timedelta(days=6, hours=23)
+        
+        # Format for Calendly API (ISO format with Z suffix)
+        start_time_iso = start_time.strftime('%Y-%m-%dT%H:%M:%S.%fZ')
+        end_time_iso = end_time.strftime('%Y-%m-%dT%H:%M:%S.%fZ')
+        
+        print(f"[CALENDLY] Requesting availability from {start_time_iso} to {end_time_iso}")
+        print(f"[CALENDLY] Event type URI: {event_type_uri}")
+        
+        # Get available times from Calendly
+        availability_data = make_calendly_api_request(
+            'event_type_available_times',
+            settings["calendly_access_token"],
+            {
+                'event_type': event_type_uri,
+                'start_time': start_time_iso,
+                'end_time': end_time_iso
+            }
+        )
+        
+        if not availability_data:
+            return {"slots": []}
+        
+        slots = []
+        for slot in availability_data.get('collection', []):
+            slots.append({
+                "start_time": slot.get('start_time'),
+                "end_time": slot.get('end_time'),
+                "scheduling_url": slot.get('scheduling_url')
+            })
+        
+        print(f"[CALENDLY] Found {len(slots)} available slots")
+        return {"slots": slots}
+        
+    except Exception as e:
+        print(f"Error getting Calendly availability: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/calendly/stats")
+async def get_calendly_stats(
+    organization=Depends(get_organization_from_api_key)
+):
+    """Get Calendly account statistics"""
+    org_id = organization["id"]
+    
+    try:
+        settings = calendly_settings_collection.find_one({"organization_id": org_id})
+        if not settings or not settings.get("calendly_access_token"):
+            return {"stats": {"total_events": 0, "active_events": 0, "upcoming_bookings": 0}}
+        
+        # Get user info first
+        user_data = make_calendly_api_request('users/me', settings["calendly_access_token"])
+        user_uri = user_data.get('resource', {}).get('uri')
+        
+        # Get event types
+        event_types_data = make_calendly_api_request(
+            'event_types',
+            settings["calendly_access_token"],
+            {'user': user_uri}
+        )
+        
+        events = event_types_data.get('collection', [])
+        total_events = len(events)
+        
+        # Debug: Log all events and their statuses
+        print(f"[CALENDLY STATS DEBUG] Found {total_events} total events:")
+        for i, event in enumerate(events):
+            print(f"[CALENDLY STATS DEBUG] Event {i+1}: name='{event.get('name')}', status='{event.get('status')}', uri='{event.get('uri')}'")
+        
+        active_events = len([e for e in events if e.get('status') == 'active'])
+        print(f"[CALENDLY STATS DEBUG] Active events count: {active_events}")
+        
+        # Note: Calendly API doesn't provide a direct way to count upcoming bookings
+        # This would require iterating through all scheduled events
+        upcoming_bookings = 0
         
         return {
-            "total_days_with_availability": total_days,
-            "total_time_slots": total_slots,
-            "upcoming_days_with_availability": upcoming_days,
-            "organization_id": org_id
+            "stats": {
+                "total_events": total_events,
+                "active_events": active_events,
+                "upcoming_bookings": upcoming_bookings
+            }
         }
         
     except Exception as e:
-        print(f"Error getting availability stats: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e)) 
+        print(f"Error getting Calendly stats: {str(e)}")
+        return {"stats": {"total_events": 0, "active_events": 0, "upcoming_bookings": 0}}
+
+# For backward compatibility - these endpoints will return empty data or errors
+@router.get("/availability")
+async def legacy_get_availability(organization=Depends(get_organization_from_api_key)):
+    """Legacy endpoint - redirects to Calendly integration"""
+    return {
+        "message": "This organization is using Calendly integration. Please configure Calendly settings.",
+        "calendly_integration": True
+    }
+
+@router.post("/availability")
+async def legacy_save_availability(organization=Depends(get_organization_from_api_key)):
+    """Legacy endpoint - redirects to Calendly integration"""
+    raise HTTPException(
+        status_code=400,
+        detail="This organization is using Calendly integration. Please use Calendly settings instead."
+    )
+
+@router.get("/bookings")
+async def legacy_get_bookings(organization=Depends(get_organization_from_api_key)):
+    """Legacy endpoint - redirects to Calendly integration"""
+    return {
+        "message": "This organization is using Calendly integration. Bookings are managed through Calendly.",
+        "calendly_integration": True
+    } 

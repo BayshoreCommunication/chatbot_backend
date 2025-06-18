@@ -1,9 +1,31 @@
 import openai
 import json
+import re
 
 def analyze_query(query, user_info, mode, needs_info, has_vector_data, conversation_summary):
     """Use AI to analyze a query and determine the best response approach"""
     available_modes = ["faq", "appointment", "sales", "lead_capture"]
+    
+    # PRE-ANALYSIS: Check for specific appointment patterns first
+    appointment_patterns = [
+        r'slot_\d{4}-\d{2}-\d{2}_\d+_\d+',  # Direct slot ID
+        r'confirm.*slot',  # Confirm + slot
+        r'book.*slot',     # Book + slot
+        r'confirm.*\d+:\d+',  # Confirm + time
+        r'confirm.*this.*one',  # Confirm this one
+        r'i want.*slot',   # I want slot
+        r'take.*slot',     # Take slot
+        r'pick.*slot',     # Pick slot
+        r'choose.*slot',   # Choose slot
+        r'book.*appointment',  # Book appointment
+        r'schedule.*appointment',  # Schedule appointment
+        r'confirm.*appointment',  # Confirm appointment
+        r'book.*\d+:\d+.*[ap]m',  # Book + time with AM/PM
+        r'confirm.*\d+:\d+.*[ap]m',  # Confirm + time with AM/PM
+    ]
+    
+    is_appointment_query = any(re.search(pattern, query.lower()) for pattern in appointment_patterns)
+    has_slot_id = bool(re.search(r'slot_\d{4}-\d{2}-\d{2}_\d+_\d+', query))
     
     analysis_prompt = f"""
     You are an AI assistant analyzing a user query to determine the best response approach.
@@ -24,6 +46,17 @@ def analyze_query(query, user_info, mode, needs_info, has_vector_data, conversat
     CONVERSATION HISTORY:
     {conversation_summary}
     
+    PRE-ANALYSIS DETECTION:
+    - Contains appointment patterns: {is_appointment_query}
+    - Contains slot ID: {has_slot_id}
+    
+    CRITICAL APPOINTMENT DETECTION RULES:
+    1. If query contains a slot ID (format: slot_YYYY-MM-DD_HH_MM), this is ALWAYS an appointment booking action
+    2. If query has "confirm" + slot/time, this is appointment booking
+    3. If query has "book/schedule/pick/take/choose" + appointment/slot/time, this is appointment booking
+    4. Appointment confirmation queries should have appointment_action="book" even if using words like "confirm"
+    5. Time selection with previous appointment context is also appointment booking
+    
     Analyze the following aspects and respond in JSON format:
     1. What is the user's primary intent?
     2. Should we collect user information before proceeding? (Name/Email)
@@ -39,16 +72,32 @@ def analyze_query(query, user_info, mode, needs_info, has_vector_data, conversat
     - lead_capture: When the user is indicating interest in becoming a client
     
     MODE SELECTION RULES:
-    - If user mentions scheduling, booking, or availability, use appointment mode
+    - If user mentions scheduling, booking, availability, or has slot ID, use appointment mode
     - If user asks about products, pricing, or deals, use sales mode
     - If user mentions becoming a client or asks how to start, use lead_capture mode
     - Default to faq mode for general information questions
     - If currently in a specific mode (like appointment) but has completed the process, switch back to faq
     
+    APPOINTMENT ACTION DETECTION:
+    - "book": When user wants to book/confirm/schedule/pick/take/choose a slot or time
+    - "reschedule": When user wants to change existing appointment
+    - "cancel": When user wants to cancel existing appointment
+    - "info": When user asks about existing appointment details
+    - "none": When not appointment related
+    
+    EXAMPLES:
+    - "confirm this one : slot_2025-06-24_13_59" → appointment_action="book"
+    - "I want to book the 3pm slot" → appointment_action="book"
+    - "book appointment for Monday" → appointment_action="book"
+    - "confirm my appointment" → appointment_action="info" (if has existing) or "book" (if confirming new)
+    - "reschedule my appointment" → appointment_action="reschedule"
+    - "cancel my appointment" → appointment_action="cancel"
+    
     CRITICAL INSTRUCTIONS:
     - Identity questions (like "who are you?") should be marked for special_handling="identity"
     - All queries about identity, background, experience, etc. should have needs_knowledge_lookup=true
     - ALWAYS prioritize collecting user information if it's missing
+    - If pre-analysis detected appointment patterns, strongly favor appointment mode
     
     RESPOND WITH JSON ONLY in the following format:
     {{
@@ -75,12 +124,19 @@ def analyze_query(query, user_info, mode, needs_info, has_vector_data, conversat
         
         # Parse analysis
         analysis = json.loads(analysis_response.choices[0].message.content)
-        print(f"AI Analysis: {analysis}")
+        
+        # OVERRIDE: If we detected appointment patterns, force appointment mode
+        if is_appointment_query or has_slot_id:
+            analysis["appropriate_mode"] = "appointment"
+            if has_slot_id or any(word in query.lower() for word in ["confirm", "book", "schedule", "pick", "take", "choose"]):
+                analysis["appointment_action"] = "book"
+                analysis["mode_confidence"] = "high"
+                analysis["reasoning"] = "Detected slot ID or appointment confirmation pattern"
+        
         return analysis
     except Exception as e:
-        print(f"Error in AI query analysis: {str(e)}")
-        # Return default analysis as fallback
-        return {
+        # Enhanced fallback analysis for appointment queries
+        fallback_analysis = {
             "intent": "general question",
             "collect_info": needs_info,
             "info_to_collect": "name" if "name" not in user_info or user_info["name"] == "Unknown" else "email" if "email" not in user_info or user_info["email"] == "Unknown" else "none",
@@ -91,6 +147,14 @@ def analyze_query(query, user_info, mode, needs_info, has_vector_data, conversat
             "mode_confidence": "low",
             "reasoning": "Error in analysis, falling back to current mode"
         }
+        
+        # Override for appointment patterns even in error case
+        if is_appointment_query or has_slot_id:
+            fallback_analysis["appropriate_mode"] = "appointment"
+            fallback_analysis["appointment_action"] = "book"
+            fallback_analysis["reasoning"] = "Fallback: detected appointment pattern"
+        
+        return fallback_analysis
 
 def generate_response(query, user_info, conversation_summary, retrieved_context, personal_information, analysis, language):
     """Generate the final AI response based on context and analysis"""
@@ -102,12 +166,6 @@ def generate_response(query, user_info, conversation_summary, retrieved_context,
     
     is_identity_query = any(keyword in query.lower() for keyword in identity_keywords)
     
-    #     USER INFORMATION:
-    # - Name: {user_info['name']}
-    # - Email: {user_info['email']}
-    # - Has booked appointment: {user_info['has_appointment']}
-    # {f"- Appointment details: {user_info['appointment_details']}" if user_info['has_appointment'] else ""}
-
     # Build a prompt that includes all relevant context
     final_prompt = f"""
     You are responding to a user's query based on information in your knowledge base.

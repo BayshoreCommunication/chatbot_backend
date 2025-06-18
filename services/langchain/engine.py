@@ -3,6 +3,7 @@ from langchain.chains.question_answering import load_qa_chain
 from dotenv import load_dotenv
 import os
 import openai
+import re
 
 from services.language_detect import detect_language
 from services.notification import send_email_notification
@@ -173,6 +174,15 @@ def ask_bot(query: str, mode="faq", user_data=None, available_slots=None, sessio
     if user_data is None:
         user_data = {}
     
+    # Extract original user question from enhanced query for appointment processing
+    original_query = query
+    if "The user, who you already know, asks:" in query:
+        # Extract the original question after the context
+        parts = query.split("The user, who you already know, asks:")
+        if len(parts) > 1:
+            original_query = parts[-1].strip()
+            print(f"[DEBUG] Extracted original query for appointments: '{original_query}'")
+    
     # Get the appropriate vectorstore for this organization
     org_vectorstore = get_org_vectorstore(api_key)
     if not org_vectorstore and api_key:
@@ -189,7 +199,7 @@ def ask_bot(query: str, mode="faq", user_data=None, available_slots=None, sessio
         print(f"Using organization: {organization['name']} with namespace: {organization.get('pinecone_namespace')}")
     
     # Detect language
-    language = detect_language(query)
+    language = detect_language(original_query)
     
     # Record conversation history if not present in user_data
     if "conversation_history" not in user_data:
@@ -202,11 +212,9 @@ def ask_bot(query: str, mode="faq", user_data=None, available_slots=None, sessio
     
     # Get available slots if in appointment context
     if mode == "appointment" and not available_slots:
-        # In a real implementation, you would fetch slots for the specific organization
-        if organization:
-            # You could fetch organization-specific slots here
-            # For now, using the default implementation
-            available_slots = get_available_slots()
+        # Get slots for the specific organization using API key
+        if api_key:
+            available_slots = get_available_slots(api_key)
         else:
             available_slots = get_available_slots()
     
@@ -263,22 +271,38 @@ def ask_bot(query: str, mode="faq", user_data=None, available_slots=None, sessio
     if needs_info:
         if "name" not in user_data:
             # If the query could be a name introduction, try to extract it
-            return handle_name_collection(query, user_data, analysis["appropriate_mode"], language)
+            return handle_name_collection(original_query, user_data, analysis["appropriate_mode"], language)
         elif "email" not in user_data:
             # Otherwise try to get their email
-            return handle_email_collection(query, user_data, analysis["appropriate_mode"], language)
+            return handle_email_collection(original_query, user_data, analysis["appropriate_mode"], language)
     
     # STEP 3: Handle Appointment Actions if needed
+    # FALLBACK: Double-check for appointment patterns in case AI analysis missed them
+    appointment_fallback_patterns = [
+        r'confirm.*this.*one.*\d+:\d+.*[ap]m',
+        r'confirm.*\d+:\d+.*[ap]m',
+        r'book.*\d+:\d+.*[ap]m',
+        r'schedule.*\d+:\d+.*[ap]m',
+        r'confirm.*Saturday|Monday|Tuesday|Wednesday|Thursday|Friday|Sunday',
+        r'book.*Saturday|Monday|Tuesday|Wednesday|Thursday|Friday|Sunday'
+    ]
+    
+    has_appointment_fallback = any(re.search(pattern, original_query.lower()) for pattern in appointment_fallback_patterns)
+    
+    if has_appointment_fallback and analysis["appropriate_mode"] != "appointment":
+        analysis["appropriate_mode"] = "appointment"
+        analysis["appointment_action"] = "book"
+    
     if analysis["appropriate_mode"] == "appointment" and analysis["appointment_action"] != "none":
         action = analysis["appointment_action"]
         
-        # Handle appointment booking
+        # Handle appointment booking - use original query for appointment processing
         if action == "book" and not has_booked_appointment:
-            return handle_booking(query, user_data, available_slots, language)
+            return handle_booking(original_query, user_data, available_slots, language, api_key)
         
         # Handle appointment rescheduling
         elif action == "reschedule" and has_booked_appointment:
-            return handle_rescheduling(user_data, available_slots, language)
+            return handle_rescheduling(user_data, available_slots, language, api_key)
         
         # Handle appointment cancellation
         elif action == "cancel" and has_booked_appointment:
@@ -287,6 +311,8 @@ def ask_bot(query: str, mode="faq", user_data=None, available_slots=None, sessio
         # Handle appointment information request
         elif action == "info" and has_booked_appointment:
             return handle_appointment_info(user_data, language)
+    else:
+        print(f"[DEBUG] Skipping appointment routing - mode: {analysis['appropriate_mode']}, action: {analysis['appointment_action']}")
     
     # STEP 4: Knowledge Base Lookup if needed
     retrieved_context = ""
