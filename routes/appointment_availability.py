@@ -7,6 +7,7 @@ import requests
 import json
 import uuid
 from services.database import get_organization_by_api_key, db
+import time
 
 router = APIRouter()
 
@@ -55,11 +56,27 @@ def make_calendly_api_request(endpoint: str, access_token: str, params: dict = N
     }
     
     try:
-        response = requests.get(f'https://api.calendly.com/{endpoint}', headers=headers, params=params)
+        full_url = f'https://api.calendly.com/{endpoint}'
+        print(f"[CALENDLY API] Making request to: {full_url}")
+        print(f"[CALENDLY API] Headers: {json.dumps({k: v[:10] + '...' if k == 'Authorization' else v for k, v in headers.items()}, indent=2)}")
+        print(f"[CALENDLY API] Params: {json.dumps(params, indent=2)}")
+        
+        response = requests.get(full_url, headers=headers, params=params)
+        print(f"[CALENDLY API] Response Status: {response.status_code}")
+        
+        try:
+            response_json = response.json()
+            print(f"[CALENDLY API] Response Body: {json.dumps(response_json, indent=2)}")
+        except json.JSONDecodeError:
+            print(f"[CALENDLY API] Raw Response: {response.text}")
+            
         response.raise_for_status()
         return response.json()
     except requests.exceptions.RequestException as e:
-        print(f"Calendly API error: {str(e)}")
+        print(f"[CALENDLY API] Error: {str(e)}")
+        if hasattr(e, 'response'):
+            print(f"[CALENDLY API] Error Response Status: {e.response.status_code}")
+            print(f"[CALENDLY API] Error Response Body: {e.response.text}")
         raise HTTPException(status_code=400, detail=f"Calendly API error: {str(e)}")
 
 @router.post("/calendly/settings")
@@ -209,45 +226,60 @@ async def get_calendly_availability(
         if not settings or not settings.get("calendly_access_token"):
             raise HTTPException(status_code=400, detail="Calendly not configured")
         
-        # Calculate date range - start from now + 30 seconds to ensure future time
-        # and limit to 6 days 23 hours to stay under 7-day limit
-        start_time = datetime.utcnow() + timedelta(seconds=30)
-        end_time = start_time + timedelta(days=6, hours=23)
+        # Calculate date range using time.time() for reliable current time
+        current_timestamp = time.time()
+        start_time = datetime.fromtimestamp(current_timestamp + 30)  # 30 seconds from now
+        end_time = datetime.fromtimestamp(current_timestamp + (7 * 24 * 60 * 60))  # 7 days ahead
         
-        # Format for Calendly API (ISO format with Z suffix)
+        # Format for Calendly API
         start_time_iso = start_time.strftime('%Y-%m-%dT%H:%M:%S.%fZ')
         end_time_iso = end_time.strftime('%Y-%m-%dT%H:%M:%S.%fZ')
         
-        print(f"[CALENDLY] Requesting availability from {start_time_iso} to {end_time_iso}")
-        print(f"[CALENDLY] Event type URI: {event_type_uri}")
+        # Make request to Calendly API
+        headers = {
+            'Authorization': f'Bearer {settings["calendly_access_token"]}',
+            'Content-Type': 'application/json'
+        }
         
-        # Get available times from Calendly
-        availability_data = make_calendly_api_request(
-            'event_type_available_times',
-            settings["calendly_access_token"],
-            {
-                'event_type': event_type_uri,
-                'start_time': start_time_iso,
-                'end_time': end_time_iso
-            }
+        params = {
+            'event_type': event_type_uri,
+            'start_time': start_time_iso,
+            'end_time': end_time_iso
+        }
+        
+        print(f"[CALENDLY API] Making request to: https://api.calendly.com/event_type_available_times")
+        print(f"[CALENDLY API] Headers: {json.dumps({k: v[:10] + '...' if k == 'Authorization' else v for k, v in headers.items()}, indent=2)}")
+        print(f"[CALENDLY API] Params: {json.dumps(params, indent=2)}")
+        
+        response = requests.get(
+            'https://api.calendly.com/event_type_available_times',
+            headers=headers,
+            params=params
         )
         
-        if not availability_data:
-            return {"slots": []}
+        print(f"[CALENDLY API] Response Status: {response.status_code}")
         
-        slots = []
-        for slot in availability_data.get('collection', []):
-            slots.append({
-                "start_time": slot.get('start_time'),
-                "end_time": slot.get('end_time'),
-                "scheduling_url": slot.get('scheduling_url')
-            })
-        
-        print(f"[CALENDLY] Found {len(slots)} available slots")
-        return {"slots": slots}
-        
+        if response.status_code == 200:
+            data = response.json()
+            print(f"[CALENDLY API] Response Body: {json.dumps(data, indent=2)}")
+            
+            # Process and return available slots
+            available_slots = []
+            for slot in data.get('collection', []):
+                if slot.get('status') == 'available':
+                    available_slots.append({
+                        'start_time': slot['start_time'],
+                        'scheduling_url': slot['scheduling_url']
+                    })
+            
+            print(f"[CALENDLY] Found {len(available_slots)} available slots")
+            return available_slots
+        else:
+            print(f"[CALENDLY API] Error response: {response.text}")
+            raise HTTPException(status_code=response.status_code, detail="Error fetching Calendly availability")
+            
     except Exception as e:
-        print(f"Error getting Calendly availability: {str(e)}")
+        print(f"[CALENDLY API] Error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/calendly/stats")

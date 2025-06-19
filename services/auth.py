@@ -7,8 +7,7 @@ from services.database import db
 from bson import ObjectId
 import logging
 
-# Configure logging
-logging.basicConfig(level=logging.DEBUG)
+# Get logger instead of configuring it
 logger = logging.getLogger(__name__)
 
 # Initialize password context

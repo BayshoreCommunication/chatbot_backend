@@ -9,6 +9,10 @@ import time as time_module
 import uuid
 import requests
 from dotenv import load_dotenv
+import logging
+
+# Get logger for appointments
+logger = logging.getLogger('appointment')
 
 # Add database imports for Calendly settings
 from services.database import get_organization_by_api_key, db
@@ -80,65 +84,30 @@ def get_calendly_settings(api_key):
         return None
 
 def get_available_slots(api_key=None):
-    """Get available appointment slots from Calendly or return mock data if not configured"""
+    """Get available appointment slots from Calendly only - no mock data"""
     if not api_key:
-        print("[APPOINTMENT] No API key provided, using mock data")
-        return get_mock_slots()
+        logger.error("No API key provided - cannot get slots")
+        return "I apologize, but I cannot access appointment availability without proper configuration. Please contact support."
     
     try:
-        # Get Calendly settings
-        settings = get_calendly_settings(api_key)
-        if not settings or not settings.get("calendly_access_token") or not settings.get("event_type_uri"):
-            print("[APPOINTMENT] Calendly not configured, using mock data")
-            return get_mock_slots()
+        # Use the calendar integration with API key support
+        from services.calendar_integration import get_available_slots as get_calendar_slots
         
-        # Check cache first
-        cache_key = f"calendly_availability_{settings['event_type_uri']}"
-        if cache_key in _calendly_cache:
-            cache_time = _cache_timestamps.get(cache_key, 0)
-            if time_module.time() - cache_time < 300:  # 5 minutes cache
-                print("[APPOINTMENT] Using cached Calendly availability")
-                return _calendly_cache[cache_key]
+        # Get real Calendly slots using the API key
+        logger.info(f"Fetching real Calendly slots for API key: {api_key[:10]}...")
+        slots = get_calendar_slots(days_ahead=7, service_type="consultation", api_key=api_key)
         
-        print("[APPOINTMENT] Fetching availability from Calendly")
-        
-        # Calculate date range - start from now + 30 seconds to ensure future time
-        # and limit to 6 days 23 hours to stay under 7-day limit
-        start_time = datetime.datetime.utcnow() + datetime.timedelta(seconds=30)
-        end_time = start_time + datetime.timedelta(days=6, hours=23)
-        
-        # Format for Calendly API (ISO format with Z suffix)
-        start_time_iso = start_time.strftime('%Y-%m-%dT%H:%M:%S.%fZ')
-        end_time_iso = end_time.strftime('%Y-%m-%dT%H:%M:%S.%fZ')
-        
-        print(f"[APPOINTMENT] Requesting availability from {start_time_iso} to {end_time_iso}")
-        
-        # Get available times from Calendly
-        availability_data = make_calendly_api_request(
-            'event_type_available_times',
-            settings["calendly_access_token"],
-            {
-                'event_type': settings["event_type_uri"],
-                'start_time': start_time_iso,
-                'end_time': end_time_iso
-            }
-        )
-        
-        if not availability_data:
-            print("[APPOINTMENT] Failed to fetch from Calendly, using mock data")
-            return get_mock_slots()
-        
-        slots = availability_data.get('collection', [])
-        if not slots:
+        if not slots or len(slots) == 0:
+            logger.warning("No Calendly slots available")
             return "I apologize, but there are currently no appointment slots available. Please check back later or contact us directly to schedule an appointment."
         
-        # Format slots for display (without booking URLs)
+        # Format Calendly slots for display
         formatted_slots = "Available appointment slots:\n\n"
         
         # Group slots by date
         slots_by_date = {}
         for slot in slots:
-            start_time_str = slot.get('start_time')
+            start_time_str = slot.get('start')
             if not start_time_str:
                 continue
                 
@@ -149,10 +118,11 @@ def get_available_slots(api_key=None):
                 if date_key not in slots_by_date:
                     slots_by_date[date_key] = {"morning": [], "afternoon": []}
                 
-                # Format time for display (without booking URL)
+                # Format time for display with slot ID
                 time_display = slot_datetime.strftime("%I:%M %p").lstrip('0')
+                slot_id = slot.get('id', f"slot_{slot_datetime.strftime('%A_%B_%d')}_{time_display.replace(':', '').replace(' ', '')}")
                 
-                slot_line = f"    • {time_display}"
+                slot_line = f"    • {time_display} (ID: {slot_id})"
                 
                 # Determine if morning or afternoon
                 if slot_datetime.hour < 12:
@@ -160,19 +130,24 @@ def get_available_slots(api_key=None):
                         "display": slot_line,
                         "start_time": start_time_str,
                         "date": date_key,
-                        "time": time_display
+                        "time": time_display,
+                        "id": slot_id
                     })
                 else:
                     slots_by_date[date_key]["afternoon"].append({
                         "display": slot_line,
                         "start_time": start_time_str,
                         "date": date_key,
-                        "time": time_display
+                        "time": time_display,
+                        "id": slot_id
                     })
                     
             except Exception as e:
-                print(f"Error parsing slot time {start_time_str}: {e}")
+                logger.error(f"Error parsing slot time {start_time_str}: {e}")
                 continue
+        
+        if not slots_by_date:
+            return "I apologize, but there are currently no appointment slots available. Please check back later or contact us directly to schedule an appointment."
         
         # Build formatted output
         for date_display, periods in slots_by_date.items():
@@ -185,81 +160,17 @@ def get_available_slots(api_key=None):
         
         formatted_slots += "Please tell me which date and time you'd prefer, and I'll book that slot for you!"
         
-        # Cache the result
-        _calendly_cache[cache_key] = formatted_slots.strip()
-        _cache_timestamps[cache_key] = time_module.time()
-        
-        print(f"[APPOINTMENT] Successfully formatted {len(slots)} Calendly slots")
+        logger.info(f"Successfully formatted {len(slots)} Calendly slots")
         return formatted_slots.strip()
         
     except Exception as e:
-        print(f"[APPOINTMENT] Error fetching Calendly availability: {str(e)}")
-        print("[APPOINTMENT] Falling back to mock data")
-        return get_mock_slots()
+        logger.error(f"Error fetching Calendly availability: {str(e)}", exc_info=True)
+        return "I apologize, but I'm having trouble accessing appointment availability right now. Please try again later or contact us directly."
 
 def get_mock_slots():
-    """Get mock appointment slots (fallback when Calendly not available)"""
-    print("[APPOINTMENT] Generating mock appointment slots")
-    
-    today = datetime.datetime.now()
-    slots = []
-    
-    # Generate slots for the next 7 days
-    for i in range(1, 8):
-        date = today + datetime.timedelta(days=i)
-        # Skip weekends
-        if date.weekday() >= 5:
-            continue
-            
-        date_str = date.strftime("%Y-%m-%d")
-        date_display = date.strftime("%A, %B %d, %Y")
-        
-        # Add morning slots
-        for hour in [9, 10, 11]:
-            time_display = f"{hour}:00 AM"
-            slots.append({
-                "date_display": date_display,
-                "time_display": time_display,
-                "period": "morning"
-            })
-        
-        # Add afternoon slots
-        for hour in [13, 14, 15, 16]:
-            display_hour = hour if hour <= 12 else hour - 12
-            time_display = f"{display_hour}:00 PM"
-            slots.append({
-                "date_display": date_display,
-                "time_display": time_display,
-                "period": "afternoon"
-            })
-    
-    # Randomly remove some slots to simulate real availability
-    available_slots = random.sample(slots, min(len(slots) - 3, len(slots)))
-    
-    # Format slots for display (without booking URLs)
-    formatted_slots = "Available appointment slots:\n\n"
-    
-    # Group by date
-    slots_by_date = {}
-    for slot in available_slots:
-        date_display = slot["date_display"]
-        if date_display not in slots_by_date:
-            slots_by_date[date_display] = {"morning": [], "afternoon": []}
-        
-        period = slot["period"]
-        slots_by_date[date_display][period].append(f"    • {slot['time_display']}")
-    
-    # Build formatted output
-    for date_display, periods in slots_by_date.items():
-        formatted_slots += f"📅 {date_display}\n"
-        if periods["morning"]:
-            formatted_slots += "  Morning:\n" + "\n".join(periods["morning"]) + "\n"
-        if periods["afternoon"]:
-            formatted_slots += "  Afternoon:\n" + "\n".join(periods["afternoon"]) + "\n"
-        formatted_slots += "\n"
-    
-    formatted_slots += "Please tell me which date and time you'd prefer, and I'll book that slot for you!"
-    return formatted_slots.strip()
+    """Mock data functionality has been removed. This function will now raise an error."""
+    logger.error("MOCK DATA FUNCTIONALITY HAS BEEN REMOVED. Use Calendly integration instead.")
+    raise NotImplementedError("Mock data functionality has been removed. Configure Calendly integration.")
 
 def extract_slot_info(query, available_slots):
     """Extract date, time, or Calendly URL from user query with enhanced AI analysis"""
@@ -804,35 +715,18 @@ def get_user_email(user_data):
 def find_slot_by_datetime(date, time, available_slots, api_key):
     """Find the exact slot information for booking"""
     try:
-        settings = get_calendly_settings(api_key)
-        if not settings:
-            return None
-            
+        # Use the calendar integration service
+        from services.calendar_integration import get_available_slots as get_calendar_slots
+        
         # Get fresh availability data
-        start_time = datetime.datetime.utcnow() + datetime.timedelta(seconds=30)
-        end_time = start_time + datetime.timedelta(days=6, hours=23)
+        slots = get_calendar_slots(days_ahead=7, service_type="consultation", api_key=api_key)
         
-        start_time_iso = start_time.strftime('%Y-%m-%dT%H:%M:%S.%fZ')
-        end_time_iso = end_time.strftime('%Y-%m-%dT%H:%M:%S.%fZ')
-        
-        availability_data = make_calendly_api_request(
-            'event_type_available_times',
-            settings["calendly_access_token"],
-            {
-                'event_type': settings["event_type_uri"],
-                'start_time': start_time_iso,
-                'end_time': end_time_iso
-            }
-        )
-        
-        if not availability_data:
+        if not slots:
             return None
-            
-        slots = availability_data.get('collection', [])
         
         # Find matching slot
         for slot in slots:
-            start_time_str = slot.get('start_time')
+            start_time_str = slot.get('start')
             if not start_time_str:
                 continue
                 
@@ -842,19 +736,24 @@ def find_slot_by_datetime(date, time, available_slots, api_key):
                 slot_time = slot_datetime.strftime("%I:%M %p").lstrip('0')
                 
                 if slot_date == date and slot_time == time:
+                    # Get Calendly settings for this organization
+                    settings = get_calendly_settings(api_key)
+                    if not settings:
+                        return None
+                    
                     return {
                         "start_time": start_time_str,
-                        "event_type_uri": settings["event_type_uri"],
-                        "access_token": settings["calendly_access_token"],
+                        "event_type_uri": settings.get("event_type_uri"),
+                        "access_token": settings.get("calendly_access_token"),
                         "scheduling_url": slot.get("scheduling_url")
                     }
                     
             except Exception as e:
                 print(f"Error parsing slot: {e}")
                 continue
-                
+        
         return None
         
     except Exception as e:
-        print(f"Error finding slot: {e}")
+        print(f"Error finding slot by datetime: {str(e)}")
         return None

@@ -1,4 +1,9 @@
 import logging
+
+# Set up clean logging for chatbot
+logger = logging.getLogger('chatbot')
+
+# Reduce pymongo logging noise  
 logging.getLogger('pymongo').setLevel(logging.WARNING)
 
 from fastapi import APIRouter, Request, UploadFile, File, Form, HTTPException, Depends, Header, Body
@@ -36,17 +41,15 @@ sio = None
 def init_socketio(app: FastAPI):
     global sio
     sio = socketio.AsyncServer(
-        cors_allowed_origins="*",  # Simplified CORS for testing
+        cors_allowed_origins="*",
         async_mode='asgi',
-        logger=True,
-        engineio_logger=True
+        logger=False,  # Disable verbose socket.io logging
+        engineio_logger=False  # Disable verbose engine.io logging
     )
     
     @sio.event
     async def connect(sid, environ, auth):
-        print(f"[SOCKET.IO] Client connected: {sid}")
-        print(f"[SOCKET.IO] Auth: {auth}")
-        print(f"[SOCKET.IO] Environ keys: {list(environ.keys())[:10]}")
+        logger.info(f"Client connected: {sid}")
         
         # Get API key from auth or query params
         api_key = None
@@ -56,7 +59,6 @@ def init_socketio(app: FastAPI):
         if not api_key:
             # Try to get from query params
             query_string = environ.get('QUERY_STRING', '')
-            print(f"[SOCKET.IO] Query string: {query_string}")
             if 'apiKey=' in query_string:
                 for param in query_string.split('&'):
                     if param.startswith('apiKey='):
@@ -67,7 +69,7 @@ def init_socketio(app: FastAPI):
             # Auto-join organization room using API key
             room_name = f"org_{api_key}"
             await sio.enter_room(sid, room_name)
-            print(f"[SOCKET.IO] Client {sid} auto-joined room: {room_name}")
+            logger.info(f"Client {sid} joined room: {room_name}")
             
             # Send a welcome message to confirm connection
             await sio.emit('connection_confirmed', {
@@ -76,11 +78,11 @@ def init_socketio(app: FastAPI):
                 'message': 'Socket.IO connection established successfully'
             }, room=sid)
         else:
-            print(f"[SOCKET.IO] Warning: Client {sid} connected without API key")
+            logger.warning(f"Client {sid} connected without API key")
 
     @sio.event
     async def disconnect(sid):
-        print(f"[SOCKET.IO] Client disconnected: {sid}")
+        logger.info(f"Client disconnected: {sid}")
 
     @sio.event
     async def join_room(sid, data):
@@ -177,10 +179,6 @@ async def ask_question(
         print(f"[DEBUG] Processing message: {request.question}")
         print(f"[DEBUG] Session ID: {request.session_id}")
 
-        # Check if this is the first message BEFORE creating any records
-        is_first = is_first_message(org_id, request.session_id)
-        print(f"[DEBUG] Is first message: {is_first}")
-
         # Get or create visitor
         visitor = create_or_update_visitor(
             organization_id=org_id,
@@ -241,50 +239,6 @@ async def ask_question(
             },
             'organization_id': org_id
         }, room=f"org_{org_api_key}")
-
-        if is_first:
-            print("[DEBUG] Checking for instant reply")
-            instant_reply = instant_replies.find_one({
-                "organization_id": org_id,
-                "type": "instant_reply",
-                "isActive": True
-            })
-            print(f"[DEBUG] Found instant reply: {instant_reply}")
-            
-            if instant_reply:
-                print("[DEBUG] Processing instant reply")
-                # Store the instant reply
-                add_conversation_message(
-                    organization_id=org_id,
-                    visitor_id=visitor["id"],
-                    session_id=request.session_id,
-                    role="assistant",
-                    content=instant_reply["message"],
-                    metadata={"mode": "faq", "type": "instant_reply"}
-                )
-                request.user_data["conversation_history"].append({
-                    "role": "assistant",
-                    "content": instant_reply["message"]
-                })
-
-                # Emit bot reply to dashboard
-                await sio.emit('new_message', {
-                    'session_id': request.session_id,
-                    'message': {
-                        'role': 'assistant',
-                        'content': instant_reply["message"],
-                        'timestamp': datetime.utcnow().isoformat()
-                    },
-                    'organization_id': org_id
-                }, room=f"org_{org_api_key}")
-
-                print("[DEBUG] Returning instant reply")
-                return {
-                    "answer": instant_reply["message"],
-                    "mode": "faq",
-                    "language": "en",
-                    "user_data": request.user_data
-                }
 
         print("[DEBUG] Checking user information collection")
         # Check if we need to collect user information

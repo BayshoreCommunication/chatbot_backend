@@ -1,3 +1,6 @@
+# Configure logging first before importing other modules
+import logging_config
+
 from fastapi import FastAPI, Request, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles

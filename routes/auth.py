@@ -16,8 +16,7 @@ from services.auth import (
 import logging
 from bson.objectid import ObjectId
 
-# Configure logging
-logging.basicConfig(level=logging.DEBUG)
+# Get logger instead of configuring it
 logger = logging.getLogger(__name__)
 
 # Load environment variables
