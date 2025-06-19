@@ -1,13 +1,18 @@
 from fastapi import APIRouter, HTTPException, Header, Body
 from services.database import get_organization_by_api_key, db
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List
 from pydantic import BaseModel
 
 router = APIRouter()
 
-class InstantReplyUpdate(BaseModel):
+class InstantReplyMessage(BaseModel):
+    id: Optional[str] = None
     message: str
+    order: int
+
+class InstantReplyUpdate(BaseModel):
+    messages: List[InstantReplyMessage]
     isActive: bool
 
 @router.post("/")
@@ -28,13 +33,21 @@ async def set_instant_reply(
         
         current_time = datetime.utcnow()
         
+        # Prepare messages for storage
+        messages_data = []
+        for idx, msg in enumerate(data.messages):
+            messages_data.append({
+                "message": msg.message,
+                "order": msg.order if msg.order is not None else idx + 1
+            })
+        
         if existing_reply:
             # Update existing reply
             db.instant_reply.update_one(
                 {"_id": existing_reply["_id"]},
                 {
                     "$set": {
-                        "message": data.message,
+                        "messages": messages_data,
                         "isActive": data.isActive,
                         "updated_at": current_time
                     }
@@ -46,7 +59,7 @@ async def set_instant_reply(
         new_reply = {
             "organization_id": org["id"],
             "type": "instant_reply",
-            "message": data.message,
+            "messages": messages_data,
             "isActive": data.isActive,
             "created_at": current_time,
             "updated_at": current_time
@@ -73,15 +86,23 @@ async def get_instant_reply(x_api_key: str = Header(...)):
             return {
                 "status": "success", 
                 "data": {
-                    "message": None,
+                    "messages": [],
                     "isActive": False
                 }
             }
+        
+        # Handle backward compatibility for existing single message format
+        if "message" in reply and "messages" not in reply:
+            # Convert old single message format to new multiple messages format
+            messages = [{"message": reply["message"], "order": 1}] if reply["message"] else []
+        else:
+            # Use new messages format
+            messages = reply.get("messages", [])
             
         return {
             "status": "success",
             "data": {
-                "message": reply["message"],
+                "messages": messages,
                 "isActive": reply.get("isActive", False)
             }
         }
@@ -95,20 +116,11 @@ async def delete_instant_reply(x_api_key: str = Header(...)):
         if not org:
             raise HTTPException(status_code=401, detail="Invalid API key")
             
-        # Find and update the active instant reply
-        result = db.train_ai.update_one(
-            {
-                "organization_id": org["id"],
-                "type": "instant_reply",
-                "is_active": True
-            },
-            {
-                "$set": {
-                    "is_active": False,
-                    "updated_at": datetime.utcnow()
-                }
-            }
-        )
+        # Find and delete the instant reply document
+        result = db.instant_reply.delete_one({
+            "organization_id": org["id"],
+            "type": "instant_reply"
+        })
             
         return {"status": "success", "message": "Instant reply deleted successfully"}
     except Exception as e:
