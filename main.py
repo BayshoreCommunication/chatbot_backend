@@ -14,6 +14,7 @@ from bson import ObjectId
 import json
 from pathlib import Path
 import traceback
+from routes import instant_reply
 
 class MongoJSONEncoder(json.JSONEncoder):
     def default(self, o):
@@ -230,6 +231,8 @@ available_features.append("Stripe Payment Processing")
 
 app.include_router(auth_router, prefix="/auth", tags=["auth"])
 app.include_router(user_router, prefix="/user", tags=["User Profile"])
+
+app.include_router(instant_reply.router, prefix="/api/instant-reply", tags=["instant-reply"])
 
 @app.get("/")
 def read_root():
