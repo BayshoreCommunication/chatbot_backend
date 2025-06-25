@@ -11,7 +11,8 @@ from services.auth import (
     create_user,
     get_user_by_email,
     get_user_by_google_id,
-    verify_password
+    verify_password,
+    serialize_user
 )
 import logging
 from bson.objectid import ObjectId
@@ -205,7 +206,7 @@ async def google_oauth_login(request: Request, state: str = None, redirect_uri: 
         google_auth_url = (
             f"https://accounts.google.com/o/oauth2/v2/auth?"
             f"client_id={GOOGLE_CLIENT_ID}&"
-            f"redirect_uri=https://d512-103-112-54-213.ngrok-free.app/auth/google/callback&"
+            f"redirect_uri=https://6625-103-112-54-213.ngrok-free.app/auth/google/callback&"
             f"scope=openid email profile&"
             f"response_type=code&"
             f"state={state}|{urllib.parse.quote(redirect_uri or '')}"
@@ -225,15 +226,15 @@ async def google_oauth_callback(request: Request, code: str = None, state: str =
         if error:
             logger.error(f"Google OAuth error: {error}")
             # Redirect back to mobile app with error
-            return RedirectResponse(url="exp://192.168.68.122:8081/--/auth/callback?error=oauth_error")
+            return RedirectResponse(url="exp://192.168.68.111:8081/--/auth/callback?error=oauth_error")
         
         if not code:
             logger.error("No authorization code received from Google")
-            return RedirectResponse(url="exp://192.168.68.122:8081/--/auth/callback?error=no_code")
+            return RedirectResponse(url="exp://192.168.68.111:8081/--/auth/callback?error=no_code")
         
         # Parse state to get original redirect URI
         original_state, mobile_redirect_uri = state.split('|', 1) if state and '|' in state else (state, '')
-        mobile_redirect_uri = urllib.parse.unquote(mobile_redirect_uri) if mobile_redirect_uri else "exp://192.168.68.122:8081/--/auth/callback"
+        mobile_redirect_uri = urllib.parse.unquote(mobile_redirect_uri) if mobile_redirect_uri else "exp://192.168.68.111:8081/--/auth/callback"
         
         # Exchange code for access token
         token_url = "https://oauth2.googleapis.com/token"
@@ -242,7 +243,7 @@ async def google_oauth_callback(request: Request, code: str = None, state: str =
             "client_secret": GOOGLE_CLIENT_SECRET,
             "code": code,
             "grant_type": "authorization_code",
-            "redirect_uri": "https://d512-103-112-54-213.ngrok-free.app/auth/google/callback"
+            "redirect_uri": "https://6625-103-112-54-213.ngrok-free.app/auth/google/callback"
         }
         
         token_response = requests.post(token_url, data=token_data)
@@ -305,5 +306,119 @@ async def google_oauth_callback(request: Request, code: str = None, state: str =
         
     except Exception as e:
         logger.error(f"Error in Google OAuth callback: {str(e)}")
-        error_url = f"exp://192.168.68.122:8081/--/auth/callback?error=callback_error&message={urllib.parse.quote(str(e))}"
-        return RedirectResponse(url=error_url) 
+        error_url = f"exp://192.168.68.111:8081/--/auth/callback?error=callback_error&message={urllib.parse.quote(str(e))}"
+        return RedirectResponse(url=error_url)
+
+@router.post("/admin/google")
+async def admin_google_auth(user: UserGoogle):
+    """Google OAuth for admin users"""
+    try:
+        # Check if user exists by Google ID
+        db_user = get_user_by_google_id(user.google_id)
+        
+        if db_user:
+            # User exists, check if they're admin
+            if not db_user.get("is_admin") or db_user.get("role") != "admin":
+                raise HTTPException(status_code=403, detail="Admin access required")
+            user_data = db_user
+        else:
+            # Check if email already exists
+            email_user = get_user_by_email(user.email)
+            if email_user:
+                # Link Google account to existing user if they're admin
+                if not email_user.get("is_admin") or email_user.get("role") != "admin":
+                    raise HTTPException(status_code=403, detail="Admin access required")
+                user_data = email_user
+            else:
+                # Don't create new admin users through Google auth
+                raise HTTPException(status_code=403, detail="Admin access required")
+        
+        # Create access token
+        access_token = create_access_token(
+            data={"sub": user.email},
+            expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        )
+        
+        return {
+            "access_token": access_token,
+            "token_type": "bearer",
+            "user": serialize_user(user_data)
+        }
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        logger.error(f"Admin Google auth error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Authentication failed")
+
+@router.post("/admin/login")
+async def admin_login(user: UserLogin):
+    """Admin login with email and password"""
+    try:
+        logger.debug(f"Admin login attempt for email: {user.email}")
+        
+        # Get user from database
+        db_user = get_user_by_email(user.email)
+        logger.debug(f"Database user found: {bool(db_user)}")
+        
+        if not db_user:
+            logger.warning(f"Admin login failed: Email not registered - {user.email}")
+            raise HTTPException(status_code=400, detail="Email not registered")
+        
+        # Check if user is admin
+        if not db_user.get("is_admin") or db_user.get("role") != "admin":
+            logger.warning(f"Admin login failed: User is not admin - {user.email}")
+            raise HTTPException(status_code=403, detail="Admin access required")
+        
+        # Verify password
+        is_valid = verify_password(user.password, db_user["hashed_password"])
+        logger.debug(f"Password verification result: {is_valid}")
+        
+        if not is_valid:
+            logger.warning(f"Admin login failed: Incorrect password for {user.email}")
+            raise HTTPException(status_code=400, detail="Incorrect password")
+        
+        # Remove sensitive data and ensure all fields are JSON serializable
+        user_data = serialize_user(db_user)
+        logger.debug("Admin user data prepared for response")
+        
+        # Create access token
+        access_token = create_access_token(
+            data={"sub": user.email},
+            expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        )
+        logger.debug("Access token created successfully")
+        
+        response_data = {
+            "access_token": access_token,
+            "token_type": "bearer",
+            "user": user_data
+        }
+        logger.info(f"Admin login successful for user: {user.email}")
+        
+        return JSONResponse(
+            content=response_data,
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Credentials": "false"
+            }
+        )
+    except HTTPException as e:
+        logger.error(f"HTTP Exception during admin login: {str(e)}")
+        return JSONResponse(
+            status_code=e.status_code,
+            content={"detail": e.detail},
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Credentials": "false"
+            }
+        )
+    except Exception as e:
+        logger.error(f"Unexpected error during admin login: {str(e)}", exc_info=True)
+        return JSONResponse(
+            status_code=500,
+            content={"detail": f"Internal server error: {str(e)}"},
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Credentials": "false"
+            }
+        ) 

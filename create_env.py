@@ -26,8 +26,17 @@ with open('.env', 'w') as f:
     f.write('JWT_SECRET_KEY=e4f7c6d9b2a84f4aa01f1e3391e3e33e7c8a9cf23de141df97ad9e915c90b0f8\n')
     f.write('JWT_ALGORITHM=HS256\n')
     f.write('JWT_ACCESS_TOKEN_EXPIRE_MINUTES=1440\n')  # 24 hours
+    
+    # Add Redis configuration (WSL Ubuntu Redis server)
+    f.write('REDIS_HOST=localhost\n')
+    f.write('REDIS_PORT=6379\n')
+    f.write('REDIS_DB=0\n')
 
 print("Created .env file successfully!")
+print("⚠️  IMPORTANT: Redis caching has been configured!")
+print("   Make sure Redis is running on WSL Ubuntu: sudo service redis-server start")
+print("   You can check Redis status: redis-cli ping")
+print()
 print("⚠️  IMPORTANT: You need to add your Google Client Secret to the .env file!")
 print("   Go to Google Cloud Console > Credentials > Your OAuth Client > Client Secret")
 print("   Replace 'YOUR_GOOGLE_CLIENT_SECRET_HERE' with your actual client secret") 

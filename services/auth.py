@@ -156,4 +156,83 @@ def update_user(user_id: str, update_data: Dict[str, Any]) -> Optional[Dict[str,
             return None
     except Exception as e:
         logger.error(f"Error updating user: {str(e)}")
-        return None 
+        return None
+
+def create_admin_user(email: str, password: str, name: str) -> Dict[str, Any]:
+    """Create a new admin user"""
+    try:
+        logger.debug(f"Creating new admin user with email: {email}")
+        
+        # Check if admin already exists
+        existing_admin = users.find_one({"email": email})
+        if existing_admin:
+            logger.info(f"Admin user already exists: {email}")
+            return serialize_user(existing_admin)
+        
+        # Generate user ID
+        user_id = str(uuid.uuid4())
+        
+        # Prepare admin user document
+        admin_doc = {
+            "id": user_id,
+            "email": email,
+            "name": name,
+            "role": "admin",
+            "is_admin": True,
+            "has_paid_subscription": True,  # Admins have full access
+            "hashed_password": get_password_hash(password),
+            "created_at": datetime.utcnow(),
+            "updated_at": datetime.utcnow()
+        }
+        
+        # Insert into database
+        logger.debug("Inserting new admin user into database")
+        result = users.insert_one(admin_doc)
+        admin_doc["_id"] = result.inserted_id
+        
+        logger.info(f"Successfully created new admin user with ID: {user_id}")
+        return serialize_user(admin_doc)
+    except Exception as e:
+        logger.error(f"Error creating admin user: {str(e)}")
+        raise
+
+def get_user_by_id(user_id: str) -> Optional[Dict[str, Any]]:
+    """Get user by ID"""
+    try:
+        logger.debug(f"Looking up user by ID: {user_id}")
+        user = users.find_one({"id": user_id})
+        if user:
+            logger.debug("User found in database")
+            return serialize_user(user)
+        else:
+            logger.debug("No user found with this ID")
+            return None
+    except Exception as e:
+        logger.error(f"Error getting user by ID: {str(e)}")
+        return None
+
+def is_admin_user(email: str) -> bool:
+    """Check if user is an admin"""
+    try:
+        user = users.find_one({"email": email})
+        return user and user.get("is_admin", False) and user.get("role") == "admin"
+    except Exception as e:
+        logger.error(f"Error checking admin status: {str(e)}")
+        return False
+
+def seed_default_admin():
+    """Seed default admin user if it doesn't exist"""
+    try:
+        default_admin_email = "222015010@student.green.edu.bd"
+        default_admin_password = "admin123"  # Change this in production
+        default_admin_name = "System Administrator"
+        
+        existing_admin = users.find_one({"email": default_admin_email})
+        if not existing_admin:
+            logger.info("Creating default admin user...")
+            create_admin_user(default_admin_email, default_admin_password, default_admin_name)
+            logger.info(f"Default admin user created: {default_admin_email}")
+        else:
+            logger.info("Default admin user already exists")
+    except Exception as e:
+        logger.error(f"Error seeding default admin: {str(e)}") 

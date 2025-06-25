@@ -15,6 +15,7 @@ import json
 from pathlib import Path
 import traceback
 from routes import instant_reply
+from services.auth import seed_default_admin
 
 class MongoJSONEncoder(json.JSONEncoder):
     def default(self, o):
@@ -92,6 +93,14 @@ except Exception as e:
 
 # Payment router should always work
 from routes.payment import router as payment_router
+
+# Admin router
+try:
+    from routes.admin import router as admin_router
+    admin_available = True
+except Exception as e:
+    print(f"Warning: Admin router failed to import: {e}")
+    admin_available = False
 
 try:
     from services.database import get_organization_by_api_key
@@ -229,6 +238,11 @@ available_features.append("Dashboard Analytics")
 app.include_router(payment_router, prefix="/payment", tags=["Payment Processing"])
 available_features.append("Stripe Payment Processing")
 
+# Admin router
+if admin_available:
+    app.include_router(admin_router, prefix="/admin", tags=["Admin Dashboard"])
+    available_features.append("Admin Dashboard")
+
 app.include_router(auth_router, prefix="/auth", tags=["auth"])
 app.include_router(user_router, prefix="/user", tags=["User Profile"])
 
@@ -247,6 +261,12 @@ def read_root():
 def health_check():
     """Health check endpoint for monitoring"""
     return {"status": "healthy"}
+
+@app.on_event("startup")
+async def startup_event():
+    """Run on application startup"""
+    # Seed default admin user
+    seed_default_admin()
 
 # Create the final app instance
 if chatbot_available and 'socket_app' in locals():

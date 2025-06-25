@@ -14,6 +14,10 @@ class Visitor(BaseModel):
     created_at: datetime = Field(default_factory=datetime.now)
     last_active: datetime = Field(default_factory=datetime.now)
     metadata: Dict[str, Any] = Field(default_factory=dict)
+    # Agent takeover fields
+    is_agent_mode: bool = Field(default=False)
+    agent_takeover_at: Optional[datetime] = None
+    agent_id: Optional[str] = None  # ID of the agent who took over
     
     class Config:
         json_schema_extra = {
@@ -25,7 +29,10 @@ class Visitor(BaseModel):
                 "metadata": {
                     "browser": "Chrome",
                     "referrer": "google.com"
-                }
+                },
+                "is_agent_mode": False,
+                "agent_takeover_at": None,
+                "agent_id": None
             }
         }
 

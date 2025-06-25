@@ -14,7 +14,11 @@ import traceback
 try:
     from services.langchain.engine import ask_bot, add_document, escalate_to_human
     from services.language_detect import detect_language
-    from services.database import get_organization_by_api_key, create_or_update_visitor, add_conversation_message, get_visitor, get_conversation_history, save_user_profile, get_user_profile, db
+    from services.database import (
+        get_organization_by_api_key, create_or_update_visitor, add_conversation_message, 
+        get_visitor, get_conversation_history, save_user_profile, get_user_profile, db,
+        set_agent_mode, set_bot_mode, is_chat_in_agent_mode
+    )
     from services.faq_matcher import find_matching_faq, get_suggested_faqs
     from services.langchain.user_management import handle_name_collection, handle_email_collection
     SERVICES_AVAILABLE = True
@@ -67,7 +71,7 @@ def init_socketio(app: FastAPI):
         
         if api_key:
             # Auto-join organization room using API key
-            room_name = f"org_{api_key}"
+            room_name = api_key
             await sio.enter_room(sid, room_name)
             logger.info(f"Client {sid} joined room: {room_name}")
             
@@ -179,6 +183,58 @@ async def ask_question(
         print(f"[DEBUG] Processing message: {request.question}")
         print(f"[DEBUG] Session ID: {request.session_id}")
 
+        # FIRST: Check if this chat is in agent mode
+        if is_chat_in_agent_mode(org_id, request.session_id):
+            print(f"[DEBUG] Chat {request.session_id} is in agent mode - skipping AI processing")
+            
+            # Get or create visitor for the user message
+            visitor = create_or_update_visitor(
+                organization_id=org_id,
+                session_id=request.session_id,
+                visitor_data={
+                    "last_active": None,
+                    "metadata": {
+                        "mode": request.mode,
+                        "user_data": request.user_data
+                    }
+                }
+            )
+
+            # Store the user message only
+            add_conversation_message(
+                organization_id=org_id,
+                visitor_id=visitor["id"],
+                session_id=request.session_id,
+                role="user",
+                content=request.question,
+                metadata={"mode": request.mode, "agent_mode": True}
+            )
+
+            # Emit user message to dashboard for agent to see
+            await sio.emit('new_message', {
+                'session_id': request.session_id,
+                'message': {
+                    'role': 'user',
+                    'content': request.question,
+                    'timestamp': datetime.utcnow().isoformat()
+                },
+                'organization_id': org_id,
+                'agent_mode': True
+            }, room=org_api_key)
+
+            # Return without AI response - agent will respond manually
+            return {
+                "answer": "",  # No AI response
+                "mode": "agent",
+                "language": "en",
+                "user_data": request.user_data or {},
+                "agent_mode": True,
+                "message": "Message received - agent will respond shortly"
+            }
+
+        # Continue with normal AI processing if not in agent mode
+        print(f"[DEBUG] Chat {request.session_id} is in bot mode - continuing with AI processing")
+
         # Get or create visitor
         visitor = create_or_update_visitor(
             organization_id=org_id,
@@ -238,7 +294,7 @@ async def ask_question(
                 'timestamp': datetime.utcnow().isoformat()
             },
             'organization_id': org_id
-        }, room=f"org_{org_api_key}")
+        }, room=org_api_key)
 
         print("[DEBUG] Checking user information collection")
         # Check if we need to collect user information
@@ -303,7 +359,7 @@ async def ask_question(
                             'timestamp': datetime.utcnow().isoformat()
                         },
                         'organization_id': org_id
-                    }, room=f"org_{org_api_key}")
+                    }, room=org_api_key)
                     
                     return {
                         "answer": email_prompt,
@@ -341,7 +397,7 @@ async def ask_question(
                             'timestamp': datetime.utcnow().isoformat()
                         },
                         'organization_id': org_id
-                    }, room=f"org_{org_api_key}")
+                    }, room=org_api_key)
                     
                     return {
                         "answer": email_prompt,
@@ -377,7 +433,7 @@ async def ask_question(
                             'timestamp': datetime.utcnow().isoformat()
                         },
                         'organization_id': org_id
-                    }, room=f"org_{org_api_key}")
+                    }, room=org_api_key)
                     
                     return {
                         "answer": name_prompt,
@@ -443,7 +499,7 @@ async def ask_question(
                             'timestamp': datetime.utcnow().isoformat()
                         },
                         'organization_id': org_id
-                    }, room=f"org_{org_api_key}")
+                    }, room=org_api_key)
                     
                     return {
                         "answer": welcome,
@@ -480,7 +536,7 @@ async def ask_question(
                             'timestamp': datetime.utcnow().isoformat()
                         },
                         'organization_id': org_id
-                    }, room=f"org_{org_api_key}")
+                    }, room=org_api_key)
                     
                     return {
                         "answer": welcome,
@@ -514,7 +570,7 @@ async def ask_question(
                             'timestamp': datetime.utcnow().isoformat()
                         },
                         'organization_id': org_id
-                    }, room=f"org_{org_api_key}")
+                    }, room=org_api_key)
                     
                     return {
                         "answer": email_prompt,
@@ -560,7 +616,7 @@ async def ask_question(
                             'timestamp': datetime.utcnow().isoformat()
                         },
                         'organization_id': org_id
-                    }, room=f"org_{org_api_key}")
+                    }, room=org_api_key)
                     
                     return {
                         "answer": welcome,
@@ -612,7 +668,7 @@ async def ask_question(
                     'timestamp': datetime.utcnow().isoformat()
                 },
                 'organization_id': org_id
-            }, room=f"org_{org_api_key}")
+            }, room=org_api_key)
 
             # Get suggested FAQs for follow-up
             print("[DEBUG] Getting suggested FAQs...")
@@ -685,7 +741,7 @@ async def ask_question(
                 'timestamp': datetime.utcnow().isoformat()
             },
             'organization_id': org_id
-        }, room=f"org_{org_api_key}")
+        }, room=org_api_key)
 
         return response
 
@@ -710,6 +766,11 @@ async def get_chat_history(
     if not visitor:
         raise HTTPException(status_code=404, detail="Session not found")
     
+    # Check if chat is in agent mode
+    is_agent_mode = visitor.get("is_agent_mode", False)
+    agent_id = visitor.get("agent_id")
+    agent_takeover_at = visitor.get("agent_takeover_at")
+    
     # Get user profile
     user_profile = get_user_profile(org_id, session_id)
     profile_data = {}
@@ -727,9 +788,11 @@ async def get_chat_history(
             })
     
     # Get current mode
-    current_mode = "faq"
+    current_mode = "agent" if is_agent_mode else "faq"
     if visitor and "metadata" in visitor and "mode" in visitor["metadata"]:
         current_mode = visitor["metadata"]["mode"]
+        if is_agent_mode:
+            current_mode = "agent"
     
     # Get last assistant message
     last_answer = ""
@@ -751,7 +814,10 @@ async def get_chat_history(
             "conversation_history": formatted_history,
             "returning_user": "name" in profile_data and bool(profile_data.get("name"))
         },
-        "suggested_faqs": suggested_faqs
+        "suggested_faqs": suggested_faqs,
+        "agent_mode": is_agent_mode,
+        "agent_id": agent_id,
+        "agent_takeover_at": agent_takeover_at.isoformat() if agent_takeover_at else None
     }
     
     return response
@@ -1036,6 +1102,141 @@ async def save_chat_widget_settings(
         print(f"[ERROR] Exception type: {type(e)}")
         import traceback
         print(f"[ERROR] Traceback: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/agent-takeover")
+async def agent_takeover(
+    request: Request,
+    organization=Depends(get_organization_from_api_key)
+):
+    """Take over a chat conversation for manual agent handling"""
+    try:
+        data = await request.json()
+        session_id = data.get("session_id")
+        agent_id = data.get("agent_id")  # Optional: ID of the agent taking over
+        
+        if not session_id:
+            raise HTTPException(status_code=400, detail="Session ID is required")
+        
+        org_id = organization["id"]
+        org_api_key = organization.get("api_key")
+        
+        # Set the chat to agent mode
+        updated_visitor = set_agent_mode(org_id, session_id, agent_id)
+        
+        # Only emit takeover notification to dashboard (no system message added to conversation)
+        await sio.emit('agent_takeover', {
+            'session_id': session_id,
+            'agent_id': agent_id,
+            'timestamp': datetime.utcnow().isoformat()
+        }, room=org_api_key)
+        
+        return {
+            "status": "success",
+            "message": "Agent takeover successful",
+            "session_id": session_id,
+            "is_agent_mode": True,
+            "agent_id": agent_id
+        }
+        
+    except Exception as e:
+        print(f"Error in agent takeover: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/agent-release")
+async def agent_release(
+    request: Request,
+    organization=Depends(get_organization_from_api_key)
+):
+    """Release a chat conversation back to bot handling"""
+    try:
+        data = await request.json()
+        session_id = data.get("session_id")
+        
+        if not session_id:
+            raise HTTPException(status_code=400, detail="Session ID is required")
+        
+        org_id = organization["id"]
+        org_api_key = organization.get("api_key")
+        
+        # Set the chat back to bot mode
+        updated_visitor = set_bot_mode(org_id, session_id)
+        
+        # Only emit release notification to dashboard (no system message added to conversation)
+        await sio.emit('agent_release', {
+            'session_id': session_id,
+            'timestamp': datetime.utcnow().isoformat()
+        }, room=org_api_key)
+        
+        return {
+            "status": "success",
+            "message": "Chat released back to bot",
+            "session_id": session_id,
+            "is_agent_mode": False
+        }
+        
+    except Exception as e:
+        print(f"Error in agent release: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/send-agent-message")
+async def send_agent_message(
+    request: Request,
+    organization=Depends(get_organization_from_api_key)
+):
+    """Send a message as an agent in manual mode"""
+    try:
+        data = await request.json()
+        session_id = data.get("session_id")
+        message_content = data.get("message")
+        agent_id = data.get("agent_id")
+        
+        if not session_id or not message_content:
+            raise HTTPException(status_code=400, detail="Session ID and message are required")
+        
+        org_id = organization["id"]
+        org_api_key = organization.get("api_key")
+        
+        # Verify the chat is in agent mode
+        if not is_chat_in_agent_mode(org_id, session_id):
+            raise HTTPException(status_code=400, detail="Chat is not in agent mode")
+        
+        # Get visitor
+        visitor = get_visitor(org_id, session_id)
+        if not visitor:
+            raise HTTPException(status_code=404, detail="Visitor not found")
+        
+        # Add the agent message
+        add_conversation_message(
+            organization_id=org_id,
+            visitor_id=visitor["id"],
+            session_id=session_id,
+            role="assistant",
+            content=message_content,
+            metadata={"type": "agent_message", "agent_id": agent_id}
+        )
+        
+        # Emit the agent message to dashboard and chat widget
+        await sio.emit('new_message', {
+            'session_id': session_id,
+            'message': {
+                'role': 'assistant',
+                'content': message_content,
+                'timestamp': datetime.utcnow().isoformat(),
+                'agent_id': agent_id
+            },
+            'organization_id': org_id
+        }, room=org_api_key)
+        
+        return {
+            "status": "success",
+            "message": "Agent message sent successfully",
+            "session_id": session_id,
+            "content": message_content
+        }
+        
+    except Exception as e:
+        print(f"Error sending agent message: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/settings")

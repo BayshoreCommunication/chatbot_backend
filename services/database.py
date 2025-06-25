@@ -42,6 +42,8 @@ def init_db():
     visitors.create_index("organization_id")
     visitors.create_index("session_id")
     visitors.create_index([("organization_id", pymongo.ASCENDING), ("session_id", pymongo.ASCENDING)], unique=True)
+    visitors.create_index("is_agent_mode")  # New index for agent mode queries
+    visitors.create_index([("organization_id", pymongo.ASCENDING), ("is_agent_mode", pymongo.ASCENDING)])  # Compound index
     
     # Conversation indexes
     conversations.create_index("organization_id")
@@ -77,6 +79,8 @@ def create_organization(name: str, subscription_tier: str = "free", user_id: str
     # Generate unique namespace for vector DB
     pinecone_namespace = f"org_{uuid.uuid4().hex}"
     
+    current_time = datetime.datetime.utcnow()
+    
     org_data = {
         "id": str(uuid.uuid4()),
         "name": name,
@@ -85,7 +89,9 @@ def create_organization(name: str, subscription_tier: str = "free", user_id: str
         "subscription_tier": subscription_tier,
         "subscription_status": "active",
         "pinecone_namespace": pinecone_namespace,
-        "settings": {}
+        "settings": {},
+        "created_at": current_time,
+        "updated_at": current_time
     }
     
     # Only add stripe_subscription_id if it's not None
@@ -105,6 +111,9 @@ def get_organization_by_api_key(api_key: str) -> Optional[Dict[str, Any]]:
 
 def update_organization(org_id: str, update_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Update organization data"""
+    # Add updated_at timestamp
+    update_data["updated_at"] = datetime.datetime.utcnow()
+    
     organizations.update_one({"id": org_id}, {"$set": update_data})
     return organizations.find_one({"id": org_id})
 
@@ -153,6 +162,49 @@ def create_or_update_visitor(organization_id: str, session_id: str, visitor_data
 def get_visitor(organization_id: str, session_id: str) -> Optional[Dict[str, Any]]:
     """Get visitor by organization_id and session_id"""
     return visitors.find_one({"organization_id": organization_id, "session_id": session_id})
+
+def set_agent_mode(organization_id: str, session_id: str, agent_id: str = None) -> Dict[str, Any]:
+    """Set a visitor's chat to agent mode (manual handling)"""
+    visitor = get_visitor(organization_id, session_id)
+    if not visitor:
+        raise ValueError("Visitor not found")
+    
+    update_data = {
+        "is_agent_mode": True,
+        "agent_takeover_at": datetime.datetime.utcnow(),
+        "agent_id": agent_id
+    }
+    
+    visitors.update_one(
+        {"organization_id": organization_id, "session_id": session_id},
+        {"$set": update_data}
+    )
+    
+    return visitors.find_one({"organization_id": organization_id, "session_id": session_id})
+
+def set_bot_mode(organization_id: str, session_id: str) -> Dict[str, Any]:
+    """Set a visitor's chat back to bot mode (automatic handling)"""
+    visitor = get_visitor(organization_id, session_id)
+    if not visitor:
+        raise ValueError("Visitor not found")
+    
+    update_data = {
+        "is_agent_mode": False,
+        "agent_takeover_at": None,
+        "agent_id": None
+    }
+    
+    visitors.update_one(
+        {"organization_id": organization_id, "session_id": session_id},
+        {"$set": update_data}
+    )
+    
+    return visitors.find_one({"organization_id": organization_id, "session_id": session_id})
+
+def is_chat_in_agent_mode(organization_id: str, session_id: str) -> bool:
+    """Check if a chat is currently being handled by an agent"""
+    visitor = get_visitor(organization_id, session_id)
+    return visitor.get("is_agent_mode", False) if visitor else False
 
 # Conversation methods
 def add_conversation_message(
