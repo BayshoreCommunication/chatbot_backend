@@ -144,7 +144,7 @@ def create_or_update_visitor(organization_id: str, session_id: str, visitor_data
         # Update existing visitor
         visitors.update_one(
             {"organization_id": organization_id, "session_id": session_id},
-            {"$set": {**visitor_data, "last_active": visitor_data.get("last_active", None)}}
+            {"$set": {**visitor_data, "last_active": visitor_data.get("last_active", datetime.datetime.utcnow())}}
         )
         return visitors.find_one({"organization_id": organization_id, "session_id": session_id})
     else:
@@ -154,6 +154,8 @@ def create_or_update_visitor(organization_id: str, session_id: str, visitor_data
             "id": visitor_id,
             "organization_id": organization_id,
             "session_id": session_id,
+            "created_at": datetime.datetime.utcnow(),  # Add created_at timestamp
+            "last_active": visitor_data.get("last_active", datetime.datetime.utcnow()),
             **visitor_data
         }
         visitors.insert_one(new_visitor)

@@ -206,7 +206,7 @@ async def get_all_conversations(admin_data: dict = Depends(verify_admin_access))
 
 @router.get("/subscriptions")
 async def get_all_subscriptions(admin_data: dict = Depends(verify_admin_access)):
-    """Get all subscriptions with organization details"""
+    """Get all subscriptions with organization data"""
     try:
         # Check cache first
         cache_key_str = cache_key("admin", "subscriptions")
@@ -216,10 +216,8 @@ async def get_all_subscriptions(admin_data: dict = Depends(verify_admin_access))
         
         db = get_database()
         
-        # Get subscriptions with organization details
+        # Aggregate subscriptions with organization data
         pipeline = [
-            {"$sort": {"created_at": -1}},
-            {"$limit": 100},
             {
                 "$lookup": {
                     "from": "organizations",
@@ -229,33 +227,119 @@ async def get_all_subscriptions(admin_data: dict = Depends(verify_admin_access))
                 }
             },
             {
-                "$addFields": {
-                    "organization_name": {
-                        "$ifNull": [{"$arrayElemAt": ["$organization.name", 0]}, "Unknown Organization"]
-                    }
+                "$unwind": {
+                    "path": "$organization",
+                    "preserveNullAndEmptyArrays": True
                 }
             },
             {
                 "$project": {
-                    "organization": 0
+                    "_id": {"$toString": "$_id"},
+                    "id": 1,
+                    "user_id": 1,
+                    "organization_id": 1,
+                    "stripe_subscription_id": 1,
+                    "payment_amount": 1,
+                    "subscription_tier": 1,
+                    "subscription_status": 1,
+                    "current_period_start": 1,
+                    "current_period_end": 1,
+                    "created_at": 1,
+                    "updated_at": 1,
+                    "organization_name": "$organization.name"
                 }
+            },
+            {
+                "$sort": {"created_at": -1}
             }
         ]
         
         subscriptions = list(db.subscriptions.aggregate(pipeline))
         
-        # Convert ObjectId and datetime
+        # Convert ObjectIds and dates to strings for JSON serialization
         for sub in subscriptions:
-            if "_id" in sub:
-                sub["_id"] = str(sub["_id"])
-            for date_field in ["created_at", "updated_at", "current_period_start", "current_period_end"]:
-                if date_field in sub and sub[date_field]:
-                    sub[date_field] = sub[date_field].isoformat() if hasattr(sub[date_field], 'isoformat') else str(sub[date_field])
+            if isinstance(sub.get("created_at"), datetime):
+                sub["created_at"] = sub["created_at"].isoformat()
+            if isinstance(sub.get("updated_at"), datetime):
+                sub["updated_at"] = sub["updated_at"].isoformat()
+            if isinstance(sub.get("current_period_start"), datetime):
+                sub["current_period_start"] = sub["current_period_start"].isoformat()
+            if isinstance(sub.get("current_period_end"), datetime):
+                sub["current_period_end"] = sub["current_period_end"].isoformat()
         
-        # Cache for 2 minutes (subscription data changes less frequently)
-        cache.set(cache_key_str, subscriptions, ttl=120)
+        # Cache for 5 minutes (subscription data changes less frequently)
+        cache.set(cache_key_str, subscriptions, ttl=300)
         
         return subscriptions
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/visitors")
+async def get_all_visitors(admin_data: dict = Depends(verify_admin_access)):
+    """Get all visitors with organization data"""
+    try:
+        # Check cache first
+        cache_key_str = cache_key("admin", "visitors")
+        cached_data = cache.get(cache_key_str)
+        if cached_data is not None:
+            return cached_data
+        
+        db = get_database()
+        
+        # Aggregate visitors with organization data
+        pipeline = [
+            {
+                "$lookup": {
+                    "from": "organizations",
+                    "localField": "organization_id",
+                    "foreignField": "id",
+                    "as": "organization"
+                }
+            },
+            {
+                "$unwind": {
+                    "path": "$organization",
+                    "preserveNullAndEmptyArrays": True
+                }
+            },
+            {
+                "$project": {
+                    "_id": {"$toString": "$_id"},
+                    "id": 1,
+                    "organization_id": 1,
+                    "session_id": 1,
+                    "name": 1,
+                    "email": 1,
+                    "phone": 1,
+                    "created_at": 1,
+                    "last_active": 1,
+                    "metadata": 1,
+                    "is_agent_mode": 1,
+                    "agent_takeover_at": 1,
+                    "agent_id": 1,
+                    "organization_name": "$organization.name"
+                }
+            },
+            {
+                "$sort": {"created_at": -1}
+            }
+        ]
+        
+        visitors = list(db.visitors.aggregate(pipeline))
+        
+        # Convert ObjectIds and dates to strings for JSON serialization
+        for visitor in visitors:
+            if isinstance(visitor.get("created_at"), datetime):
+                visitor["created_at"] = visitor["created_at"].isoformat()
+            if isinstance(visitor.get("last_active"), datetime):
+                visitor["last_active"] = visitor["last_active"].isoformat()
+            if isinstance(visitor.get("agent_takeover_at"), datetime):
+                visitor["agent_takeover_at"] = visitor["agent_takeover_at"].isoformat()
+        
+        # Cache for 2 minutes (visitor data changes more frequently)
+        cache.set(cache_key_str, visitors, ttl=120)
+        
+        return visitors
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
