@@ -1210,4 +1210,373 @@ async def get_cache_status(admin_data: dict = Depends(verify_admin_access)):
             "status": "error",
             "error": str(e),
             "timestamp": datetime.now().isoformat()
-        } 
+        }
+
+@router.get("/revenue-stats")
+async def get_revenue_stats(admin_data: dict = Depends(verify_admin_access)):
+    """Get revenue statistics and analytics"""
+    try:
+        cache_key = "admin:revenue:stats"
+        cached_data = cache.get(cache_key)
+        if cached_data:
+            return cached_data
+        
+        db = get_database()
+        current_time = datetime.now()
+        
+        # Date ranges
+        today = current_time.replace(hour=0, minute=0, second=0, microsecond=0)
+        this_week = today - timedelta(days=today.weekday())
+        this_month = today.replace(day=1)
+        last_month = (this_month - timedelta(days=1)).replace(day=1)
+        this_year = today.replace(month=1, day=1)
+        last_year = this_year - timedelta(days=365)
+        
+        # Get all subscriptions
+        subscriptions = list(db.subscriptions.find({}))
+        
+        # Revenue breakdown by tier
+        tier_revenue = {}
+        tier_counts = {}
+        
+        # Monthly revenue trend (last 12 months)
+        monthly_revenue = {}
+        monthly_new_subscriptions = {}
+        monthly_churned_subscriptions = {}
+        
+        # Top revenue organizations
+        org_revenue = {}
+        
+        total_revenue = 0
+        active_subscriptions = 0
+        
+        for sub in subscriptions:
+            tier = sub.get("subscription_tier", "free")
+            amount = sub.get("payment_amount", 0)
+            status = sub.get("subscription_status", "inactive")
+            org_id = sub.get("organization_id", "")
+            created_at = sub.get("created_at")
+            
+            # Convert created_at to datetime if needed
+            if isinstance(created_at, str):
+                try:
+                    created_at = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+                except:
+                    created_at = today
+            elif not isinstance(created_at, datetime):
+                created_at = today
+            
+            # Tier revenue breakdown
+            if tier not in tier_revenue:
+                tier_revenue[tier] = 0
+                tier_counts[tier] = 0
+            
+            if status in ["active", "trialing"]:
+                tier_revenue[tier] += amount
+                tier_counts[tier] += 1
+                total_revenue += amount
+                active_subscriptions += 1
+                
+                # Organization revenue
+                if org_id:
+                    if org_id not in org_revenue:
+                        org_revenue[org_id] = {"amount": 0, "subscriptions": 0}
+                    org_revenue[org_id]["amount"] += amount
+                    org_revenue[org_id]["subscriptions"] += 1
+            
+            # Monthly trends
+            month_key = created_at.strftime("%Y-%m")
+            if month_key not in monthly_revenue:
+                monthly_revenue[month_key] = 0
+                monthly_new_subscriptions[month_key] = 0
+            
+            if status in ["active", "trialing"]:
+                monthly_revenue[month_key] += amount
+            monthly_new_subscriptions[month_key] += 1
+        
+        # Calculate MRR (Monthly Recurring Revenue)
+        mrr = sum(amount for amount in tier_revenue.values())
+        
+        # Calculate ARR (Annual Recurring Revenue)
+        arr = mrr * 12
+        
+        # Average revenue per user
+        arpu = mrr / active_subscriptions if active_subscriptions > 0 else 0
+        
+        # Revenue growth calculation
+        current_month_key = this_month.strftime("%Y-%m")
+        last_month_key = last_month.strftime("%Y-%m")
+        
+        current_month_revenue = monthly_revenue.get(current_month_key, 0)
+        last_month_revenue = monthly_revenue.get(last_month_key, 0)
+        
+        revenue_growth_rate = 0
+        if last_month_revenue > 0:
+            revenue_growth_rate = ((current_month_revenue - last_month_revenue) / last_month_revenue) * 100
+        
+        # Get top organizations by revenue with names
+        top_orgs_by_revenue = []
+        for org_id, revenue_data in sorted(org_revenue.items(), key=lambda x: x[1]["amount"], reverse=True)[:10]:
+            org = db.organizations.find_one({"id": org_id})
+            if org:
+                top_orgs_by_revenue.append({
+                    "organization_id": org_id,
+                    "organization_name": org.get("name", f"Organization {org_id[:8]}"),
+                    "revenue": revenue_data["amount"],
+                    "subscriptions": revenue_data["subscriptions"],
+                    "tier": org.get("subscription_tier", "free")
+                })
+        
+        # Prepare monthly trend data (last 12 months)
+        monthly_trend_data = []
+        for i in range(12):
+            month_date = this_month - timedelta(days=30*i)
+            month_key = month_date.strftime("%Y-%m")
+            month_name = month_date.strftime("%b %Y")
+            
+            monthly_trend_data.insert(0, {
+                "month": month_name,
+                "revenue": monthly_revenue.get(month_key, 0),
+                "new_subscriptions": monthly_new_subscriptions.get(month_key, 0),
+                "churned_subscriptions": monthly_churned_subscriptions.get(month_key, 0)
+            })
+        
+        # Subscription distribution for revenue
+        subscription_distribution = []
+        for tier, revenue in tier_revenue.items():
+            if revenue > 0:
+                subscription_distribution.append({
+                    "tier": tier.title(),
+                    "revenue": revenue,
+                    "count": tier_counts[tier],
+                    "percentage": (revenue / total_revenue) * 100 if total_revenue > 0 else 0
+                })
+        
+        # Revenue metrics summary
+        revenue_metrics = {
+            "total_revenue": total_revenue,
+            "mrr": mrr,
+            "arr": arr,
+            "arpu": arpu,
+            "active_subscriptions": active_subscriptions,
+            "revenue_growth_rate": revenue_growth_rate,
+            "average_subscription_value": total_revenue / active_subscriptions if active_subscriptions > 0 else 0
+        }
+        
+        # Time-based revenue stats
+        time_based_revenue = {
+            "today": sum(sub.get("payment_amount", 0) for sub in subscriptions 
+                        if sub.get("subscription_status") in ["active", "trialing"] 
+                        and sub.get("created_at", today) >= today),
+            "this_week": sum(sub.get("payment_amount", 0) for sub in subscriptions 
+                           if sub.get("subscription_status") in ["active", "trialing"] 
+                           and sub.get("created_at", today) >= this_week),
+            "this_month": current_month_revenue,
+            "last_month": last_month_revenue,
+            "this_year": sum(revenue for month_key, revenue in monthly_revenue.items() 
+                           if month_key.startswith(str(this_year.year))),
+            "last_year": sum(revenue for month_key, revenue in monthly_revenue.items() 
+                           if month_key.startswith(str(last_year.year)))
+        }
+        
+        revenue_stats = {
+            "revenue_metrics": revenue_metrics,
+            "time_based_revenue": time_based_revenue,
+            "monthly_trend": monthly_trend_data,
+            "tier_distribution": subscription_distribution,
+            "top_organizations": top_orgs_by_revenue,
+            "timestamp": current_time.isoformat()
+        }
+        
+        # Cache for 5 minutes
+        cache.set(cache_key, revenue_stats, ttl=300)
+        
+        return revenue_stats
+        
+    except Exception as e:
+        print(f"Revenue stats error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error fetching revenue statistics: {str(e)}")
+
+@router.get("/conversation-stats")
+async def get_conversation_stats(admin_data: dict = Depends(verify_admin_access)):
+    """Get conversation statistics and analytics"""
+    try:
+        cache_key = "admin:conversation:stats"
+        cached_data = cache.get(cache_key)
+        if cached_data:
+            return cached_data
+        
+        db = get_database()
+        current_time = datetime.now()
+        
+        # Date ranges
+        today = current_time.replace(hour=0, minute=0, second=0, microsecond=0)
+        this_week = today - timedelta(days=today.weekday())
+        this_month = today.replace(day=1)
+        last_month = (this_month - timedelta(days=1)).replace(day=1)
+        this_year = today.replace(month=1, day=1)
+        last_year = this_year - timedelta(days=365)
+        
+        # Get all conversations
+        total_conversations = db.conversations.count_documents({})
+        
+        # Calculate average messages per conversation (assuming each conversation record is a message)
+        # Group by session_id to get unique conversations
+        session_pipeline = [
+            {"$group": {"_id": "$session_id", "message_count": {"$sum": 1}}},
+            {"$group": {"_id": None, "total_sessions": {"$sum": 1}, "total_messages": {"$sum": "$message_count"}}}
+        ]
+        
+        session_results = list(db.conversations.aggregate(session_pipeline))
+        if session_results:
+            avg_messages_per_conversation = session_results[0]["total_messages"] / session_results[0]["total_sessions"]
+            unique_conversations = session_results[0]["total_sessions"]
+        else:
+            avg_messages_per_conversation = 0
+            unique_conversations = 0
+        
+        # Count active organizations (with conversations)
+        active_orgs_pipeline = [
+            {"$group": {"_id": "$organization_id"}},
+            {"$count": "active_organizations"}
+        ]
+        active_orgs_result = list(db.conversations.aggregate(active_orgs_pipeline))
+        active_organizations = active_orgs_result[0]["active_organizations"] if active_orgs_result else 0
+        
+        # Calculate growth rate (this month vs last month)
+        this_month_conversations = db.conversations.count_documents({
+            "created_at": {"$gte": this_month}
+        })
+        last_month_conversations = db.conversations.count_documents({
+            "created_at": {"$gte": last_month, "$lt": this_month}
+        })
+        
+        growth_rate = 0
+        if last_month_conversations > 0:
+            growth_rate = ((this_month_conversations - last_month_conversations) / last_month_conversations) * 100
+        
+        # Time-based conversation stats
+        time_based_conversations = {
+            "today": db.conversations.count_documents({"created_at": {"$gte": today}}),
+            "this_week": db.conversations.count_documents({"created_at": {"$gte": this_week}}),
+            "this_month": this_month_conversations,
+            "last_month": last_month_conversations,
+            "this_year": db.conversations.count_documents({"created_at": {"$gte": this_year}}),
+            "last_year": db.conversations.count_documents({
+                "created_at": {"$gte": last_year, "$lt": this_year}
+            })
+        }
+        
+        # Conversation trends (last 30 days)
+        conversation_trends = []
+        for i in range(30):
+            date = today - timedelta(days=i)
+            next_date = date + timedelta(days=1)
+            
+            daily_conversations = db.conversations.count_documents({
+                "created_at": {"$gte": date, "$lt": next_date}
+            })
+            
+            # Count unique visitors for that day
+            unique_visitors_pipeline = [
+                {"$match": {"created_at": {"$gte": date, "$lt": next_date}}},
+                {"$group": {"_id": "$visitor_id"}},
+                {"$count": "unique_visitors"}
+            ]
+            unique_visitors_result = list(db.conversations.aggregate(unique_visitors_pipeline))
+            unique_visitors = unique_visitors_result[0]["unique_visitors"] if unique_visitors_result else 0
+            
+            conversation_trends.insert(0, {
+                "date": date.strftime("%Y-%m-%d"),
+                "conversations": daily_conversations,
+                "unique_visitors": unique_visitors
+            })
+        
+        # Hourly distribution (24 hours)
+        hourly_distribution = []
+        for hour in range(24):
+            hourly_pipeline = [
+                {"$match": {"created_at": {"$gte": today - timedelta(days=7)}}},  # Last 7 days
+                {"$addFields": {"hour": {"$hour": "$created_at"}}},
+                {"$match": {"hour": hour}},
+                {"$count": "conversations"}
+            ]
+            hourly_result = list(db.conversations.aggregate(hourly_pipeline))
+            conversations_count = hourly_result[0]["conversations"] if hourly_result else 0
+            
+            hourly_distribution.append({
+                "hour": f"{hour:02d}:00",
+                "conversations": conversations_count
+            })
+        
+        # Organization activity (top organizations by conversation volume)
+        org_activity_pipeline = [
+            {
+                "$lookup": {
+                    "from": "organizations",
+                    "localField": "organization_id",
+                    "foreignField": "id",
+                    "as": "organization"
+                }
+            },
+            {"$unwind": {"path": "$organization", "preserveNullAndEmptyArrays": True}},
+            {
+                "$group": {
+                    "_id": "$organization_id",
+                    "organization_name": {"$first": {"$ifNull": ["$organization.name", "Unknown Organization"]}},
+                    "total_conversations": {"$sum": 1},
+                    "recent_conversations": {
+                        "$sum": {
+                            "$cond": [{"$gte": ["$created_at", this_month]}, 1, 0]
+                        }
+                    }
+                }
+            },
+            {"$sort": {"total_conversations": -1}},
+            {"$limit": 10}
+        ]
+        organization_activity = list(db.conversations.aggregate(org_activity_pipeline))
+        
+        # Message type distribution
+        message_type_pipeline = [
+            {"$group": {"_id": "$role", "count": {"$sum": 1}}},
+            {"$sort": {"count": -1}}
+        ]
+        message_types = list(db.conversations.aggregate(message_type_pipeline))
+        
+        total_messages = sum(item["count"] for item in message_types)
+        message_type_distribution = []
+        for item in message_types:
+            role = item["_id"] or "unknown"
+            count = item["count"]
+            percentage = (count / total_messages) * 100 if total_messages > 0 else 0
+            
+            message_type_distribution.append({
+                "name": role.title(),
+                "count": count,
+                "percentage": percentage
+            })
+        
+        conversation_stats = {
+            "conversation_metrics": {
+                "total_conversations": total_conversations,
+                "avg_messages_per_conversation": avg_messages_per_conversation,
+                "active_organizations": active_organizations,
+                "growth_rate": growth_rate
+            },
+            "time_based_conversations": time_based_conversations,
+            "conversation_trends": conversation_trends,
+            "hourly_distribution": hourly_distribution,
+            "organization_activity": organization_activity,
+            "message_type_distribution": message_type_distribution,
+            "timestamp": current_time.isoformat()
+        }
+        
+        # Cache for 3 minutes
+        cache.set(cache_key, conversation_stats, ttl=180)
+        
+        return conversation_stats
+        
+    except Exception as e:
+        print(f"Conversation stats error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error fetching conversation statistics: {str(e)}") 
