@@ -206,7 +206,7 @@ async def google_oauth_login(request: Request, state: str = None, redirect_uri: 
         google_auth_url = (
             f"https://accounts.google.com/o/oauth2/v2/auth?"
             f"client_id={GOOGLE_CLIENT_ID}&"
-            f"redirect_uri=https://6625-103-112-54-213.ngrok-free.app/auth/google/callback&"
+            f"redirect_uri=https://62d3-103-112-54-213.ngrok-free.app/auth/google/callback&"
             f"scope=openid email profile&"
             f"response_type=code&"
             f"state={state}|{urllib.parse.quote(redirect_uri or '')}"
@@ -243,7 +243,7 @@ async def google_oauth_callback(request: Request, code: str = None, state: str =
             "client_secret": GOOGLE_CLIENT_SECRET,
             "code": code,
             "grant_type": "authorization_code",
-            "redirect_uri": "https://6625-103-112-54-213.ngrok-free.app/auth/google/callback"
+            "redirect_uri": "https://62d3-103-112-54-213.ngrok-free.app/auth/google/callback"
         }
         
         token_response = requests.post(token_url, data=token_data)
