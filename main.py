@@ -2,6 +2,7 @@
 import logging_config
 
 from fastapi import FastAPI, Request, Depends, HTTPException
+from contextlib import asynccontextmanager
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 import os
@@ -23,11 +24,23 @@ class MongoJSONEncoder(json.JSONEncoder):
             return str(o)
         return super().default(o)
 
-# Create the FastAPI app
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup: seed default admin
+    try:
+        seed_default_admin()
+    except Exception:
+        # Avoid crashing app if seeding fails; errors are logged by services.auth
+        pass
+    yield
+    # Shutdown: nothing to clean up currently
+
+# Create the FastAPI app with lifespan to avoid deprecated on_event
 app = FastAPI(
     title="AI Chatbot SaaS Platform",
     description="Multi-tenant SaaS platform for AI-powered business chatbots",
-    version="1.0.0"
+    version="1.0.0",
+    lifespan=lifespan,
 )
 
 # Try to import routers, skip problematic ones
@@ -262,11 +275,7 @@ def health_check():
     """Health check endpoint for monitoring"""
     return {"status": "healthy"}
 
-@app.on_event("startup")
-async def startup_event():
-    """Run on application startup"""
-    # Seed default admin user
-    seed_default_admin()
+# Startup handled in lifespan()
 
 # Create the final app instance
 if chatbot_available and 'socket_app' in locals():
