@@ -7,6 +7,7 @@ logger = logging.getLogger('chatbot')
 logging.getLogger('pymongo').setLevel(logging.WARNING)
 
 from fastapi import APIRouter, Request, UploadFile, File, Form, HTTPException, Depends, Header, Body
+from fastapi.responses import FileResponse
 import sys
 import traceback
 
@@ -37,6 +38,9 @@ import re
 import openai
 import socketio
 from fastapi import FastAPI
+import shutil
+import uuid
+from pathlib import Path
 
 router = APIRouter()
 sio = None
@@ -138,6 +142,7 @@ class ChatWidgetSettings(BaseModel):
     ai_behavior: str
     avatarUrl: Optional[str] = None
     is_bot_connected: Optional[bool] = False
+    auto_open: Optional[bool] = False
 
 class ChatRequest(BaseModel):
     question: str
@@ -222,14 +227,13 @@ async def ask_question(
                 'agent_mode': True
             }, room=org_api_key)
 
-            # Return without AI response - agent will respond manually
+            # Return without AI response - agent will respond manually (no automatic message)
             return {
                 "answer": "",  # No AI response
-                "mode": "agent",
+                "mode": "agent", 
                 "language": "en",
                 "user_data": request.user_data or {},
-                "agent_mode": True,
-                "message": "Message received - agent will respond shortly"
+                "agent_mode": True
             }
 
         # Continue with normal AI processing if not in agent mode
@@ -270,6 +274,9 @@ async def ask_question(
         if user_profile and "profile_data" in user_profile:
             request.user_data.update(user_profile["profile_data"])
             request.user_data["returning_user"] = True
+            print(f"[DEBUG] Loaded user profile: {user_profile['profile_data']}")
+        else:
+            print("[DEBUG] No user profile found")
 
         # Store the current user message ONCE at the beginning
         add_conversation_message(
@@ -296,12 +303,433 @@ async def ask_question(
             'organization_id': org_id
         }, room=org_api_key)
 
-        # Emit that AI is starting to think
-        await sio.emit('ai_thinking', {
-            'session_id': request.session_id,
-            'timestamp': datetime.utcnow().isoformat()
-        }, room=org_api_key)
+        print("[DEBUG] Checking user information collection")
+        print(f"[DEBUG] Current user_data: {request.user_data}")
+        # Check if we need to collect user information
+        has_name = "name" in request.user_data and request.user_data["name"] and request.user_data["name"] != "Anonymous User"
+        has_email = "email" in request.user_data and request.user_data["email"] and request.user_data["email"] != "anonymous@user.com"
+        
+        print(f"[DEBUG] Has name: {has_name}, Has email: {has_email}")
+        
+        if not has_name:
+            print("[DEBUG] Name not found, processing name collection")
+            # Use OpenAI to validate and extract name
+            name_extraction_prompt = f"""
+            Extract the person's name from the following text or detect if they are refusing to share their name.
+            
+            Text: "{request.question}"
+            
+            Rules:
+            1. If you find a name, return ONLY the name (first and last name if available)
+            2. Remove any introductory phrases like "Hello this is", "My name is", "I am", etc.
+            3. If the person is refusing to share their name (using words like "skip", "no", "don't want to", "won't", "refuse", etc.), return "REFUSED"
+            4. If no clear name or refusal is found, return "NO_NAME"
+            
+            Examples:
+            "My name is John" -> John
+            "Hello this is sahak from taxas" -> sahak
+            "I am Alice Johnson" -> Alice Johnson
+            "I don't want to share my name" -> REFUSED
+            "skip this" -> REFUSED
+            "hello there" -> NO_NAME
+            """
+            
+            try:
+                name_response = openai.chat.completions.create(
+                    model="gpt-3.5-turbo",
+                    messages=[{"role": "user", "content": name_extraction_prompt}],
+                    max_tokens=20,
+                    temperature=0.1
+                )
+                
+                extracted_name = name_response.choices[0].message.content.strip()
+                print(f"[DEBUG] Extracted name response: {extracted_name}")
+                
+                if extracted_name == "REFUSED":
+                    print("[DEBUG] User refused to share name")
+                    request.user_data["name"] = "Anonymous User"
+                    save_user_profile(org_id, request.session_id, request.user_data)
+                    
+                    email_prompt = "That's perfectly fine! Would you mind sharing your email address so we can better assist you? You can also skip this if you prefer."
+                    
+                    # Store and add to history
+                    add_conversation_message(
+                        organization_id=org_id,
+                        visitor_id=visitor["id"],
+                        session_id=request.session_id,
+                        role="assistant",
+                        content=email_prompt,
+                        metadata={"mode": "faq"}
+                    )
+                    request.user_data["conversation_history"].append({
+                        "role": "assistant",
+                        "content": email_prompt
+                    })
+                    
+                    # Emit assistant message to dashboard
+                    await sio.emit('new_message', {
+                        'session_id': request.session_id,
+                        'message': {
+                            'role': 'assistant',
+                            'content': email_prompt,
+                            'timestamp': datetime.utcnow().isoformat()
+                        },
+                        'organization_id': org_id
+                    }, room=org_api_key)
+                    
+                    return {
+                        "answer": email_prompt,
+                        "mode": "faq",
+                        "language": "en",
+                        "user_data": request.user_data
+                    }
+                elif extracted_name != "NO_NAME":
+                    print("[DEBUG] Valid name found")
+                    request.user_data["name"] = extracted_name
+                    save_user_profile(org_id, request.session_id, request.user_data)
+                    
+                    email_prompt = f"Nice to meet you, {extracted_name}! Would you mind sharing your email address? You can skip this if you prefer."
+                    
+                    # Store and add to history
+                    add_conversation_message(
+                        organization_id=org_id,
+                        visitor_id=visitor["id"],
+                        session_id=request.session_id,
+                        role="assistant",
+                        content=email_prompt,
+                        metadata={"mode": "faq"}
+                    )
+                    request.user_data["conversation_history"].append({
+                        "role": "assistant",
+                        "content": email_prompt
+                    })
+                    
+                    # Emit assistant message to dashboard
+                    await sio.emit('new_message', {
+                        'session_id': request.session_id,
+                        'message': {
+                            'role': 'assistant',
+                            'content': email_prompt,
+                            'timestamp': datetime.utcnow().isoformat()
+                        },
+                        'organization_id': org_id
+                    }, room=org_api_key)
+                    
+                    return {
+                        "answer": email_prompt,
+                        "mode": "faq",
+                        "language": "en",
+                        "user_data": request.user_data
+                    }
+                else:
+                    print("[DEBUG] No valid name found")
+                    
+                    name_prompt = "Before proceeding, could you please tell me your name? You can skip this if you prefer not to share."
+                    
+                    # Store and add to history
+                    add_conversation_message(
+                        organization_id=org_id,
+                        visitor_id=visitor["id"],
+                        session_id=request.session_id,
+                        role="assistant",
+                        content=name_prompt,
+                        metadata={"mode": "faq"}
+                    )
+                    request.user_data["conversation_history"].append({
+                        "role": "assistant",
+                        "content": name_prompt
+                    })
+                    
+                    # Emit assistant message to dashboard
+                    await sio.emit('new_message', {
+                        'session_id': request.session_id,
+                        'message': {
+                            'role': 'assistant',
+                            'content': name_prompt,
+                            'timestamp': datetime.utcnow().isoformat()
+                        },
+                        'organization_id': org_id
+                    }, room=org_api_key)
+                    
+                    return {
+                        "answer": name_prompt,
+                        "mode": "faq",
+                        "language": "en",
+                        "user_data": request.user_data
+                    }
+                    
+            except Exception as e:
+                print(f"[DEBUG] Error in AI name extraction: {str(e)}")
+                fallback_response = handle_name_collection(request.question, request.user_data, "faq", "en")
+                
+                # Save the user profile if name was collected in fallback
+                if fallback_response and "user_data" in fallback_response and "name" in fallback_response["user_data"]:
+                    save_user_profile(org_id, request.session_id, fallback_response["user_data"])
+                    print(f"[DEBUG] Saved user profile with name: {fallback_response['user_data']['name']}")
+                
+                # Save the assistant message to database (which handle_name_collection doesn't do)
+                if fallback_response and "answer" in fallback_response:
+                    add_conversation_message(
+                        organization_id=org_id,
+                        visitor_id=visitor["id"],
+                        session_id=request.session_id,
+                        role="assistant",
+                        content=fallback_response["answer"],
+                        metadata={"mode": "faq", "fallback": True}
+                    )
+                    
+                    # Emit assistant message to dashboard
+                    await sio.emit('new_message', {
+                        'session_id': request.session_id,
+                        'message': {
+                            'role': 'assistant',
+                            'content': fallback_response["answer"],
+                            'timestamp': datetime.utcnow().isoformat()
+                        },
+                        'organization_id': org_id
+                    }, room=org_api_key)
+                
+                return fallback_response
+                
+        elif not has_email:
+            # Use OpenAI to validate and extract email
+            email_extraction_prompt = f"""
+            Extract and validate an email address from the following text or detect refusal.
+            
+            Text: "{request.question}"
+            
+            Rules:
+            1. If you find a valid email (format: username@domain.tld), return only the email
+            2. If the person is refusing or wants to skip (using words like "skip", "no", "don't want to", "won't", "refuse", etc.), return "REFUSED"
+            3. If no valid email or clear refusal is found, return "INVALID"
+            """
+            
+            try:
+                email_response = openai.chat.completions.create(
+                    model="gpt-3.5-turbo",
+                    messages=[{"role": "user", "content": email_extraction_prompt}],
+                    max_tokens=20,
+                    temperature=0.1
+                )
+                
+                extracted_email = email_response.choices[0].message.content.strip()
+                print(f"[DEBUG] Extracted email response: {extracted_email}")
+                
+                if "@" in extracted_email and "." in extracted_email:
+                    request.user_data["email"] = extracted_email
+                    save_user_profile(org_id, request.session_id, request.user_data)
+                    
+                    welcome = f"Thank you{' ' + request.user_data['name'] if request.user_data.get('name') and request.user_data['name'] != 'Anonymous User' else ''}! How can I assist you today?"
+                    
+                    # Store and add to history
+                    add_conversation_message(
+                        organization_id=org_id,
+                        visitor_id=visitor["id"],
+                        session_id=request.session_id,
+                        role="assistant",
+                        content=welcome,
+                        metadata={"mode": "faq"}
+                    )
+                    request.user_data["conversation_history"].append({
+                        "role": "assistant",
+                        "content": welcome
+                    })
+                    
+                    # Emit assistant message to dashboard
+                    await sio.emit('new_message', {
+                        'session_id': request.session_id,
+                        'message': {
+                            'role': 'assistant',
+                            'content': welcome,
+                            'timestamp': datetime.utcnow().isoformat()
+                        },
+                        'organization_id': org_id
+                    }, room=org_api_key)
+                    
+                    return {
+                        "answer": welcome,
+                        "mode": "faq",
+                        "language": "en",
+                        "user_data": request.user_data
+                    }
+                elif extracted_email == "REFUSED":
+                    request.user_data["email"] = "anonymous@user.com"
+                    save_user_profile(org_id, request.session_id, request.user_data)
+                    
+                    welcome = f"No problem at all{' ' + request.user_data['name'] if request.user_data.get('name') and request.user_data['name'] != 'Anonymous User' else ''}! How can I assist you today?"
+                    
+                    # Store and add to history
+                    add_conversation_message(
+                        organization_id=org_id,
+                        visitor_id=visitor["id"],
+                        session_id=request.session_id,
+                        role="assistant",
+                        content=welcome,
+                        metadata={"mode": "faq"}
+                    )
+                    request.user_data["conversation_history"].append({
+                        "role": "assistant",
+                        "content": welcome
+                    })
+                    
+                    # Emit assistant message to dashboard
+                    await sio.emit('new_message', {
+                        'session_id': request.session_id,
+                        'message': {
+                            'role': 'assistant',
+                            'content': welcome,
+                            'timestamp': datetime.utcnow().isoformat()
+                        },
+                        'organization_id': org_id
+                    }, room=org_api_key)
+                    
+                    return {
+                        "answer": welcome,
+                        "mode": "faq",
+                        "language": "en",
+                        "user_data": request.user_data
+                    }
+                else:
+                    email_prompt = "Please provide a valid email address or just type 'skip' if you prefer not to share."
+                    
+                    # Store and add to history
+                    add_conversation_message(
+                        organization_id=org_id,
+                        visitor_id=visitor["id"],
+                        session_id=request.session_id,
+                        role="assistant",
+                        content=email_prompt,
+                        metadata={"mode": "faq"}
+                    )
+                    request.user_data["conversation_history"].append({
+                        "role": "assistant",
+                        "content": email_prompt
+                    })
+                    
+                    # Emit assistant message to dashboard
+                    await sio.emit('new_message', {
+                        'session_id': request.session_id,
+                        'message': {
+                            'role': 'assistant',
+                            'content': email_prompt,
+                            'timestamp': datetime.utcnow().isoformat()
+                        },
+                        'organization_id': org_id
+                    }, room=org_api_key)
+                    
+                    return {
+                        "answer": email_prompt,
+                        "mode": "faq",
+                        "language": "en",
+                        "user_data": request.user_data
+                    }
 
+            except Exception as e:
+                print(f"[DEBUG] Error in AI email validation: {str(e)}")
+                # Fall back to regex validation
+                email_match = re.search(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}", request.question)
+                if email_match or request.question.lower() in ["skip", "no", "pass"]:
+                    if email_match:
+                        request.user_data["email"] = email_match.group(0)
+                    else:
+                        request.user_data["email"] = "anonymous@user.com"
+                    
+                    save_user_profile(org_id, request.session_id, request.user_data)
+                    
+                    welcome = f"Thank you{' ' + request.user_data['name'] if request.user_data.get('name') and request.user_data['name'] != 'Anonymous User' else ''}! How can I assist you today?"
+                    
+                    # Store and add to history
+                    add_conversation_message(
+                        organization_id=org_id,
+                        visitor_id=visitor["id"],
+                        session_id=request.session_id,
+                        role="assistant",
+                        content=welcome,
+                        metadata={"mode": "faq"}
+                    )
+                    request.user_data["conversation_history"].append({
+                        "role": "assistant",
+                        "content": welcome
+                    })
+                    
+                    # Emit assistant message to dashboard
+                    await sio.emit('new_message', {
+                        'session_id': request.session_id,
+                        'message': {
+                            'role': 'assistant',
+                            'content': welcome,
+                            'timestamp': datetime.utcnow().isoformat()
+                        },
+                        'organization_id': org_id
+                    }, room=org_api_key)
+                    
+                    return {
+                        "answer": welcome,
+                        "mode": "faq",
+                        "language": "en",
+                        "user_data": request.user_data
+                    }
+
+        # Try to find matching FAQ only after user info is collected
+        print("[DEBUG] Starting FAQ matching process...")
+        matching_faq = find_matching_faq(
+            query=request.question,
+            org_id=org_id,
+            namespace=namespace
+        )
+        print(f"[DEBUG] find_matching_faq returned: {matching_faq}")
+
+        # If we found a good FAQ match, return it
+        if matching_faq:
+            print("[DEBUG] Found matching FAQ, preparing response...")
+            
+            # Store the FAQ response
+            add_conversation_message(
+                organization_id=org_id,
+                visitor_id=visitor["id"],
+                session_id=request.session_id,
+                role="assistant",
+                content=matching_faq["response"],
+                metadata={
+                    "mode": "faq",
+                    "type": "faq_match",
+                    "faq_id": matching_faq["id"],
+                    "similarity_score": matching_faq["similarity_score"]
+                }
+            )
+
+            # Update conversation history
+            request.user_data["conversation_history"].append({
+                "role": "assistant", 
+                "content": matching_faq["response"]
+            })
+
+            # Emit assistant message to dashboard
+            await sio.emit('new_message', {
+                'session_id': request.session_id,
+                'message': {
+                    'role': 'assistant',
+                    'content': matching_faq["response"],
+                    'timestamp': datetime.utcnow().isoformat()
+                },
+                'organization_id': org_id
+            }, room=org_api_key)
+
+            # Get suggested FAQs for follow-up
+            print("[DEBUG] Getting suggested FAQs...")
+            suggested_faqs = get_suggested_faqs(org_id)
+            print(f"[DEBUG] Found {len(suggested_faqs)} suggested FAQs")
+
+            print("[DEBUG] Returning FAQ response...")
+            return {
+                "answer": matching_faq["response"],
+                "mode": "faq",
+                "language": "en",
+                "user_data": request.user_data,
+                "suggested_faqs": suggested_faqs
+            }
+
+        # If no FAQ match, proceed with normal chatbot flow
         # Prepare context for the bot
         user_context = ""
         if "name" in request.user_data and request.user_data["name"]:
@@ -320,7 +748,7 @@ async def ask_question(
             enhanced_query = f"{user_context}The user, who you already know, asks: {request.question}"
 
         # Don't add the enhanced query to conversation history - use original question
-        response = await ask_bot(
+        response = ask_bot(
             query=enhanced_query,
             mode=request.mode,
             user_data=request.user_data,
@@ -873,7 +1301,8 @@ async def get_chat_widget_settings(
                 "leadCapture": True,
                 "botBehavior": "2",
                 "avatarUrl": None,
-                "is_bot_connected": False
+                "is_bot_connected": False,
+                "auto_open": False
             }
             
             # If no settings exist, save the default settings
@@ -895,4 +1324,143 @@ async def get_chat_widget_settings(
         
     except Exception as e:
         print(f"[ERROR] Exception in get_chat_widget_settings: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Video upload endpoints
+@router.post("/upload-video")
+async def upload_video(
+    file: UploadFile = File(...),
+    organization=Depends(get_organization_from_api_key)
+):
+    """Upload a video for the chat widget"""
+    try:
+        # Validate file type
+        if not file.content_type.startswith('video/'):
+            raise HTTPException(status_code=400, detail="Only video files are allowed")
+        
+        # Create uploads directory if it doesn't exist
+        upload_dir = Path("uploads/videos")
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Generate unique filename
+        file_extension = Path(file.filename).suffix
+        unique_filename = f"{uuid.uuid4()}{file_extension}"
+        file_path = upload_dir / unique_filename
+        
+        # Save the file
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+        
+        # Update organization settings with video info
+        org_id = organization["id"]
+        video_url = f"/api/chatbot/video/{unique_filename}"
+        
+        db.organizations.update_one(
+            {"_id": organization["_id"]},
+            {
+                "$set": {
+                    "chat_widget_settings.video_url": video_url,
+                    "chat_widget_settings.video_filename": unique_filename,
+                    "chat_widget_settings.video_autoplay": True,
+                    "chat_widget_settings.video_duration": 10
+                }
+            }
+        )
+        
+        return {
+            "status": "success",
+            "message": "Video uploaded successfully",
+            "video_url": video_url,
+            "filename": unique_filename
+        }
+        
+    except Exception as e:
+        print(f"Error uploading video: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/video/{filename}")
+async def get_video(filename: str):
+    """Serve uploaded video files"""
+    try:
+        file_path = Path("uploads/videos") / filename
+        if not file_path.exists():
+            raise HTTPException(status_code=404, detail="Video not found")
+        
+        return FileResponse(file_path, media_type="video/mp4")
+        
+    except Exception as e:
+        print(f"Error serving video: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.delete("/video")
+async def delete_video(
+    organization=Depends(get_organization_from_api_key)
+):
+    """Delete the current video"""
+    try:
+        org_id = organization["id"]
+        
+        # Get current video filename
+        org = db.organizations.find_one({"_id": organization["_id"]})
+        if org and "chat_widget_settings" in org:
+            video_filename = org["chat_widget_settings"].get("video_filename")
+            
+            if video_filename:
+                # Delete file
+                file_path = Path("uploads/videos") / video_filename
+                if file_path.exists():
+                    file_path.unlink()
+                
+                # Update organization settings
+                db.organizations.update_one(
+                    {"_id": organization["_id"]},
+                    {
+                        "$unset": {
+                            "chat_widget_settings.video_url": "",
+                            "chat_widget_settings.video_filename": "",
+                            "chat_widget_settings.video_autoplay": "",
+                            "chat_widget_settings.video_duration": ""
+                        }
+                    }
+                )
+        
+        return {
+            "status": "success",
+            "message": "Video deleted successfully"
+        }
+        
+    except Exception as e:
+        print(f"Error deleting video: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.put("/video-settings")
+async def update_video_settings(
+    request: Request,
+    organization=Depends(get_organization_from_api_key)
+):
+    """Update video settings"""
+    try:
+        data = await request.json()
+        autoplay = data.get("autoplay", True)
+        duration = data.get("duration", 10)
+        
+        db.organizations.update_one(
+            {"_id": organization["_id"]},
+            {
+                "$set": {
+                    "chat_widget_settings.video_autoplay": autoplay,
+                    "chat_widget_settings.video_duration": duration
+                }
+            }
+        )
+        
+        return {
+            "status": "success",
+            "message": "Video settings updated successfully",
+            "autoplay": autoplay,
+            "duration": duration
+        }
+        
+    except Exception as e:
+        print(f"Error updating video settings: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))

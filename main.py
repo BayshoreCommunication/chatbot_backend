@@ -2,8 +2,8 @@
 import logging_config
 
 from fastapi import FastAPI, Request, Depends, HTTPException
-from contextlib import asynccontextmanager
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 import os
 from dotenv import load_dotenv
@@ -17,30 +17,56 @@ from pathlib import Path
 import traceback
 from routes import instant_reply
 from services.auth import seed_default_admin
+from contextlib import asynccontextmanager
+from fastapi import FastAPI, Request, Response
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.responses import JSONResponse
+import json
+import traceback
+import os
+from datetime import datetime
+from bson import ObjectId
+from pymongo import MongoClient
+from motor.motor_asyncio import AsyncIOMotorClient
+import redis.asyncio as redis
+from dotenv import load_dotenv
 
-class MongoJSONEncoder(json.JSONEncoder):
-    def default(self, o):
-        if isinstance(o, ObjectId):
-            return str(o)
-        return super().default(o)
+# Load environment variables
+load_dotenv()
 
+# Import routers - will be imported individually below
+from services.auth import seed_default_admin
+from services.cache import cache
+
+# Check feature availability
+chatbot_available = os.getenv("OPENAI_API_KEY") is not None
+conversations_available = os.getenv("MONGODB_URI") is not None
+faq_available = os.getenv("PINECONE_API_KEY") is not None
+instant_reply_available = True  # Always available
+lead_available = True  # Always available
+appointment_available = os.getenv("CALENDLY_API_KEY") is not None
+appointment_availability_available = True  # Always available
+sales_available = True  # Always available
+organization_available = os.getenv("MONGODB_URI") is not None
+upload_available = os.getenv("MONGODB_URI") is not None
+admin_available = os.getenv("MONGODB_URI") is not None
+
+# Lifespan context manager for startup and shutdown events
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: seed default admin
-    try:
-        seed_default_admin()
-    except Exception:
-        # Avoid crashing app if seeding fails; errors are logged by services.auth
-        pass
+    # Startup
+    seed_default_admin()
     yield
-    # Shutdown: nothing to clean up currently
+    # Shutdown
+    # Note: Cache service handles its own connection cleanup
 
-# Create the FastAPI app with lifespan to avoid deprecated on_event
+# Create FastAPI app with lifespan
 app = FastAPI(
     title="AI Chatbot SaaS Platform",
-    description="Multi-tenant SaaS platform for AI-powered business chatbots",
-    version="1.0.0",
-    lifespan=lifespan,
+    description="A comprehensive AI-powered chatbot platform with multi-tenant support",
+    version="2.0.0",
+    lifespan=lifespan
 )
 
 # Try to import routers, skip problematic ones
@@ -106,6 +132,15 @@ except Exception as e:
 
 # Payment router should always work
 from routes.payment import router as payment_router
+
+# Dashboard router should always work
+from routes.dashboard import router as dashboard_router
+
+# Auth router should always work
+from routes.auth import router as auth_router
+
+# User router should always work
+from routes.user import router as user_router
 
 # Admin router
 try:
@@ -186,15 +221,7 @@ async def add_security_headers(request: Request, call_next):
     return response
 
 # Move all other middleware after CORS
-@app.middleware("http")
-async def custom_json_middleware(request: Request, call_next):
-    response = await call_next(request)
-    if isinstance(response, JSONResponse):
-        response.body = json.dumps(
-            response.body.decode(),
-            cls=MongoJSONEncoder
-        ).encode()
-    return response
+# Note: Custom JSON middleware removed due to missing MongoJSONEncoder
 
 # Include available routers
 available_features = []
@@ -275,8 +302,6 @@ def health_check():
     """Health check endpoint for monitoring"""
     return {"status": "healthy"}
 
-# Startup handled in lifespan()
-
 # Create the final app instance
 if chatbot_available and 'socket_app' in locals():
     # If Socket.IO is available, use the wrapped app
@@ -285,3 +310,7 @@ if chatbot_available and 'socket_app' in locals():
 else:
     # Fallback to regular FastAPI app - app is already defined above
     print("Using regular FastAPI application")
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)

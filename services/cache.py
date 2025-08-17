@@ -16,19 +16,11 @@ logging.basicConfig(
 
 class CacheService:
     def __init__(self):
-        # Feature flag: allow disabling Redis explicitly
-        redis_enabled = os.getenv("REDIS_ENABLED", "true").lower() == "true"
-
         # Connect to Redis on WSL Ubuntu (default localhost:6379)
         self.redis_host = os.getenv("REDIS_HOST", "localhost")
         self.redis_port = int(os.getenv("REDIS_PORT", "6379"))
         self.redis_db = int(os.getenv("REDIS_DB", "0"))
         
-        if not redis_enabled:
-            self.redis_client = None
-            logger.info("Redis caching is disabled via REDIS_ENABLED=false")
-            return
-
         try:
             self.redis_client = redis.Redis(
                 host=self.redis_host,
@@ -43,7 +35,7 @@ class CacheService:
             self.redis_client.ping()
             logger.info(f"Connected to Redis at {self.redis_host}:{self.redis_port}")
         except Exception as e:
-            logger.warning(f"Redis unavailable, proceeding without cache: {e}")
+            logger.error(f"Failed to connect to Redis: {e}")
             self.redis_client = None
     
     def is_available(self) -> bool:

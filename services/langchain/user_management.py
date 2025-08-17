@@ -62,10 +62,16 @@ def handle_name_collection(query, user_data, mode, language):
     
     Rules:
     1. Only extract actual names of people, not greetings or other words
-    2. If no clear name is found, or if the text appears to be a refusal to provide a name, respond with "No name found"
-    3. Return the full name if available (first and last name)
-    4. Don't include titles (Mr, Mrs, Dr, etc.)
-    5. Check if the text contains refusal phrases like "don't want to share", "won't give my name", etc.
+    2. Remove introductory phrases like "Hello this is", "My name is", "I am", etc.
+    3. If no clear name is found, or if the text appears to be a refusal to provide a name, respond with "No name found"
+    4. Return the full name if available (first and last name)
+    5. Don't include titles (Mr, Mrs, Dr, etc.)
+    6. Check if the text contains refusal phrases like "don't want to share", "won't give my name", etc.
+    
+    Examples:
+    "Hello this is sahak from taxas" -> sahak
+    "My name is John Smith" -> John Smith
+    "I am Alice" -> Alice
     
     Output only the extracted name, nothing else.
     """
@@ -134,7 +140,7 @@ def extract_name_with_regex(query):
     from re import findall, IGNORECASE
     
     name_extraction_patterns = [
-        r"(?:my name is|i am|i'm|this is) ([A-Za-z\s\.]+(?:\s[A-Za-z\.]+){0,4})",
+        r"(?:hello this is|my name is|i am|i'm|this is) ([A-Za-z\s\.]+(?:\s[A-Za-z\.]+){0,4})",
         r"(?:hi|hello|hey)(?:,|!) (?:i am|i'm|this is) ([A-Za-z\s\.]+(?:\s[A-Za-z\.]+){0,4})",
         r"(?:^|\s)([A-Z][a-z]+(?:\s[A-Z][a-z]+){0,3})",
         r"(?:^)([A-Za-z]+(?:\s[A-Za-z]+){0,3})"

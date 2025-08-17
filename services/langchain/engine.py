@@ -4,7 +4,6 @@ from dotenv import load_dotenv
 import os
 import openai
 import re
-from datetime import datetime
 
 from services.language_detect import detect_language
 from services.notification import send_email_notification
@@ -169,7 +168,7 @@ def get_org_vectorstore(api_key):
         return vectorstore
 
 @create_error_handler
-async def ask_bot(query: str, mode="faq", user_data=None, available_slots=None, session_id=None, api_key=None):
+def ask_bot(query: str, mode="faq", user_data=None, available_slots=None, session_id=None, api_key=None):
     """Process user query using a central AI-driven approach"""
     # Initialize user data if None
     if user_data is None:
@@ -346,22 +345,6 @@ async def ask_bot(query: str, mode="faq", user_data=None, available_slots=None, 
         }
     
     # STEP 6: Generate the final response
-    # First emit that AI is starting to think
-    if session_id and api_key:
-        try:
-            from services.database import get_organization_by_api_key
-            organization = get_organization_by_api_key(api_key)
-            if organization:
-                # Import here to avoid circular imports
-                from routes.chatbot import sio
-                if sio:
-                    await sio.emit('ai_thinking', {
-                        'session_id': session_id,
-                        'timestamp': datetime.utcnow().isoformat()
-                    }, room=api_key)
-        except Exception as e:
-            print(f"[DEBUG] Error emitting AI thinking event: {str(e)}")
-
     final_response = generate_response(
         query, 
         user_info, 
