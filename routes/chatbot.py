@@ -10,6 +10,8 @@ from fastapi import APIRouter, Request, UploadFile, File, Form, HTTPException, D
 from fastapi.responses import FileResponse
 import sys
 import traceback
+import boto3
+from botocore.config import Config
 
 # Try to import required services with error handling
 try:
@@ -139,10 +141,12 @@ class ChatWidgetSettings(BaseModel):
     selectedColor: str
     leadCapture: bool
     botBehavior: str
-    ai_behavior: str
+    ai_behavior: Optional[str] = ""
     avatarUrl: Optional[str] = None
     is_bot_connected: Optional[bool] = False
     auto_open: Optional[bool] = False
+    video_autoplay: Optional[bool] = False
+    video_duration: Optional[int] = 10
 
 class ChatRequest(BaseModel):
     question: str
@@ -1326,6 +1330,12 @@ async def get_chat_widget_settings(
         print(f"[ERROR] Exception in get_chat_widget_settings: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
+# Test route to debug loading issue
+@router.get("/test-route")
+async def test_route():
+    """Simple test route to check if routes after settings work"""
+    return {"status": "success", "message": "Test route working"}
+
 # Video upload endpoints
 @router.post("/upload-video")
 async def upload_video(
@@ -1338,22 +1348,65 @@ async def upload_video(
         if not file.content_type.startswith('video/'):
             raise HTTPException(status_code=400, detail="Only video files are allowed")
         
-        # Create uploads directory if it doesn't exist
-        upload_dir = Path("uploads/videos")
-        upload_dir.mkdir(parents=True, exist_ok=True)
+        # DigitalOcean Spaces configuration already imported at top
         
-        # Generate unique filename
-        file_extension = Path(file.filename).suffix
-        unique_filename = f"{uuid.uuid4()}{file_extension}"
-        file_path = upload_dir / unique_filename
+        # DigitalOcean Spaces Configuration
+        SPACE_NAME = os.getenv('DO_SPACES_BUCKET', 'bayshore')
+        SPACE_REGION = os.getenv('DO_SPACES_REGION', 'nyc3')
+        SPACE_ENDPOINT = f"https://{SPACE_REGION}.digitaloceanspaces.com"
+        ACCESS_KEY = os.getenv('DO_SPACES_KEY')
+        SECRET_KEY = os.getenv('DO_SPACES_SECRET')
+        FOLDER_NAME = os.getenv('DO_FOLDER_NAME', 'ai_bot')
         
-        # Save the file
-        with open(file_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
+        if not all([ACCESS_KEY, SECRET_KEY]):
+            # Fallback to local storage if Spaces not configured
+            print("DigitalOcean Spaces not configured, using local storage")
+            upload_dir = Path("uploads/videos")
+            upload_dir.mkdir(parents=True, exist_ok=True)
+            
+            file_extension = Path(file.filename).suffix
+            unique_filename = f"{uuid.uuid4()}{file_extension}"
+            file_path = upload_dir / unique_filename
+            
+            with open(file_path, "wb") as buffer:
+                shutil.copyfileobj(file.file, buffer)
+            
+            video_url = f"/api/chatbot/video/{unique_filename}"
+        else:
+            # Initialize S3 client for DigitalOcean Spaces
+            s3_client = boto3.client('s3',
+                endpoint_url=SPACE_ENDPOINT,
+                aws_access_key_id=ACCESS_KEY,
+                aws_secret_access_key=SECRET_KEY,
+                region_name=SPACE_REGION
+            )
+            
+            # Generate unique filename for Spaces
+            file_extension = Path(file.filename).suffix
+            unique_filename = f"{FOLDER_NAME}/videos/{uuid.uuid4()}{file_extension}"
+            
+            # Upload to DigitalOcean Spaces
+            try:
+                s3_client.upload_fileobj(
+                    file.file,
+                    SPACE_NAME,
+                    unique_filename,
+                    ExtraArgs={
+                        'ACL': 'public-read',
+                        'ContentType': file.content_type
+                    }
+                )
+                
+                # Generate the public URL
+                video_url = f"https://{SPACE_NAME}.{SPACE_REGION}.digitaloceanspaces.com/{unique_filename}"
+                unique_filename = unique_filename.split('/')[-1]  # Store just the filename for reference
+                
+            except Exception as e:
+                print(f"Spaces upload error: {str(e)}")
+                raise HTTPException(status_code=500, detail="Failed to upload video to storage")
         
         # Update organization settings with video info
         org_id = organization["id"]
-        video_url = f"/api/chatbot/video/{unique_filename}"
         
         db.organizations.update_one(
             {"_id": organization["_id"]},
@@ -1400,16 +1453,49 @@ async def delete_video(
     try:
         org_id = organization["id"]
         
-        # Get current video filename
+        # Get current video info
         org = db.organizations.find_one({"_id": organization["_id"]})
         if org and "chat_widget_settings" in org:
             video_filename = org["chat_widget_settings"].get("video_filename")
+            video_url = org["chat_widget_settings"].get("video_url")
             
             if video_filename:
-                # Delete file
-                file_path = Path("uploads/videos") / video_filename
-                if file_path.exists():
-                    file_path.unlink()
+                # Check if it's a cloud storage URL
+                if video_url and "digitaloceanspaces.com" in video_url:
+                    # Delete from DigitalOcean Spaces
+                    try:
+                        # boto3 already imported at top
+                        
+                        SPACE_NAME = os.getenv('DO_SPACES_BUCKET', 'bayshore')
+                        SPACE_REGION = os.getenv('DO_SPACES_REGION', 'nyc3')
+                        SPACE_ENDPOINT = f"https://{SPACE_REGION}.digitaloceanspaces.com"
+                        ACCESS_KEY = os.getenv('DO_SPACES_KEY')
+                        SECRET_KEY = os.getenv('DO_SPACES_SECRET')
+                        FOLDER_NAME = os.getenv('DO_FOLDER_NAME', 'ai_bot')
+                        
+                        if all([ACCESS_KEY, SECRET_KEY]):
+                            s3_client = boto3.client('s3',
+                                endpoint_url=SPACE_ENDPOINT,
+                                aws_access_key_id=ACCESS_KEY,
+                                aws_secret_access_key=SECRET_KEY,
+                                region_name=SPACE_REGION
+                            )
+                            
+                            # Delete from Spaces
+                            object_key = f"{FOLDER_NAME}/videos/{video_filename}"
+                            s3_client.delete_object(Bucket=SPACE_NAME, Key=object_key)
+                            print(f"Deleted video from Spaces: {object_key}")
+                        
+                    except Exception as e:
+                        print(f"Error deleting from Spaces: {str(e)}")
+                        # Continue with database cleanup even if cloud deletion fails
+                        
+                else:
+                    # Delete local file
+                    file_path = Path("uploads/videos") / video_filename
+                    if file_path.exists():
+                        file_path.unlink()
+                        print(f"Deleted local video: {file_path}")
                 
                 # Update organization settings
                 db.organizations.update_one(

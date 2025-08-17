@@ -288,6 +288,22 @@ app.include_router(user_router, prefix="/user", tags=["User Profile"])
 
 app.include_router(instant_reply.router, prefix="/api/instant-reply", tags=["instant-reply"])
 
+# Add video routes separately
+try:
+    from routes.video_routes import router as video_router
+    app.include_router(video_router, prefix="/api/video", tags=["Video Upload"])
+    print("Successfully included video router")
+except Exception as e:
+    print(f"Error including video router: {e}")
+
+# Add AI training routes
+try:
+    from routes.ai_training import router as ai_training_router
+    app.include_router(ai_training_router, prefix="/api/ai-training", tags=["AI Training & Improvement"])
+    print("Successfully included AI training router")
+except Exception as e:
+    print(f"Error including AI training router: {e}")
+
 @app.get("/")
 def read_root():
     return {
