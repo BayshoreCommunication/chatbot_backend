@@ -1,6 +1,7 @@
 import openai
 import json
 import re
+import os
 
 def analyze_query(query, user_info, mode, needs_info, has_vector_data, conversation_summary):
     """Use AI to analyze a query and determine the best response approach"""
@@ -237,9 +238,41 @@ def generate_response(query, user_info, conversation_summary, retrieved_context,
         return final_response
     except Exception as e:
         print(f"Error generating response: {str(e)}")
-        if is_identity_query and retrieved_context:
-            return "I am a legal professional with expertise in civil, corporate, and constitutional matters. How can I assist you today?"
-        return "How can I assist you today?"
+        print(f"OpenAI API Key present: {bool(os.getenv('OPENAI_API_KEY'))}")
+        
+        # Try a simpler OpenAI call as fallback
+        try:
+            simple_prompt = f"""Answer this question professionally and helpfully: {query}
+            
+            Context: You are a legal assistant for Carter Injury Law, specializing in personal injury cases.
+            
+            Question: {query}
+            
+            Provide a direct, helpful answer:"""
+            
+            fallback_response = openai.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=[{"role": "user", "content": simple_prompt}],
+                temperature=0.7,
+                max_tokens=200
+            )
+            
+            return fallback_response.choices[0].message.content.strip()
+            
+        except Exception as fallback_error:
+            print(f"Fallback response generation failed: {str(fallback_error)}")
+            
+            # Manual intelligent response based on query content
+            query_lower = query.lower()
+            
+            if "cases" in query_lower and ("outside" in query_lower or "tampa" in query_lower):
+                return "Yes, Carter Injury Law handles personal injury cases throughout Florida, not just in Tampa. We serve clients in surrounding areas and can travel to meet with you. Our experienced attorneys David J. Carter and Robert Johnson are licensed to practice throughout the state. Would you like to schedule a free consultation to discuss your case?"
+            elif "help" in query_lower or "assist" in query_lower:
+                return "I'm here to help you with any questions about personal injury law, our services, or to schedule a consultation. Carter Injury Law offers free initial consultations and we work on a no-fee-unless-we-win basis. What specific questions do you have?"
+            elif "accident" in query_lower:
+                return "I'm sorry to hear about your accident. Carter Injury Law specializes in all types of personal injury cases including auto accidents, slip and falls, and more. We offer free consultations and work on a contingency fee basis. Would you like to discuss your case with one of our experienced attorneys?"
+            else:
+                return f"Thank you for your question about {query}. As a legal assistant for Carter Injury Law, I'm here to help with personal injury matters. Could you provide more details about your situation so I can better assist you?"
 
 def remove_greeting(response, user_name):
     """Remove greeting patterns from the beginning of responses"""

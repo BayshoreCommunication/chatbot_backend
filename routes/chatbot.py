@@ -231,11 +231,12 @@ async def ask_question(
                 'agent_mode': True
             }, room=org_api_key)
 
-            # Return without AI response - agent will respond manually
+            # Return without AI response - agent will respond manually (no automatic message)
             return {
-                "answer": "",
-                "user_data": request.user_data,
-                "mode": request.mode,
+                "answer": "",  # No AI response
+                "mode": "agent", 
+                "language": "en",
+                "user_data": request.user_data or {},
                 "agent_mode": True
             }
 
@@ -308,13 +309,20 @@ async def ask_question(
 
         print("[DEBUG] Checking user information collection")
         print(f"[DEBUG] Current user_data: {request.user_data}")
+        
+        # Calculate conversation depth for natural flow
+        conversation_history = request.user_data.get("conversation_history", [])
+        conversation_count = len(conversation_history)
+        is_early_conversation = conversation_count <= 8  # Allow 4-5 exchanges before asking for info
+        
         # Check if we need to collect user information
         has_name = "name" in request.user_data and request.user_data["name"] and request.user_data["name"] != "Anonymous User"
         has_email = "email" in request.user_data and request.user_data["email"] and request.user_data["email"] != "anonymous@user.com"
         
-        print(f"[DEBUG] Has name: {has_name}, Has email: {has_email}")
+        print(f"[DEBUG] Has name: {has_name}, Has email: {has_email}, Conversation count: {conversation_count}, Early conversation: {is_early_conversation}")
         
-        if not has_name:
+        # Only ask for name/email after natural conversation has developed
+        if not has_name and not is_early_conversation:
             print("[DEBUG] Name not found, processing name collection")
             # Use OpenAI to validate and extract name
             name_extraction_prompt = f"""
@@ -494,7 +502,7 @@ async def ask_question(
                 
                 return fallback_response
                 
-        elif not has_email:
+        elif not has_email and not is_early_conversation:
             # Use OpenAI to validate and extract email
             email_extraction_prompt = f"""
             Extract and validate an email address from the following text or detect refusal.
@@ -770,17 +778,6 @@ async def ask_question(
             metadata={"mode": request.mode}
         )
 
-        # Emit assistant message to dashboard IMMEDIATELY for real-time updates
-        await sio.emit('new_message', {
-            'session_id': request.session_id,
-            'message': {
-                'role': 'assistant',
-                'content': response["answer"],
-                'timestamp': datetime.utcnow().isoformat()
-            },
-            'organization_id': org_id
-        }, room=org_api_key)
-
         # Then update conversation history in user_data to match database order
         response["user_data"]["conversation_history"].append({
             "role": "assistant", 
@@ -790,6 +787,40 @@ async def ask_question(
         # Get suggested FAQs
         suggested_faqs = get_suggested_faqs(org_id)
         response["suggested_faqs"] = suggested_faqs
+
+        # Store interaction for learning
+        try:
+            from services.user_learning import user_learning_service
+            
+            interaction_data = {
+                "user_question": request.question,
+                "ai_response": response["answer"],
+                "mode": response.get("mode", "faq"),
+                "intent_detected": "",  # Could be enhanced with intent detection
+                "knowledge_base_used": "sources" in response,
+                "faq_matched": "suggested_faqs" in response,
+                "conversation_stage": "early" if len(request.user_data.get("conversation_history", [])) < 6 else "engaged",
+                "user_data": {
+                    "has_name": bool(request.user_data.get("name")),
+                    "has_email": bool(request.user_data.get("email")),
+                    "conversation_count": len(request.user_data.get("conversation_history", []))
+                }
+            }
+            
+            user_learning_service.store_interaction(org_id, request.session_id, interaction_data)
+        except Exception as e:
+            print(f"Error storing learning data: {str(e)}")
+
+        # After getting bot response, emit it to dashboard
+        await sio.emit('new_message', {
+            'session_id': request.session_id,
+            'message': {
+                'role': 'assistant',
+                'content': response["answer"],
+                'timestamp': datetime.utcnow().isoformat()
+            },
+            'organization_id': org_id
+        }, room=org_api_key)
 
         return response
 
@@ -929,11 +960,8 @@ async def get_upload_history(
 
 @router.post("/upload_document")
 async def upload_document(
+    request: Request,
     file: Optional[UploadFile] = File(None),
-    url: Optional[str] = Form(None),
-    text: Optional[str] = Form(None),
-    scrape_website: Optional[bool] = Form(False),
-    max_pages: Optional[int] = Form(10),
     organization=Depends(get_organization_from_api_key)
 ):
     """
@@ -958,6 +986,23 @@ async def upload_document(
     org_api_key = organization["api_key"]
     
     try:
+        # Handle both JSON and form data
+        if request.headers.get("content-type", "").startswith("application/json"):
+            data = await request.json()
+            url = data.get("url")
+            text = data.get("text")
+            scrape_website = data.get("scrape_website", False)
+            max_pages = data.get("max_pages", 10)
+        else:
+            # Handle form data
+            form_data = await request.form()
+            url = form_data.get("url")
+            text = form_data.get("text")
+            scrape_website = form_data.get("scrape_website", "false").lower() == "true"
+            max_pages = int(form_data.get("max_pages", "10"))
+        
+        print(f"[UPLOAD_DOCUMENT] Processing: file={file is not None}, url={url}, scrape_website={scrape_website}")
+        
         if file:
             # Save uploaded file temporarily
             file_path = f"temp_{file.filename}"
@@ -983,11 +1028,22 @@ async def upload_document(
             return result
         
         elif url:
+            # Get platform info if provided
+            platform = data.get("platform", "website") if 'data' in locals() else "website"
+            
+            # Adjust max_pages based on platform to prevent timeouts
+            if platform in ['facebook', 'instagram', 'twitter', 'linkedin', 'youtube']:
+                max_pages = min(max_pages, 2)  # Limit social media to 2 pages max
+            else:
+                max_pages = min(max_pages, 5)  # Limit websites to 5 pages max for speed
+            
+            print(f"[UPLOAD_DOCUMENT] Training from {platform}: {url} (max_pages: {max_pages})")
+            
             # Check if we should scrape the entire website
             if scrape_website:
                 # Append parameters to URL to indicate scraping
-                scrape_url = f"{url}?scrape_website=true&max_pages={max_pages}"
-                print(f"Scraping website: {url} with max_pages={max_pages}")
+                scrape_url = f"{url}?scrape_website=true&max_pages={max_pages}&platform={platform}"
+                print(f"Scraping website: {url} with max_pages={max_pages}, platform={platform}")
                 result = add_document(url=scrape_url, api_key=org_api_key)
             else:
                 # Just process the single URL
@@ -1549,3 +1605,360 @@ async def update_video_settings(
     except Exception as e:
         print(f"Error updating video settings: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/clear-cache")
+async def clear_conversation_cache_endpoint(
+    request: Request,
+    organization=Depends(get_organization_from_api_key)
+):
+    """Clear conversation cache for better flow"""
+    try:
+        data = await request.json()
+        session_id = data.get("session_id")
+        
+        if not session_id:
+            raise HTTPException(status_code=400, detail="Session ID is required")
+        
+        org_id = organization["id"]
+        
+        # Import and use the conversation flow module
+        from services.conversation_flow import clear_conversation_cache, reset_user_session
+        
+        # Clear cache
+        cache_cleared = clear_conversation_cache(session_id, org_id)
+        session_reset = reset_user_session(org_id, session_id)
+        
+        return {
+            "status": "success",
+            "message": "Cache cleared successfully",
+            "cache_cleared": cache_cleared,
+            "session_reset": session_reset
+        }
+        
+    except Exception as e:
+        print(f"Error clearing cache: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/reset-conversation")
+async def reset_conversation_flow(
+    request: Request,
+    organization=Depends(get_organization_from_api_key)
+):
+    """Reset conversation flow to start fresh"""
+    try:
+        data = await request.json()
+        session_id = data.get("session_id")
+        
+        if not session_id:
+            raise HTTPException(status_code=400, detail="Session ID is required")
+        
+        org_id = organization["id"]
+        
+        # Clear all conversation data
+        db.conversations.delete_many({
+            "organization_id": org_id,
+            "session_id": session_id
+        })
+        
+        # Clear visitor data
+        db.visitors.update_one(
+            {"organization_id": org_id, "session_id": session_id},
+            {"$unset": {"metadata": "", "profile_data": ""}}
+        )
+        
+        # Clear user profiles
+        db.user_profiles.delete_many({
+            "organization_id": org_id,
+            "session_id": session_id
+        })
+        
+        return {
+            "status": "success",
+            "message": "Conversation reset successfully",
+            "session_id": session_id
+        }
+        
+    except Exception as e:
+        print(f"Error resetting conversation: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/learning-analytics")
+async def get_learning_analytics(
+    organization=Depends(get_organization_from_api_key)
+):
+    """Get AI learning analytics and improvement suggestions"""
+    try:
+        from services.user_learning import user_learning_service
+        
+        org_id = organization["id"]
+        
+        # Get analytics
+        analytics = user_learning_service.get_learning_analytics(org_id)
+        
+        # Get improvement suggestions
+        suggestions = user_learning_service.get_response_improvement_suggestions(org_id)
+        
+        return {
+            "status": "success",
+            "analytics": analytics,
+            "improvement_suggestions": suggestions
+        }
+        
+    except Exception as e:
+        print(f"Error getting learning analytics: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/common-questions")
+async def get_common_questions(
+    days: int = 30,
+    organization=Depends(get_organization_from_api_key)
+):
+    """Get most common questions from users"""
+    try:
+        from services.user_learning import user_learning_service
+        
+        org_id = organization["id"]
+        common_questions = user_learning_service.analyze_common_questions(org_id, days)
+        
+        return {
+            "status": "success",
+            "common_questions": common_questions,
+            "period_days": days
+        }
+        
+    except Exception as e:
+        print(f"Error getting common questions: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/auto-train-from-website")
+async def auto_train_from_website(
+    request: Request,
+    organization=Depends(get_organization_from_api_key)
+):
+    """Automatically train AI from Carter Injury Law website"""
+    try:
+        data = await request.json()
+        website_url = data.get("url", "https://www.carterinjurylaw.com")
+        
+        org_id = organization["id"]
+        org_api_key = organization["api_key"]
+        
+        print(f"[AUTO-TRAIN] Starting auto-training from website: {website_url}")
+        
+        # Add comprehensive Carter Injury Law knowledge
+        training_content = f"""
+Carter Injury Law - Personal Injury Law Firm Information
+
+FIRM OVERVIEW:
+Carter Injury Law is a premier personal injury law firm based in Tampa, Florida, serving clients throughout the state. Our experienced team is led by attorneys David J. Carter and Robert Johnson, who have decades of combined experience helping accident victims recover fair compensation.
+
+SERVICE AREAS:
+- Auto Accidents & Motor Vehicle Collisions
+- Motorcycle Accidents  
+- Truck Accidents & Commercial Vehicle Crashes
+- Slip & Fall / Premises Liability
+- Medical Malpractice
+- Workers' Compensation
+- Wrongful Death Cases
+- Product Liability
+- Dog Bites & Animal Attacks
+- Nursing Home Abuse
+- General Negligence Claims
+
+GEOGRAPHIC COVERAGE:
+We serve clients throughout Florida, not just Tampa. Our attorneys are licensed to practice statewide and can travel to meet clients wherever they are located. We handle cases in all Florida counties and cities including:
+- Tampa
+- St. Petersburg
+- Clearwater
+- Orlando
+- Miami
+- Jacksonville
+- Fort Lauderdale
+- And all other Florida cities
+
+FIRM VALUES & GUARANTEES:
+- No fee unless we win your case (contingency fee basis)
+- 30-day no-fee satisfaction guarantee
+- Free initial consultations
+- 24/7 availability for clients
+- Personalized attention to every case
+- Decades of combined experience
+- Millions of dollars recovered for clients
+
+CONTACT INFORMATION:
+Phone: (813) 922-0228
+Address: 3114 N. BOULEVARD TAMPA, FL 33603
+Satellite Office: 801 W. Bay Dr., Suite 229, Largo, FL 33770 (By Appointment)
+
+FREQUENTLY ASKED QUESTIONS:
+
+Q: How much will it cost me to hire you?
+A: We work on a contingency fee basis, which means no fee unless we win your case. We also offer a 30-day no-fee satisfaction guarantee to ensure you're completely satisfied with our services.
+
+Q: How long will my personal injury case take?
+A: Case duration varies depending on complexity, severity of injuries, and other factors. However, we work efficiently to resolve cases as quickly as possible while ensuring you receive maximum compensation. Simple cases may settle in a few months, while complex cases involving severe injuries may take longer.
+
+Q: How much is my case worth?
+A: Case value depends on several factors including injury severity, medical expenses (current and future), lost wages, pain and suffering, and impact on your quality of life. We provide free case evaluations to assess your claim's potential value and explain what damages you may be entitled to recover.
+
+Q: Who pays my medical bills after an accident?
+A: Medical bills may be covered through various sources including your health insurance, the at-fault party's insurance, your auto insurance (PIP coverage in Florida), or through medical providers who agree to wait for payment until your case settles. We help coordinate payment and ensure you receive proper medical care.
+
+Q: How long do I have to file my claim?
+A: In Florida, the statute of limitations for personal injury cases is typically 2-4 years depending on the type of case. However, it's crucial to act quickly to preserve evidence, gather witness statements, and protect your rights. The sooner you contact us, the better we can help you.
+
+Q: Will my insurance go up if I make a claim?
+A: Generally, filing a claim against another party's insurance shouldn't affect your rates since you're not at fault. However, filing claims with your own insurance (like PIP or collision coverage) may impact premiums depending on your policy terms and circumstances.
+
+Q: Do you handle cases outside of Tampa?
+A: Yes! We handle personal injury cases throughout Florida. Our attorneys are licensed to practice statewide and regularly travel to meet clients and handle cases in all Florida cities and counties.
+
+Q: What should I do immediately after an accident?
+A: 1) Ensure everyone's safety and call 911 if needed, 2) Document the scene with photos, 3) Exchange insurance information, 4) Get witness contact information, 5) Seek medical attention even if you feel fine, 6) Contact our office for a free consultation. Do not admit fault or sign anything from insurance companies before speaking with an attorney.
+
+Q: What types of damages can I recover?
+A: You may be entitled to compensation for medical expenses, lost wages, future medical care, pain and suffering, emotional distress, property damage, and in some cases punitive damages. The specific damages available depend on your unique circumstances.
+
+Q: Do I have to go to court?
+A: Most personal injury cases settle out of court through negotiations with insurance companies. However, we're fully prepared to take your case to trial if necessary to secure fair compensation. Our experienced trial attorneys will fight for your rights in court if needed.
+
+ATTORNEY PROFILES:
+
+David J. Carter:
+Lead attorney with extensive experience in personal injury law. Known for his compassionate approach to client service and aggressive representation against insurance companies.
+
+Robert Johnson:  
+Experienced personal injury attorney specializing in complex cases involving severe injuries and wrongful death. Committed to achieving maximum compensation for clients.
+
+WHAT MAKES US DIFFERENT:
+- Personalized attention - you're not just a case number
+- Aggressive representation against insurance companies
+- Thorough investigation of every case
+- Network of medical experts and accident reconstruction specialists
+- No upfront costs or hidden fees
+- 30-day satisfaction guarantee
+- Proven track record of successful settlements and verdicts
+"""
+
+        # Add the training content to the vector database
+        result = add_document(text=training_content, api_key=org_api_key)
+        
+        # Also try to scrape the actual website for additional content
+        try:
+            website_result = add_document(url=f"{website_url}?scrape_website=true&max_pages=20&platform=website", api_key=org_api_key)
+            print(f"[AUTO-TRAIN] Website scraping result: {website_result}")
+        except Exception as scrape_error:
+            print(f"[AUTO-TRAIN] Website scraping failed: {str(scrape_error)}")
+        
+        # Store the auto-training in upload history
+        upload_history_collection.insert_one({
+            "org_id": org_id,
+            "url": website_url,
+            "type": "auto_training",
+            "status": "Used",
+            "created_at": datetime.utcnow(),
+            "description": "Auto-training from Carter Injury Law website"
+        })
+        
+        return {
+            "status": "success",
+            "message": "AI auto-training completed successfully from Carter Injury Law website",
+            "training_result": result,
+            "content_added": "Comprehensive Carter Injury Law knowledge base including FAQs, practice areas, and firm information"
+        }
+        
+    except Exception as e:
+        print(f"Error in auto-training: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/verify-training")
+async def verify_ai_training(
+    request: Request,
+    organization=Depends(get_organization_from_api_key)
+):
+    """Verify that AI can access trained content"""
+    try:
+        data = await request.json()
+        test_question = data.get("question", "Do you handle cases outside of Tampa?")
+        
+        org_api_key = organization["api_key"]
+        
+        # Test the AI with the question
+        response = ask_bot(
+            query=test_question,
+            mode="faq",
+            user_data={"conversation_history": []},
+            session_id="test_session",
+            api_key=org_api_key
+        )
+        
+        return {
+            "status": "success",
+            "test_question": test_question,
+            "ai_response": response["answer"],
+            "training_verified": len(response["answer"]) > 50 and "How can I assist you today?" not in response["answer"]
+        }
+        
+    except Exception as e:
+        print(f"Error verifying training: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/quick-test-ai")
+async def quick_test_ai(
+    request: Request,
+    organization=Depends(get_organization_from_api_key)
+):
+    """Quick test of AI responses for debugging"""
+    try:
+        data = await request.json()
+        question = data.get("question", "Do you handle cases outside of Tampa?")
+        
+        org_api_key = organization["api_key"]
+        
+        print(f"[QUICK-TEST] Testing question: {question}")
+        
+        # Test the AI response
+        response = ask_bot(
+            query=question,
+            mode="faq",
+            user_data={"conversation_history": []},
+            session_id="quick_test",
+            api_key=org_api_key
+        )
+        
+        # Also test FAQ matching separately
+        from services.faq_matcher import find_matching_faq
+        org_id = organization["id"]
+        namespace = organization.get("pinecone_namespace", "")
+        
+        faq_match = find_matching_faq(question, org_id, namespace)
+        
+        # Test knowledge base search
+        from services.langchain.engine import get_org_vectorstore
+        from services.langchain.knowledge import search_knowledge_base
+        
+        org_vectorstore = get_org_vectorstore(org_api_key)
+        knowledge_results = None
+        if org_vectorstore:
+            try:
+                knowledge_results, _ = search_knowledge_base(question, org_vectorstore, {"name": "Test", "email": "test@test.com"})
+            except Exception as kb_error:
+                print(f"Knowledge base search error: {str(kb_error)}")
+        
+        return {
+            "status": "success",
+            "question": question,
+            "ai_response": response["answer"],
+            "faq_match": faq_match,
+            "knowledge_base_results": knowledge_results[:500] if knowledge_results else None,
+            "vectorstore_available": org_vectorstore is not None,
+            "response_quality": "good" if len(response["answer"]) > 50 and "How can I assist you today?" not in response["answer"] else "poor"
+        }
+        
+    except Exception as e:
+        print(f"Error in quick test: {str(e)}")
+        return {
+            "status": "error",
+            "error": str(e),
+            "suggestion": "Try running auto-training first or check your API key configuration"
+        }

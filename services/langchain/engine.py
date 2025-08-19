@@ -257,18 +257,26 @@ def ask_bot(query: str, mode="faq", user_data=None, available_slots=None, sessio
         conversation_context = user_data["conversation_history"][-5:] if len(user_data["conversation_history"]) > 0 else []
         conversation_summary = "\n".join([f"{'User' if msg['role'] == 'user' else 'AI'}: {msg['content']}" for msg in conversation_context])
     
-    # STEP 0: If this is first message and we need user info, always collect name first
-    is_first_message = len(user_data["conversation_history"]) <= 1
-    if is_first_message and "name" not in user_data:
-        # We're starting a new conversation - always ask for name first
-        return handle_name_collection("", user_data, mode, language)
+    # STEP 0: Natural conversation flow - allow 4-5 exchanges before collecting info
+    conversation_count = len(user_data["conversation_history"])
+    is_early_conversation = conversation_count <= 8  # Allow 4-5 exchanges (user + assistant pairs)
+    
+    # Only collect info after natural conversation has started
+    if is_early_conversation and "name" not in user_data:
+        # For first few messages, don't force name collection - let conversation flow naturally
+        print(f"[DEBUG] Early conversation (count: {conversation_count}), skipping name collection")
+        pass  # Continue to normal chat flow
     
     # STEP 1: Analyze the query to determine intent and appropriate mode
     analysis = analyze_query(query, user_info, mode, needs_info, has_vector_data, conversation_summary)
     
-    # STEP 2: Handle Information Collection if needed
-    # If we still need information, prioritize collecting it
-    if needs_info:
+    # STEP 2: Handle Information Collection if needed - but only after natural conversation
+    # Calculate engagement score based on conversation depth
+    engagement_score = min(conversation_count / 10.0, 1.0)  # 0-1 scale based on conversation length
+    user_shows_interest = analysis.get("appropriate_mode") in ["appointment", "lead_capture"] or engagement_score > 0.4
+    
+    # Only collect info if conversation has progressed AND user shows interest
+    if needs_info and not is_early_conversation and user_shows_interest:
         if "name" not in user_data:
             # If the query could be a name introduction, try to extract it
             return handle_name_collection(original_query, user_data, analysis["appropriate_mode"], language)

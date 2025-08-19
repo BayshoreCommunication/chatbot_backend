@@ -10,7 +10,7 @@ def find_matching_faq(
     query: str,
     org_id: str,
     namespace: str = "",
-    similarity_threshold: float = 0.85
+    similarity_threshold: float = 0.80
 ) -> Optional[Dict[str, Any]]:
     """
     Find the best matching FAQ for a given query using semantic search.

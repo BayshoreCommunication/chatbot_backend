@@ -39,16 +39,16 @@ def handle_name_collection(query, user_data, mode, language):
             "user_data": user_data
         }
         
-    # If query is empty (first message), just ask for name
+    # If query is empty (first message), give a natural greeting instead of asking for name
     if not query.strip():
         # Add this interaction to history
         user_data["conversation_history"].append({
             "role": "assistant", 
-            "content": "Hello! Before we begin, may I know your name?"
+            "content": "Hello! How can I help you today?"
         })
         
         return {
-            "answer": "Hello! Before we begin, may I know your name?",
+            "answer": "Hello! How can I help you today?",
             "mode": mode,
             "language": language,
             "user_data": user_data

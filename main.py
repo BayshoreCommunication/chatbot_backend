@@ -301,6 +301,11 @@ try:
     from routes.ai_training import router as ai_training_router
     app.include_router(ai_training_router, prefix="/api/ai-training", tags=["AI Training & Improvement"])
     print("Successfully included AI training router")
+    
+    # Async Training Routes
+    from routes.async_training import router as async_training_router
+    app.include_router(async_training_router, prefix="/api/training", tags=["Async Training"])
+    print("Successfully included async training router")
 except Exception as e:
     print(f"Error including AI training router: {e}")
 
