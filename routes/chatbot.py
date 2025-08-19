@@ -231,12 +231,11 @@ async def ask_question(
                 'agent_mode': True
             }, room=org_api_key)
 
-            # Return without AI response - agent will respond manually (no automatic message)
+            # Return without AI response - agent will respond manually
             return {
-                "answer": "",  # No AI response
-                "mode": "agent", 
-                "language": "en",
-                "user_data": request.user_data or {},
+                "answer": "",
+                "user_data": request.user_data,
+                "mode": request.mode,
                 "agent_mode": True
             }
 
@@ -771,17 +770,7 @@ async def ask_question(
             metadata={"mode": request.mode}
         )
 
-        # Then update conversation history in user_data to match database order
-        response["user_data"]["conversation_history"].append({
-            "role": "assistant", 
-            "content": response["answer"]
-        })
-
-        # Get suggested FAQs
-        suggested_faqs = get_suggested_faqs(org_id)
-        response["suggested_faqs"] = suggested_faqs
-
-        # After getting bot response, emit it to dashboard
+        # Emit assistant message to dashboard IMMEDIATELY for real-time updates
         await sio.emit('new_message', {
             'session_id': request.session_id,
             'message': {
@@ -791,6 +780,16 @@ async def ask_question(
             },
             'organization_id': org_id
         }, room=org_api_key)
+
+        # Then update conversation history in user_data to match database order
+        response["user_data"]["conversation_history"].append({
+            "role": "assistant", 
+            "content": response["answer"]
+        })
+
+        # Get suggested FAQs
+        suggested_faqs = get_suggested_faqs(org_id)
+        response["suggested_faqs"] = suggested_faqs
 
         return response
 
