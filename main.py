@@ -194,6 +194,8 @@ origins = [
     "https://aibotwizard.vercel.app",
     "https://chatbot.bayshorecommunication.com",
     "http://chatbot.bayshorecommunication.com",
+    "https://chatbot-user-dashboard.vercel.app",
+    "https://aibotwidget.bayshorecommunication.org",
     "http://localhost:8000",
     "http://localhost:8000",
     "*"  # Allow all origins as fallback
