@@ -50,8 +50,11 @@ def initialize():
     
     # Initialize OpenAI
     llm = ChatOpenAI(
-        model_name="gpt-3.5-turbo", 
-        temperature=0.5,
+        # model_name="gpt-3.5-turbo", 
+        # temperature=0.5,
+        model_name="gpt-4o-mini", 
+        temperature=0.3,
+        max_tokens=1000,
         openai_api_key=os.getenv("OPENAI_API_KEY"),
         openai_api_base="https://api.openai.com/v1"
     )
