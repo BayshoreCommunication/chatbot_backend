@@ -24,24 +24,24 @@ wheels/
 .installed.cfg
 *.egg
 
-# Virtual Environment
+# Virtual Environments
 venv/
 ENV/
 env/
 .env
 
-# IDE specific files
+# IDE / Editor specific files
 .idea/
 .vscode/
 *.swp
 *.swo
 
-# Environment variables
-.env
-.env~
+# Environment files
 *.env
+.env~
+.env
 
-# Database
+# Database files
 *.db
 *.sqlite3
 
@@ -52,6 +52,7 @@ logs/
 # Temporary files
 temp_*
 .DS_Store
+*.DS_Store*
 
 # Local configuration
 instance/
@@ -71,14 +72,14 @@ coverage.xml
 docs/_build/
 site/
 
-# Jupyter Notebook
+# Jupyter Notebook checkpoints
 .ipynb_checkpoints
 
-# Pinecone and other service specific files
+# Pinecone and other service-specific files
 *.pinecone
 *.pickle
 
-# Compiled source
+# Compiled source files
 *.com
 *.class
 *.dll
@@ -87,7 +88,6 @@ site/
 *.a
 
 # OS generated files
-*.DS_Store*
 ehthumbs.db
 Icon?
-Thumbs.db 
+Thumbs.db
