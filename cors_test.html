@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>CORS Test for Chatbot Backend</title>
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        max-width: 800px;
+        margin: 0 auto;
+        padding: 20px;
+        line-height: 1.6;
+      }
+      h1 {
+        color: #333;
+      }
+      .container {
+        margin-top: 20px;
+      }
+      #result {
+        margin-top: 20px;
+        padding: 15px;
+        border: 1px solid #ddd;
+        border-radius: 5px;
+        background-color: #f9f9f9;
+        white-space: pre-wrap;
+      }
+      button {
+        background-color: #4caf50;
+        color: white;
+        padding: 10px 15px;
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 16px;
+        margin-right: 10px;
+      }
+      button:hover {
+        background-color: #45a049;
+      }
+      input[type="text"] {
+        padding: 8px;
+        width: 300px;
+        margin-bottom: 10px;
+        border: 1px solid #ddd;
+        border-radius: 4px;
+      }
+      .success {
+        color: green;
+        font-weight: bold;
+      }
+      .error {
+        color: red;
+        font-weight: bold;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>CORS Test for Chatbot Backend</h1>
+    <p>
+      This page tests if your backend server is properly configured to allow
+      cross-origin requests.
+    </p>
+
+    <div class="container">
+      <div>
+        <label for="serverUrl">Server URL:</label><br />
+        <input type="text" id="serverUrl" value="http://localhost:8000" />
+      </div>
+      <div>
+        <label for="endpoint">Endpoint to test:</label><br />
+        <input type="text" id="endpoint" value="/health" />
+      </div>
+      <div>
+        <button onclick="testCORS()">Test CORS (GET)</button>
+        <button onclick="testCORSOptions()">Test CORS (OPTIONS)</button>
+      </div>
+      <div id="result">Results will appear here...</div>
+    </div>
+
+    <script>
+      function formatResponse(response) {
+        return JSON.stringify(response, null, 2);
+      }
+
+      function displayResult(message, isError = false) {
+        const resultDiv = document.getElementById("result");
+        resultDiv.innerHTML = message;
+        resultDiv.className = isError ? "error" : "success";
+      }
+
+      function displayHeaders(headers) {
+        let headerText = "Response Headers:\n";
+        headers.forEach((value, key) => {
+          headerText += `${key}: ${value}\n`;
+        });
+        return headerText;
+      }
+
+      async function testCORS() {
+        const serverUrl = document.getElementById("serverUrl").value;
+        const endpoint = document.getElementById("endpoint").value;
+        const url = serverUrl + endpoint;
+
+        try {
+          displayResult("Sending request...");
+
+          const response = await fetch(url, {
+            method: "GET",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            credentials: "include",
+          });
+
+          const data = await response.json();
+
+          let resultText = "✅ CORS TEST SUCCESSFUL!\n\n";
+          resultText += displayHeaders(response.headers);
+          resultText += "\nResponse Data:\n" + formatResponse(data);
+
+          displayResult(resultText);
+        } catch (error) {
+          displayResult(
+            `❌ CORS TEST FAILED: ${error.message}\n\nThis likely means CORS is not properly configured.`,
+            true
+          );
+        }
+      }
+
+      async function testCORSOptions() {
+        const serverUrl = document.getElementById("serverUrl").value;
+        const endpoint = document.getElementById("endpoint").value;
+        const url = serverUrl + endpoint;
+
+        try {
+          displayResult("Sending OPTIONS request...");
+
+          const response = await fetch(url, {
+            method: "OPTIONS",
+            headers: {
+              "Access-Control-Request-Method": "GET",
+              "Access-Control-Request-Headers": "Content-Type",
+            },
+          });
+
+          let resultText = "✅ OPTIONS REQUEST SUCCESSFUL!\n\n";
+          resultText += displayHeaders(response.headers);
+
+          displayResult(resultText);
+        } catch (error) {
+          displayResult(
+            `❌ OPTIONS REQUEST FAILED: ${error.message}\n\nThis likely means CORS preflight is not properly configured.`,
+            true
+          );
+        }
+      }
+    </script>
+  </body>
+</html>

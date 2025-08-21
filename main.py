@@ -185,7 +185,7 @@ origins = [
     "http://localhost:5173",  # Vite dev server
     "http://127.0.0.1:5173",
     "http://localhost:3000",
-     "http://localhost:3001",
+    "http://localhost:3001",
     "http://127.0.0.1:3000",
     "https://checkout.stripe.com",
     "https://js.stripe.com",
@@ -206,11 +206,11 @@ origins = [
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=["*"],  # Allow all origins
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-    expose_headers=["*"],
+    allow_methods=["*"],  # Allow all methods
+    allow_headers=["*"],  # Allow all headers
+    expose_headers=["*"],  # Expose all headers
     max_age=3600
 )
 
@@ -218,8 +218,11 @@ app.add_middleware(
 @app.middleware("http")
 async def add_security_headers(request: Request, call_next):
     response = await call_next(request)
+    # Allow any origin by reading the request's origin header
+    # This ensures the CORS middleware's settings are respected
     origin = request.headers.get("origin", "*")
-    response.headers["Access-Control-Allow-Origin"] = origin
+    if origin != "*":  # Only set if a specific origin was provided
+        response.headers["Access-Control-Allow-Origin"] = origin
     response.headers["Access-Control-Allow-Credentials"] = "true"
     response.headers["Cross-Origin-Opener-Policy"] = "unsafe-none"
     response.headers["Cross-Origin-Embedder-Policy"] = "unsafe-none"
