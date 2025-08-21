@@ -117,7 +117,7 @@ def analyze_query(query, user_info, mode, needs_info, has_vector_data, conversat
     # Call OpenAI for central analysis
     try:
         analysis_response = openai.chat.completions.create(
-            model="gpt-3.5-turbo",
+            model="gpt-4o",
             messages=[{"role": "user", "content": analysis_prompt}],
             response_format={"type": "json_object"},
             temperature=0.2
@@ -225,7 +225,7 @@ def generate_response(query, user_info, conversation_summary, retrieved_context,
     try:
         # Call OpenAI for final response generation
         response_completion = openai.chat.completions.create(
-            model="gpt-3.5-turbo",
+            model="gpt-4o",
             messages=[{"role": "user", "content": final_prompt}],
             temperature=0.7
         )
@@ -251,7 +251,7 @@ def generate_response(query, user_info, conversation_summary, retrieved_context,
             Provide a direct, helpful answer:"""
             
             fallback_response = openai.chat.completions.create(
-                model="gpt-3.5-turbo",
+                model="gpt-4o",
                 messages=[{"role": "user", "content": simple_prompt}],
                 temperature=0.7,
                 max_tokens=200

@@ -15,8 +15,36 @@ load_dotenv()
 # Get MongoDB connection string
 MONGO_URI = os.getenv("MONGO_URI")
 
-# Connect to MongoDB
-client = pymongo.MongoClient(MONGO_URI)
+# Connect to MongoDB with improved connection options
+try:
+    # Add connection options to handle DNS timeouts and improve reliability
+    client = pymongo.MongoClient(
+        MONGO_URI,
+        serverSelectionTimeoutMS=30000,  # 30 seconds timeout
+        connectTimeoutMS=20000,          # 20 seconds connection timeout
+        socketTimeoutMS=20000,           # 20 seconds socket timeout
+        maxPoolSize=10,                  # Connection pool size
+        retryWrites=True,
+        retryReads=True,
+        w="majority"
+    )
+    
+    # Test the connection
+    client.admin.command('ping')
+    print("✅ Successfully connected to MongoDB!")
+    
+except pymongo.errors.ServerSelectionTimeoutError as e:
+    print(f"❌ MongoDB connection failed: {e}")
+    print("🔧 Troubleshooting tips:")
+    print("   1. Check your internet connection")
+    print("   2. Verify the MongoDB URI is correct")
+    print("   3. Check if MongoDB Atlas is accessible")
+    print("   4. Try using a different DNS server")
+    raise
+except Exception as e:
+    print(f"❌ Unexpected error connecting to MongoDB: {e}")
+    raise
+
 db = client.saas_chatbot_db
 
 def get_database():

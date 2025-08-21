@@ -171,7 +171,7 @@ class UserLearningService:
                 """
                 
                 improved_response = openai.chat.completions.create(
-                    model="gpt-3.5-turbo",
+                    model="gpt-4o",
                     messages=[{"role": "user", "content": improvement_prompt}],
                     temperature=0.3,
                     max_tokens=300

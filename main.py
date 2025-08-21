@@ -200,7 +200,6 @@ origins = [
     "https://www.carterinjurylaw.com",
     "http://localhost:5174",
     "http://localhost:8000",
-    "http://localhost:8000",
     "*"  # Allow all origins as fallback
 ]
 

@@ -233,7 +233,7 @@ def extract_slot_info(query, available_slots):
     
     try:
         slot_response = openai.chat.completions.create(
-            model="gpt-3.5-turbo",
+           model="gpt-4o",
             messages=[{"role": "user", "content": slot_selection_prompt}],
             response_format={"type": "json_object"},
             temperature=0.1
@@ -370,7 +370,7 @@ def analyze_appointment_query(query):
     
     try:
         intent_response = openai.chat.completions.create(
-            model="gpt-3.5-turbo",
+           model="gpt-4o",
             messages=[{"role": "user", "content": intent_analysis_prompt}],
             response_format={"type": "json_object"},
             temperature=0.1

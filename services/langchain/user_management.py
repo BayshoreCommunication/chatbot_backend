@@ -79,7 +79,7 @@ def handle_name_collection(query, user_data, mode, language):
     try:
         # Call OpenAI for name extraction
         name_response = openai.chat.completions.create(
-            model="gpt-3.5-turbo",
+            model="gpt-4o",
             messages=[{"role": "user", "content": name_extraction_prompt}],
             max_tokens=20,
             temperature=0.1
@@ -212,7 +212,7 @@ def handle_email_collection(query, user_data, mode, language):
                     """
                     
                     welcome_response = openai.chat.completions.create(
-                        model="gpt-3.5-turbo",
+                        model="gpt-4o",
                         messages=[{"role": "user", "content": welcome_prompt}],
                         max_tokens=100,
                         temperature=0.7
@@ -275,7 +275,7 @@ def handle_email_collection(query, user_data, mode, language):
                     """
                     
                     welcome_response = openai.chat.completions.create(
-                        model="gpt-3.5-turbo",
+                        model="gpt-4o",
                         messages=[{"role": "user", "content": welcome_prompt}],
                         max_tokens=100,
                         temperature=0.7
@@ -359,7 +359,7 @@ def extract_personal_information(user_context):
     
     try:
         personal_info_response = openai.chat.completions.create(
-            model="gpt-3.5-turbo",
+            model="gpt-4o",
             messages=[{"role": "user", "content": personal_information_prompt}],
             response_format={"type": "json_object"},
             temperature=0.1
