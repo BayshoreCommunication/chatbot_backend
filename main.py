@@ -356,7 +356,7 @@ if chatbot_available and 'socket_app' in locals():
     app = socket_app  # This ensures uvicorn uses the Socket.IO wrapped app
     print("Using Socket.IO wrapped application")
 else:
-    # Fallback to regular FastAPI app is already defined above
+    # Fallback to regular FastAPI app- app  is already defined above
     print("Using regular FastAPI application")
 
 if __name__ == "__main__":
