@@ -31,6 +31,7 @@ from pymongo import MongoClient
 from motor.motor_asyncio import AsyncIOMotorClient
 import redis.asyncio as redis
 from dotenv import load_dotenv
+import subprocess
 
 # Load environment variables
 load_dotenv()
@@ -331,9 +332,16 @@ def health_check():
     """Health check endpoint for monitoring"""
     return {"status": "healthy"}
 
+def get_git_commit_hash():
+    try:
+        commit = subprocess.check_output(["git", "rev-parse", "HEAD"]).decode("utf-8").strip()
+        return commit
+    except Exception:
+        return "unknown"
+
 @app.get("/version")
 def version():
-    return {"version": "commit_hash_or_build_number"}
+    return {"commit": get_git_commit_hash()}
 
 
 # Create the final app instance
