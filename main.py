@@ -343,6 +343,12 @@ def get_git_commit_hash():
 def version():
     return {"commit": get_git_commit_hash()}
 
+@app.post("/webhook")
+async def github_webhook(req: Request):
+    # Optional: you can verify GitHub secret here
+    subprocess.Popen(["/var/www/chatbot_backend/deploy.sh"])
+    return {"message": "Deployment triggered"}
+
 
 # Create the final app instance
 if chatbot_available and 'socket_app' in locals():
