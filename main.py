@@ -331,6 +331,11 @@ def health_check():
     """Health check endpoint for monitoring"""
     return {"status": "healthy"}
 
+@app.get("/version")
+def version():
+    return {"version": "commit_hash_or_build_number"}
+
+
 # Create the final app instance
 if chatbot_available and 'socket_app' in locals():
     # If Socket.IO is available, use the wrapped app
