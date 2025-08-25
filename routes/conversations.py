@@ -31,16 +31,33 @@ async def get_conversations(organization: dict = Depends(get_organization_from_a
         raise HTTPException(status_code=401, detail="Invalid API key")
         
     try:
-        print(f"Organization ID: {organization.get('id')}")
+        print(f"Organization ID: {organization.get('_id')}")
+        print(f"Organization ID type: {type(organization.get('_id'))}")
         
         # Get database instance
         db = get_database()
         print(f"Database instance: {db}")
         
-        # Get all conversations for the organization
+        # Get organization ID and handle both ObjectId and string formats
+        org_id = organization.get("_id")
+        if isinstance(org_id, ObjectId):
+            org_id_str = str(org_id)
+        else:
+            org_id_str = org_id
+        
+        print(f"Looking for conversations with org_id: {org_id_str}")
+        
+        # Try to find conversations with both ObjectId and string formats
         conversations = list(db.conversations.find(
-            {"organization_id": organization["id"]}
+            {"organization_id": org_id_str}
         ).sort("created_at", -1))
+        
+        # If no conversations found with string format, try ObjectId format
+        if not conversations and isinstance(org_id, ObjectId):
+            print(f"No conversations found with string format, trying ObjectId format")
+            conversations = list(db.conversations.find(
+                {"organization_id": org_id}
+            ).sort("created_at", -1))
         
         print(f"Found {len(conversations)} conversations")
         
@@ -54,7 +71,7 @@ async def get_conversations(organization: dict = Depends(get_organization_from_a
                 
             if session_id not in grouped_conversations:
                 # Get user profile for this session
-                user_profile = get_user_profile(organization["id"], session_id)
+                user_profile = get_user_profile(organization.get("_id"), session_id)
                 user_name = None
                 user_email = None
                 
@@ -133,16 +150,52 @@ async def get_conversation(
         raise HTTPException(status_code=401, detail="Invalid API key")
         
     try:
-        print(f"Organization ID: {organization.get('id')}")
+        print(f"Organization ID: {organization.get('_id')}")
         
         # Get database instance
         db = get_database()
         print(f"Database instance: {db}")
         
+        # Get organization ID and handle both ObjectId and string formats
+        org_id = organization.get("_id")
+        if isinstance(org_id, ObjectId):
+            org_id_str = str(org_id)
+        else:
+            org_id_str = org_id
+        
+        # Try to find by UUID id field first (most common case)
         conversation = db.conversations.find_one({
-            "_id": ObjectId(conversation_id),
-            "organization_id": organization["id"]
+            "id": conversation_id,
+            "organization_id": org_id_str
         })
+        
+        # If not found by UUID, try ObjectId _id field
+        if not conversation:
+            try:
+                conversation = db.conversations.find_one({
+                    "_id": ObjectId(conversation_id),
+                    "organization_id": org_id_str
+                })
+            except Exception:
+                # Invalid ObjectId format, continue with UUID search
+                pass
+        
+        # If still not found with string format, try ObjectId format for org_id
+        if not conversation and isinstance(org_id, ObjectId):
+            conversation = db.conversations.find_one({
+                "id": conversation_id,
+                "organization_id": org_id
+            })
+            
+            if not conversation:
+                try:
+                    conversation = db.conversations.find_one({
+                        "_id": ObjectId(conversation_id),
+                        "organization_id": org_id
+                    })
+                except Exception:
+                    # Invalid ObjectId format, continue
+                    pass
         
         print(f"Found conversation: {conversation}")
         
@@ -177,14 +230,28 @@ async def get_conversations_by_session(
     try:
         db = get_database()
         
+        # Get organization ID and handle both ObjectId and string formats
+        org_id = organization.get("_id")
+        if isinstance(org_id, ObjectId):
+            org_id_str = str(org_id)
+        else:
+            org_id_str = org_id
+        
         # Get all conversations for this session
         conversations = list(db.conversations.find({
-            "organization_id": organization["id"],
+            "organization_id": org_id_str,
             "session_id": session_id
         }).sort("created_at", 1))  # Sort chronologically
         
+        # If no conversations found with string format, try ObjectId format
+        if not conversations and isinstance(org_id, ObjectId):
+            conversations = list(db.conversations.find({
+                "organization_id": org_id,
+                "session_id": session_id
+            }).sort("created_at", 1))  # Sort chronologically
+        
         # Get user profile for this session
-        user_profile = get_user_profile(organization["id"], session_id)
+        user_profile = get_user_profile(organization.get("_id"), session_id)
         user_name = None
         user_email = None
         

@@ -1,4 +1,4 @@
-from pinecone import Pinecone
+import pinecone
 from langchain_pinecone import PineconeVectorStore
 import os
 from langchain_community.document_loaders import WebBaseLoader, PyPDFLoader
@@ -15,7 +15,7 @@ from urllib.parse import urljoin, urlparse
 def initialize_vectorstore(embeddings, api_key=None):
     """Initialize the Pinecone vector store with optional organization namespace"""
     # Initialize Pinecone
-    pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
+    pc = pinecone.Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
     index_name = os.getenv("PINECONE_INDEX")
     print(f"PINECONE_INDEX: {index_name}")  # Debug print
     
@@ -88,7 +88,7 @@ def add_document_to_vectorstore(vectorstore, pc, index_name, embeddings, api_key
     # Check if PC connection is established
     if pc is None:
         print("Pinecone connection is None, initializing...")
-        pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
+        pc = pinecone.Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
     
     # List available indexes
     try:

@@ -3,6 +3,7 @@ from services.database import create_organization, get_organization_by_api_key, 
 from models.organization import OrganizationCreate, OrganizationUpdate
 from typing import Optional
 import json
+import pinecone
 
 router = APIRouter()
 
@@ -142,7 +143,6 @@ async def get_organization_usage(organization=Depends(get_organization_from_api_
         import traceback
         
         # Import directly from vectorstore module to avoid circular imports
-        from pinecone import Pinecone
         from services.database import db
         
         pinecone_api_key = os.getenv("PINECONE_API_KEY")
@@ -161,7 +161,7 @@ async def get_organization_usage(organization=Depends(get_organization_from_api_
         total_api_calls = total_conversations
         
         # Create a fresh Pinecone connection
-        pc = Pinecone(api_key=pinecone_api_key)
+        pc = pinecone.Pinecone(api_key=pinecone_api_key)
         
         # Make sure we have a valid index
         try:

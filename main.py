@@ -40,18 +40,18 @@ load_dotenv()
 from services.auth import seed_default_admin
 from services.cache import cache
 
-# Check feature availability
+# Check feature availability - More resilient for production deployment
 chatbot_available = os.getenv("OPENAI_API_KEY") is not None
-conversations_available = os.getenv("MONGODB_URI") is not None
+conversations_available = os.getenv("MONGO_URI") is not None
 faq_available = os.getenv("PINECONE_API_KEY") is not None
 instant_reply_available = True  # Always available
 lead_available = True  # Always available
-appointment_available = os.getenv("CALENDLY_API_KEY") is not None
+appointment_available = True  # Always available (will work without Calendly)
 appointment_availability_available = True  # Always available
 sales_available = True  # Always available
-organization_available = os.getenv("MONGODB_URI") is not None
-upload_available = os.getenv("MONGODB_URI") is not None
-admin_available = os.getenv("MONGODB_URI") is not None
+organization_available = os.getenv("MONGO_URI") is not None
+upload_available = os.getenv("MONGO_URI") is not None
+admin_available = os.getenv("MONGO_URI") is not None
 
 # Lifespan context manager for startup and shutdown events
 @asynccontextmanager

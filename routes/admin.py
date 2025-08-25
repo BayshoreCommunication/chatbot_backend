@@ -12,6 +12,7 @@ from collections import defaultdict
 import psutil
 import time
 import logging
+import pinecone
 
 logger = logging.getLogger(__name__)
 
@@ -1065,14 +1066,13 @@ async def get_organization_usage_admin(
         try:
             # Try to get Pinecone stats
             import os
-            from pinecone import Pinecone
             
             pinecone_api_key = os.getenv("PINECONE_API_KEY")
             index_name = os.getenv("PINECONE_INDEX", "bayshoreai")
             namespace = organization.get("pinecone_namespace", "")
             
             if pinecone_api_key and namespace:
-                pc = Pinecone(api_key=pinecone_api_key)
+                pc = pinecone.Pinecone(api_key=pinecone_api_key)
                 index = pc.Index(index_name)
                 stats = index.describe_index_stats()
                 

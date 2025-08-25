@@ -125,8 +125,8 @@ def get_org_vectorstore(api_key):
         print(f"Using organization namespace: {namespace}")
         
         if not pc:
-            from pinecone import Pinecone
-            pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
+            import pinecone
+            pc = pinecone.Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
         
         if not index_name:
             index_name = os.getenv("PINECONE_INDEX", "bayshoreai")

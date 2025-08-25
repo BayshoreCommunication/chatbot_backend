@@ -1,5 +1,5 @@
 from typing import List, Dict, Any
-from pinecone import Pinecone
+import pinecone
 from services.openai_service import get_embeddings
 from services.database import db
 import os
@@ -14,7 +14,7 @@ pc = None
 def init_pinecone():
     """Initialize Pinecone with environment credentials"""
     global pc
-    pc = Pinecone(
+    pc = pinecone.Pinecone(
         api_key=os.getenv("PINECONE_API_KEY"),
         environment=os.getenv("PINECONE_ENV")
     )
