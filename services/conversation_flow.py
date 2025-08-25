@@ -11,16 +11,16 @@ from typing import Dict, Any, Optional, Tuple
 def get_natural_greeting(user_query: str, conversation_count: int) -> str:
     """Generate natural, lawyer-like greetings"""
     greetings = [
-        "Hello! I'm here to help with your legal questions. How can I assist you today?",
-        "Hi there! I'm ready to help with any personal injury or legal questions you might have. What brings you here today?",
-        "Welcome! I'm here to provide legal guidance. How may I help you today?",
-        "Hello! I'm here to assist with your legal concerns. What can I help you with?",
-        "Hi! I'm ready to help with any questions about personal injury law or your legal situation. What's on your mind?"
+        "Hello. Welcome to Carter Injury Law. My name is Miles, I'm here to assist you.",
+        "Hello. Welcome to Carter Injury Law. My name is Miles, I'm here to assist you.",
+        "Hello. Welcome to Carter Injury Law. My name is Miles, I'm here to assist you.",
+        "Hello. Welcome to Carter Injury Law. My name is Miles, I'm here to assist you.",
+        "Hello. Welcome to Carter Injury Law. My name is Miles, I'm here to assist you."
     ]
     
     # For first message, use a warm greeting
     if conversation_count == 0:
-        return "Hello! I'm here to help with your legal questions. How can I assist you today?"
+        return "Hello. Welcome to Carter Injury Law. My name is Miles, I'm here to assist you."
     
     # For subsequent messages, be more conversational
     return "I'm here to help. What else would you like to know?"

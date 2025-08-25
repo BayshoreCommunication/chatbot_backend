@@ -220,13 +220,13 @@ def handle_email_collection(query, user_data, mode, language):
                     
                     intro_message = welcome_response.choices[0].message.content.strip()
                 else:
-                    intro_message = "Thank you. How can I assist you today?"
+                    intro_message = "Hello. Welcome to Carter Injury Law. My name is Miles, I'm here to assist you."
             else:
-                intro_message = "Thank you. How can I assist you today?"
+                intro_message = "Hello. Welcome to Carter Injury Law. My name is Miles, I'm here to assist you."
                 
         except Exception as e:
             print(f"Error generating identity welcome: {str(e)}")
-            intro_message = "Thank you. How can I assist you today?"
+            intro_message = "Hello. Welcome to Carter Injury Law. My name is Miles, I'm here to assist you."
         
         # Add this interaction to history
         user_data["conversation_history"].append({
@@ -283,13 +283,13 @@ def handle_email_collection(query, user_data, mode, language):
                     
                     intro_message = welcome_response.choices[0].message.content.strip()
                 else:
-                    intro_message = f"Thank you for providing your email. How can I assist you today?"
+                    intro_message = "Hello. Welcome to Carter Injury Law. My name is Miles, I'm here to assist you."
             else:
-                intro_message = f"Thank you for providing your email. How can I assist you today?"
+                intro_message = "Hello. Welcome to Carter Injury Law. My name is Miles, I'm here to assist you."
                 
         except Exception as e:
             print(f"Error generating identity welcome: {str(e)}")
-            intro_message = f"Thank you for providing your email. How can I assist you today?"
+            intro_message = "Hello. Welcome to Carter Injury Law. My name is Miles, I'm here to assist you."
         
         # Add this interaction to history
         user_data["conversation_history"].append({
@@ -309,7 +309,7 @@ def handle_email_collection(query, user_data, mode, language):
             # Set anonymous email and proceed
             user_data["email"] = "anonymous@user.com"
             
-            intro_message = "That's fine. How can I assist you today?"
+            intro_message = "Hello. Welcome to Carter Injury Law. My name is Miles, I'm here to assist you."
             
             # Add this interaction to history
             user_data["conversation_history"].append({
