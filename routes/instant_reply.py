@@ -22,16 +22,17 @@ async def get_instant_reply(x_api_key: str = Header(...)):
             return {
                 "status": "success", 
                 "data": {
-                    "messages": [],
+                    "message": "",
                     "isActive": False
                 }
             }
         
         # Return messages and active status
+        messages = reply.get("messages", [])
         return {
             "status": "success",
             "data": {
-                "messages": reply.get("messages", []),
+                "message": messages[0] if messages else "",
                 "isActive": reply.get("isActive", False)
             }
         }

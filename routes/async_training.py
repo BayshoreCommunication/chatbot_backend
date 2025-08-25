@@ -9,7 +9,7 @@ from fastapi import APIRouter, HTTPException, Depends, Request, BackgroundTasks
 from typing import Optional, Dict, Any
 from datetime import datetime
 from services.database import db
-from services.auth import get_organization_from_api_key
+from services.database import get_organization_by_api_key
 from services.langchain.engine import add_document
 import uuid
 
@@ -74,7 +74,7 @@ async def process_training_async(training_id: str, url: str, platform: str, max_
 async def start_async_training(
     request: Request,
     background_tasks: BackgroundTasks,
-    organization=Depends(get_organization_from_api_key)
+    organization=Depends(get_organization_by_api_key)
 ):
     """Start training asynchronously and return immediately with training ID"""
     try:
@@ -121,7 +121,7 @@ async def start_async_training(
 @router.get("/training-status/{training_id}")
 async def get_training_status(
     training_id: str,
-    organization=Depends(get_organization_from_api_key)
+    organization=Depends(get_organization_by_api_key)
 ):
     """Get the status of an async training operation"""
     if training_id not in training_status:
@@ -135,7 +135,7 @@ async def get_training_status(
 @router.delete("/training-status/{training_id}")
 async def clear_training_status(
     training_id: str,
-    organization=Depends(get_organization_from_api_key)
+    organization=Depends(get_organization_by_api_key)
 ):
     """Clear training status after completion"""
     if training_id in training_status:

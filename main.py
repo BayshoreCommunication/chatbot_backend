@@ -89,8 +89,9 @@ except Exception as e:
     print(f"Warning: FAQ router failed to import: {e}")
     faq_available = False
 
+# Use instant_reply.py (not instantReply.py)
 try:
-    from routes.instantReply import router as instant_reply_router
+    from routes.instant_reply import router as instant_reply_router
     instant_reply_available = True
 except Exception as e:
     print(f"Warning: Instant Reply router failed to import: {e}")
@@ -295,7 +296,10 @@ if admin_available:
 app.include_router(auth_router, prefix="/auth", tags=["auth"])
 app.include_router(user_router, prefix="/user", tags=["User Profile"])
 
-app.include_router(instant_reply.router, prefix="/api/instant-reply", tags=["instant-reply"])
+# Include instant reply router
+if instant_reply_available:
+    app.include_router(instant_reply_router, prefix="/api/instant-reply", tags=["Instant Reply"])
+    available_features.append("Instant Reply Configuration")
 
 # Add video routes separately
 try:
