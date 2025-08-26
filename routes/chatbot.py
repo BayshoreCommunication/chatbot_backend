@@ -1400,6 +1400,71 @@ async def get_chat_widget_settings(
         print(f"[ERROR] Exception in get_chat_widget_settings: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@router.get("/welcome-message")
+async def get_welcome_message(
+    organization=Depends(get_organization_from_api_key)
+):
+    """Get the welcome message for the chat widget from instant reply model"""
+    try:
+        # Step 1: Get organization details from API key
+        org_id = organization["id"]  # Use "id" field, not "_id"
+        print(f"[DEBUG] Step 1: Found organization ID from API key: {org_id}")
+        
+        # Step 2: Use organization ID to find instant reply
+        print(f"[DEBUG] Step 2: Searching for instant reply with organization_id: {org_id}")
+        instant_reply = db.instant_reply.find_one({
+            "organization_id": org_id,
+            "type": "instant_reply"
+        })
+        
+        print(f"[DEBUG] Step 2 Result: Found instant reply: {instant_reply is not None}")
+        
+        # Step 3: Check if we found any instant reply
+        if not instant_reply or not instant_reply.get("messages"):
+            # Return default welcome message if no instant replies found
+            default_message = "👋 Welcome! I'm your AI assistant. I can help you with:\n• Scheduling appointments\n• Answering questions about our services\n• Providing information and support"
+            print(f"[DEBUG] Step 3: No instant replies found, using default message")
+            return {
+                "status": "success",
+                "data": {
+                    "message": default_message
+                }
+            }
+        
+        # Step 4: Get the first message from instant replies as welcome message
+        messages = instant_reply.get("messages", [])
+        print(f"[DEBUG] Step 4: Found {len(messages)} instant reply messages")
+        
+        if messages and len(messages) > 0:
+            # Sort by order and get the first message
+            sorted_messages = sorted(messages, key=lambda x: x.get("order", 0))
+            welcome_message = sorted_messages[0].get("message", "")
+            
+            print(f"[DEBUG] Step 4 Result: Using first message as welcome: {welcome_message[:50]}...")
+            
+            if welcome_message:
+                return {
+                    "status": "success",
+                    "data": {
+                        "message": welcome_message
+                    }
+                }
+        
+        # Fallback to default message
+        default_message = "👋 Welcome! I'm your AI assistant. I can help you with:\n• Scheduling appointments\n• Answering questions about our services\n• Providing information and support"
+        print(f"[DEBUG] Fallback: Using default message")
+        return {
+            "status": "success",
+            "data": {
+                "message": default_message
+            }
+        }
+        
+    except Exception as e:
+        print(f"[ERROR] Exception in get_welcome_message: {str(e)}")
+        print(f"[ERROR] Full traceback: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 # Test route to debug loading issue
 @router.get("/test-route")
 async def test_route():
