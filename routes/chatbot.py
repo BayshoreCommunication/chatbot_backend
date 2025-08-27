@@ -54,41 +54,59 @@ def init_socketio(app: FastAPI):
         cors_allowed_origins="*",
         async_mode='asgi',
         logger=False,  # Disable verbose socket.io logging
-        engineio_logger=False  # Disable verbose engine.io logging
+        engineio_logger=False,  # Disable verbose engine.io logging
+        ping_timeout=60,
+        ping_interval=25,
+        max_http_buffer_size=1e8,
+        allow_upgrades=True,
+        transports=['websocket', 'polling']
     )
     
     @sio.event
     async def connect(sid, environ, auth):
         logger.info(f"Client connected: {sid}")
         
-        # Get API key from auth or query params
-        api_key = None
-        if auth and isinstance(auth, dict):
-            api_key = auth.get('apiKey')
-        
-        if not api_key:
-            # Try to get from query params
-            query_string = environ.get('QUERY_STRING', '')
-            if 'apiKey=' in query_string:
-                for param in query_string.split('&'):
-                    if param.startswith('apiKey='):
-                        api_key = param.split('=')[1]
-                        break
-        
-        if api_key:
-            # Auto-join organization room using API key
-            room_name = api_key
-            await sio.enter_room(sid, room_name)
-            logger.info(f"Client {sid} joined room: {room_name}")
+        try:
+            # Get API key from auth or query params
+            api_key = None
+            if auth and isinstance(auth, dict):
+                api_key = auth.get('apiKey')
             
-            # Send a welcome message to confirm connection
+            if not api_key:
+                # Try to get from query params
+                query_string = environ.get('QUERY_STRING', '')
+                if 'apiKey=' in query_string:
+                    for param in query_string.split('&'):
+                        if param.startswith('apiKey='):
+                            api_key = param.split('=')[1]
+                            break
+            
+            if api_key:
+                # Auto-join organization room using API key
+                room_name = api_key
+                await sio.enter_room(sid, room_name)
+                logger.info(f"Client {sid} joined room: {room_name}")
+                
+                # Send a welcome message to confirm connection
+                await sio.emit('connection_confirmed', {
+                    'status': 'connected',
+                    'room': room_name,
+                    'message': 'Socket.IO connection established successfully'
+                }, room=sid)
+            else:
+                logger.warning(f"Client {sid} connected without API key")
+                # Still allow connection but don't join any room
+                await sio.emit('connection_confirmed', {
+                    'status': 'connected_no_api_key',
+                    'message': 'Socket.IO connection established but no API key provided'
+                }, room=sid)
+        except Exception as e:
+            logger.error(f"Error in socket connect: {str(e)}")
+            # Still allow connection even if there's an error
             await sio.emit('connection_confirmed', {
-                'status': 'connected',
-                'room': room_name,
-                'message': 'Socket.IO connection established successfully'
+                'status': 'connected_with_error',
+                'message': f'Socket.IO connection established with error: {str(e)}'
             }, room=sid)
-        else:
-            logger.warning(f"Client {sid} connected without API key")
 
     @sio.event
     async def disconnect(sid):
@@ -184,9 +202,13 @@ async def ask_question(
     organization=Depends(get_organization_from_api_key)
 ):
     """Process a chat message and return a response"""
-    org_id = organization["id"]
+    # Use the correct organization ID field - try 'id' first, then '_id'
+    org_id = organization.get("id") or str(organization.get("_id"))
     org_api_key = organization.get("api_key")
     namespace = organization.get("pinecone_namespace", "")
+
+    print(f"[DEBUG] Organization object: {organization}")
+    print(f"[DEBUG] Using org_id: {org_id}")
 
     try:
         print(f"[DEBUG] Processing message: {request.question}")
@@ -225,10 +247,10 @@ async def ask_question(
                 'message': {
                     'role': 'user',
                     'content': request.question,
-                    'timestamp': datetime.utcnow().isoformat()
-                },
-                'organization_id': org_id,
-                'agent_mode': True
+                                    'timestamp': datetime.now().isoformat()
+            },
+            'organization_id': org_id,
+            'agent_mode': True
             }, room=org_api_key)
 
             # Return without AI response - agent will respond manually (no automatic message)
@@ -283,14 +305,22 @@ async def ask_question(
             print("[DEBUG] No user profile found")
 
         # Store the current user message ONCE at the beginning
-        add_conversation_message(
-            organization_id=org_id,
-            visitor_id=visitor["id"],
-            session_id=request.session_id,
-            role="user",
-            content=request.question,
-            metadata={"mode": request.mode}
-        )
+        try:
+            print(f"[DEBUG] Storing user message: {request.question}")
+            add_conversation_message(
+                organization_id=org_id,
+                visitor_id=visitor["id"],
+                session_id=request.session_id,
+                role="user",
+                content=request.question,
+                metadata={"mode": request.mode}
+            )
+            print(f"[DEBUG] User message stored successfully")
+        except Exception as e:
+            print(f"[ERROR] Failed to store user message: {str(e)}")
+            import traceback
+            print(f"[ERROR] Traceback: {traceback.format_exc()}")
+            # Continue processing even if message storage fails
         request.user_data["conversation_history"].append({
             "role": "user",
             "content": request.question
@@ -302,7 +332,7 @@ async def ask_question(
             'message': {
                 'role': 'user',
                 'content': request.question,
-                'timestamp': datetime.utcnow().isoformat()
+                'timestamp': datetime.now().isoformat()
             },
             'organization_id': org_id
         }, room=org_api_key)
@@ -372,7 +402,7 @@ async def ask_question(
                     'message': {
                         'role': 'assistant',
                         'content': continue_response,
-                        'timestamp': datetime.utcnow().isoformat()
+                        'timestamp': datetime.now().isoformat()
                     },
                     'organization_id': org_id
                 }, room=org_api_key)
@@ -411,7 +441,7 @@ async def ask_question(
                     'message': {
                         'role': 'assistant',
                         'content': acknowledgment,
-                        'timestamp': datetime.utcnow().isoformat()
+                        'timestamp': datetime.now().isoformat()
                     },
                     'organization_id': org_id
                 }, room=org_api_key)
@@ -448,7 +478,7 @@ async def ask_question(
                     'message': {
                         'role': 'assistant',
                         'content': name_prompt,
-                        'timestamp': datetime.utcnow().isoformat()
+                        'timestamp': datetime.now().isoformat()
                     },
                     'organization_id': org_id
                 }, room=org_api_key)
@@ -484,7 +514,7 @@ async def ask_question(
                         'message': {
                             'role': 'assistant',
                             'content': fallback_response["answer"],
-                            'timestamp': datetime.utcnow().isoformat()
+                            'timestamp': datetime.now().isoformat()
                         },
                         'organization_id': org_id
                     }, room=org_api_key)
@@ -563,7 +593,7 @@ async def ask_question(
                     'message': {
                         'role': 'assistant',
                         'content': acknowledgment,
-                        'timestamp': datetime.utcnow().isoformat()
+                        'timestamp': datetime.now().isoformat()
                     },
                     'organization_id': org_id
                 }, room=org_api_key)
@@ -598,7 +628,7 @@ async def ask_question(
                     'message': {
                         'role': 'assistant',
                         'content': email_prompt,
-                        'timestamp': datetime.utcnow().isoformat()
+                        'timestamp': datetime.now().isoformat()
                     },
                     'organization_id': org_id
                 }, room=org_api_key)
@@ -642,7 +672,7 @@ async def ask_question(
                         'message': {
                             'role': 'assistant',
                             'content': welcome,
-                            'timestamp': datetime.utcnow().isoformat()
+                            'timestamp': datetime.now().isoformat()
                         },
                         'organization_id': org_id
                     }, room=org_api_key)
@@ -694,7 +724,7 @@ async def ask_question(
                 'message': {
                     'role': 'assistant',
                     'content': matching_faq["response"],
-                    'timestamp': datetime.utcnow().isoformat()
+                    'timestamp': datetime.now().isoformat()
                 },
                 'organization_id': org_id
             }, room=org_api_key)
@@ -738,7 +768,7 @@ async def ask_question(
                 'message': {
                     'role': 'assistant',
                     'content': calendar_offer,
-                    'timestamp': datetime.utcnow().isoformat()
+                    'timestamp': datetime.now().isoformat()
                 },
                 'organization_id': org_id
             }, room=org_api_key)
@@ -784,14 +814,22 @@ async def ask_question(
         )
 
         # Save assistant message to database FIRST
-        add_conversation_message(
-            organization_id=org_id,
-            visitor_id=visitor["id"],
-            session_id=request.session_id,
-            role="assistant",
-            content=response["answer"],
-            metadata={"mode": request.mode}
-        )
+        try:
+            print(f"[DEBUG] Storing assistant message: {response['answer'][:50]}...")
+            add_conversation_message(
+                organization_id=org_id,
+                visitor_id=visitor["id"],
+                session_id=request.session_id,
+                role="assistant",
+                content=response["answer"],
+                metadata={"mode": request.mode}
+            )
+            print(f"[DEBUG] Assistant message stored successfully")
+        except Exception as e:
+            print(f"[ERROR] Failed to store assistant message: {str(e)}")
+            import traceback
+            print(f"[ERROR] Traceback: {traceback.format_exc()}")
+            # Continue processing even if message storage fails
 
         # Then update conversation history in user_data to match database order
         response["user_data"]["conversation_history"].append({
@@ -832,7 +870,7 @@ async def ask_question(
             'message': {
                 'role': 'assistant',
                 'content': response["answer"],
-                'timestamp': datetime.utcnow().isoformat()
+                'timestamp': datetime.now().isoformat()
             },
             'organization_id': org_id
         }, room=org_api_key)
@@ -852,13 +890,25 @@ async def get_chat_history(
     org_id = organization["id"]
     
     # Get fresh conversation data from MongoDB
-    previous_conversations = get_conversation_history(organization_id =org_id, session_id=session_id)
+    previous_conversations = get_conversation_history(organization_id=org_id, session_id=session_id)
     print(f"[DEBUG] previous_conversations: {previous_conversations} organization: {org_id}")
     
-    # Get visitor information
+    # Get visitor information - create if doesn't exist for new users
     visitor = get_visitor(org_id, session_id)
     if not visitor:
-        raise HTTPException(status_code=404, detail="Session not found")
+        # Create a new visitor for new users instead of returning 404
+        print(f"[DEBUG] Creating new visitor for session: {session_id}")
+        visitor = create_or_update_visitor(
+            organization_id=org_id,
+            session_id=session_id,
+            visitor_data={
+                "last_active": None,
+                "metadata": {
+                    "mode": "faq",
+                    "user_data": {}
+                }
+            }
+        )
     
     # Check if chat is in agent mode
     is_agent_mode = visitor.get("is_agent_mode", False)
@@ -1034,7 +1084,7 @@ async def upload_document(
                 "file_name": file.filename,
                 "type": "pdf",
                 "status": "Used",
-                "created_at": datetime.utcnow()
+                "created_at": datetime.now()
             })
             
             # Clean up temporary file
@@ -1070,7 +1120,7 @@ async def upload_document(
                 "url": url,
                 "type": "url",
                 "status": "Used",
-                "created_at": datetime.utcnow()
+                "created_at": datetime.now()
             })
             
             return result
@@ -1083,7 +1133,7 @@ async def upload_document(
                 "org_id": org_id,
                 "type": "text",
                 "status": "Used",
-                "created_at": datetime.utcnow()
+                "created_at": datetime.now()
             })
             
             return result
@@ -1096,7 +1146,7 @@ async def upload_document(
         error_data = {
             "org_id": org_id,
             "status": "Failed",
-            "created_at": datetime.utcnow()
+            "created_at": datetime.now()
         }
         
         if file:
@@ -1240,15 +1290,24 @@ async def agent_takeover(
         org_id = organization["id"]
         org_api_key = organization.get("api_key")
         
+        print(f"Agent takeover request - Session ID: {session_id}, Agent ID: {agent_id}, Org ID: {org_id}")
+        
         # Set the chat to agent mode
         updated_visitor = set_agent_mode(org_id, session_id, agent_id)
         
+        if not updated_visitor:
+            raise HTTPException(status_code=404, detail="Visitor not found or could not be updated")
+        
+        print(f"Successfully set agent mode for session {session_id}")
+        
         # Only emit takeover notification to dashboard (no system message added to conversation)
-        await sio.emit('agent_takeover', {
-            'session_id': session_id,
-            'agent_id': agent_id,
-            'timestamp': datetime.utcnow().isoformat()
-        }, room=org_api_key)
+        if sio:
+            await sio.emit('agent_takeover', {
+                'session_id': session_id,
+                'agent_id': agent_id,
+                'timestamp': datetime.now().isoformat()
+            }, room=org_api_key)
+            print(f"Emitted agent_takeover event to room {org_api_key}")
         
         return {
             "status": "success",
@@ -1258,9 +1317,15 @@ async def agent_takeover(
             "agent_id": agent_id
         }
         
+    except HTTPException:
+        # Re-raise HTTP exceptions as-is
+        raise
     except Exception as e:
         print(f"Error in agent takeover: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"Exception type: {type(e)}")
+        import traceback
+        print(f"Traceback: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 @router.post("/agent-release")
 async def agent_release(
@@ -1278,14 +1343,23 @@ async def agent_release(
         org_id = organization["id"]
         org_api_key = organization.get("api_key")
         
+        print(f"Agent release request - Session ID: {session_id}, Org ID: {org_id}")
+        
         # Set the chat back to bot mode
         updated_visitor = set_bot_mode(org_id, session_id)
         
+        if not updated_visitor:
+            raise HTTPException(status_code=404, detail="Visitor not found or could not be updated")
+        
+        print(f"Successfully set bot mode for session {session_id}")
+        
         # Only emit release notification to dashboard (no system message added to conversation)
-        await sio.emit('agent_release', {
-            'session_id': session_id,
-            'timestamp': datetime.utcnow().isoformat()
-        }, room=org_api_key)
+        if sio:
+            await sio.emit('agent_release', {
+                'session_id': session_id,
+                'timestamp': datetime.now().isoformat()
+            }, room=org_api_key)
+            print(f"Emitted agent_release event to room {org_api_key}")
         
         return {
             "status": "success",
@@ -1294,9 +1368,15 @@ async def agent_release(
             "is_agent_mode": False
         }
         
+    except HTTPException:
+        # Re-raise HTTP exceptions as-is
+        raise
     except Exception as e:
         print(f"Error in agent release: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"Exception type: {type(e)}")
+        import traceback
+        print(f"Traceback: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 @router.post("/send-agent-message")
 async def send_agent_message(
@@ -1341,7 +1421,7 @@ async def send_agent_message(
             'message': {
                 'role': 'assistant',
                 'content': message_content,
-                'timestamp': datetime.utcnow().isoformat(),
+                'timestamp': datetime.now().isoformat(),
                 'agent_id': agent_id
             },
             'organization_id': org_id
@@ -1470,6 +1550,29 @@ async def get_welcome_message(
 async def test_route():
     """Simple test route to check if routes after settings work"""
     return {"status": "success", "message": "Test route working"}
+
+@router.get("/socket-health")
+async def socket_health_check():
+    """Health check for Socket.IO functionality"""
+    try:
+        if sio:
+            return {
+                "status": "healthy",
+                "socket_io": "available",
+                "message": "Socket.IO server is running"
+            }
+        else:
+            return {
+                "status": "unhealthy",
+                "socket_io": "unavailable",
+                "message": "Socket.IO server is not initialized"
+            }
+    except Exception as e:
+        return {
+            "status": "error",
+            "socket_io": "error",
+            "message": f"Socket.IO health check failed: {str(e)}"
+        }
 
 # Video upload endpoints
 @router.post("/upload-video")
@@ -1936,7 +2039,7 @@ WHAT MAKES US DIFFERENT:
             "url": website_url,
             "type": "auto_training",
             "status": "Used",
-            "created_at": datetime.utcnow(),
+            "created_at": datetime.now(),
             "description": "Auto-training from Carter Injury Law website"
         })
         
