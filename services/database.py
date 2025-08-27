@@ -497,4 +497,9 @@ def update_subscription_period(
     return get_subscription_by_stripe_id(stripe_subscription_id)
 
 # Initialize database on module import
-init_db() 
+try:
+    init_db()
+    print("✅ Database indexes initialized successfully")
+except Exception as e:
+    print(f"⚠️ Warning: Database index initialization failed: {e}")
+    print("This is usually not critical - indexes may already exist") 

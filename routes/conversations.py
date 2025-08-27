@@ -38,38 +38,18 @@ async def get_conversations(organization: dict = Depends(get_organization_from_a
         db = get_database()
         print(f"Database instance: {db}")
         
-        # Get organization ID and handle both ObjectId and string formats
-        org_id = organization.get("_id")
-        org_id_str = str(org_id) if org_id else None
+        # Get organization ID - use the 'id' field (UUID string) that conversations are saved with
+        org_id = organization.get("id")  # This is the UUID string that conversations use
+        org_id_str = org_id
         
         print(f"Looking for conversations with org_id: {org_id_str}")
-        print(f"Original org_id: {org_id}")
+        print(f"Organization object: {organization}")
         
-        # Try multiple approaches to find conversations
-        conversations = []
-        
-        # First try with string format
-        if org_id_str:
-            conversations = list(db.conversations.find(
-                {"organization_id": org_id_str}
-            ).sort("created_at", -1))
-            print(f"Found {len(conversations)} conversations with string format")
-        
-        # If no conversations found with string format, try ObjectId format
-        if not conversations and isinstance(org_id, ObjectId):
-            print(f"No conversations found with string format, trying ObjectId format")
-            conversations = list(db.conversations.find(
-                {"organization_id": org_id}
-            ).sort("created_at", -1))
-            print(f"Found {len(conversations)} conversations with ObjectId format")
-        
-        # If still no conversations, try with the organization's 'id' field
-        if not conversations and organization.get("id"):
-            print(f"No conversations found with _id, trying organization 'id' field: {organization.get('id')}")
-            conversations = list(db.conversations.find(
-                {"organization_id": organization.get("id")}
-            ).sort("created_at", -1))
-            print(f"Found {len(conversations)} conversations with organization 'id' field")
+        # Find conversations using the correct organization ID
+        conversations = list(db.conversations.find(
+            {"organization_id": org_id_str}
+        ).sort("created_at", -1))
+        print(f"Found {len(conversations)} conversations with correct org_id")
         
         # Debug: Show all conversations in database for this org
         print(f"=== DEBUG: All conversations in database ===")
@@ -94,7 +74,7 @@ async def get_conversations(organization: dict = Depends(get_organization_from_a
                 
             if session_id not in grouped_conversations:
                 # Get user profile for this session
-                user_profile = get_user_profile(organization.get("_id"), session_id)
+                user_profile = get_user_profile(org_id_str, session_id)
                 user_name = None
                 user_email = None
                 
@@ -171,7 +151,7 @@ async def get_conversation(
     organization: dict = Depends(get_organization_from_api_key)
 ):
     """
-    Get a specific conversation by ID
+    Get a specific conversation by ID saved in the database
     """
     print("=== Starting get_conversation ===")
     print(f"Conversation ID: {conversation_id}")
@@ -254,36 +234,60 @@ async def get_conversations_by_session(
     session_id: str,
     organization: dict = Depends(get_organization_from_api_key)
 ):
+    # Clean the session_id by removing any whitespace or newlines
+    session_id = session_id.strip()
     """
-    Get all conversations for a specific session
+    Get all conversations for a specific session sahak islalm
     """
     print(f"=== Getting conversations for session: {session_id} ===")
     
     try:
         db = get_database()
         
-        # Get organization ID and handle both ObjectId and string formats
-        org_id = organization.get("_id")
-        if isinstance(org_id, ObjectId):
-            org_id_str = str(org_id)
-        else:
-            org_id_str = org_id
+        # Get organization ID - use the 'id' field (UUID string) that conversations are saved with
+        org_id = organization.get("id")  # This is the UUID string that conversations use
+        org_id_str = org_id
+        print(f"[DEBUG] Using organization ID: {org_id_str}")
+        print(f"[DEBUG] Organization object: {organization}")
         
         # Get all conversations for this session
+        print(f"[DEBUG] Querying conversations for org_id: {org_id_str}, session_id: '{session_id}'")
+        print(f"[DEBUG] Session ID length: {len(session_id)}")
+        print(f"[DEBUG] Session ID bytes: {session_id.encode()}")
+        
+        # First, let's check what conversations exist in the database
+        all_conversations = list(db.conversations.find({}).sort("created_at", -1))
+        print(f"[DEBUG] Total conversations in database: {len(all_conversations)}")
+        
+        # Check for any conversations with similar session_ids
+        for conv in all_conversations[:10]:  # Check first 10
+            conv_session_id = conv.get("session_id", "")
+            conv_org_id = conv.get("organization_id", "")
+            if conv_session_id:
+                print(f"[DEBUG] Found conversation with session_id: '{conv_session_id}' (length: {len(conv_session_id)})")
+                print(f"[DEBUG] Conversation org_id: '{conv_org_id}' vs query org_id: '{org_id_str}'")
+                if session_id in conv_session_id or conv_session_id in session_id:
+                    print(f"[DEBUG] Potential match found!")
+        
         conversations = list(db.conversations.find({
             "organization_id": org_id_str,
             "session_id": session_id
         }).sort("created_at", 1))  # Sort chronologically
         
-        # If no conversations found with string format, try ObjectId format
-        if not conversations and isinstance(org_id, ObjectId):
+        print(f"[DEBUG] Found {len(conversations)} conversations with correct org_id")
+        
+        # If still no conversations, try a partial match on session_id
+        if not conversations:
+            print(f"[DEBUG] Trying partial match on session_id")
+            # Try to find conversations where session_id contains our cleaned session_id
             conversations = list(db.conversations.find({
-                "organization_id": org_id,
-                "session_id": session_id
-            }).sort("created_at", 1))  # Sort chronologically
+                "organization_id": org_id_str,
+                "session_id": {"$regex": session_id.replace("\\n", "").replace("\n", "")}
+            }).sort("created_at", 1))
+            print(f"[DEBUG] Found {len(conversations)} conversations with partial match")
         
         # Get user profile for this session
-        user_profile = get_user_profile(organization.get("_id"), session_id)
+        user_profile = get_user_profile(org_id_str, session_id)
         user_name = None
         user_email = None
         
@@ -299,13 +303,20 @@ async def get_conversations_by_session(
             if "created_at" in conv and conv["created_at"]:
                 conv["created_at"] = conv["created_at"].isoformat() if hasattr(conv["created_at"], 'isoformat') else str(conv["created_at"])
         
-        return {
+        # Debug: Print the response structure
+        response_data = {
             "session_id": session_id,
             "user_name": user_name,
             "user_email": user_email,
             "conversations": conversations,
             "message_count": len(conversations)
         }
+        
+        print(f"[DEBUG] API Response for session {session_id}:")
+        print(f"[DEBUG] Conversations count: {len(conversations)}")
+        print(f"[DEBUG] First conversation structure: {conversations[0] if conversations else 'No conversations'}")
+        
+        return response_data
         
     except Exception as e:
         print(f"Error getting conversations by session: {str(e)}")
