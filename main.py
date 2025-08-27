@@ -211,7 +211,7 @@ app.add_middleware(
     allow_origins=["*"],  # Allow all origins
     allow_credentials=True,
     allow_methods=["*"],  # Allow all methods
-    allow_headers=["*"],  # Allow all headers
+    allow_headers=["*"],  # Allow all headers including WebSocket headers
     expose_headers=["*"],  # Expose all headers
     max_age=3600
 )
@@ -228,6 +228,12 @@ async def add_security_headers(request: Request, call_next):
     response.headers["Access-Control-Allow-Credentials"] = "true"
     response.headers["Cross-Origin-Opener-Policy"] = "unsafe-none"
     response.headers["Cross-Origin-Embedder-Policy"] = "unsafe-none"
+    
+    # Add WebSocket upgrade headers
+    if "upgrade" in request.headers and request.headers["upgrade"].lower() == "websocket":
+        response.headers["Connection"] = "Upgrade"
+        response.headers["Upgrade"] = "websocket"
+    
     return response
 
 # Move all other middleware after CORS

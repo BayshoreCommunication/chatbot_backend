@@ -53,33 +53,41 @@ def init_socketio(app: FastAPI):
     sio = socketio.AsyncServer(
         cors_allowed_origins="*",
         async_mode='asgi',
-        logger=False,  # Disable verbose socket.io logging
-        engineio_logger=False,  # Disable verbose engine.io logging
+        logger=True,  # Enable logging for debugging
+        engineio_logger=True,  # Enable engine.io logging for debugging
         ping_timeout=60,
         ping_interval=25,
         max_http_buffer_size=1e8,
         allow_upgrades=True,
-        transports=['websocket', 'polling']
+        transports=['websocket', 'polling'],
+        cors_credentials=True,
+        always_connect=True
     )
     
     @sio.event
     async def connect(sid, environ, auth):
         logger.info(f"Client connected: {sid}")
+        logger.info(f"Environment: {environ}")
+        logger.info(f"Auth: {auth}")
         
         try:
             # Get API key from auth or query params
             api_key = None
             if auth and isinstance(auth, dict):
                 api_key = auth.get('apiKey')
+                logger.info(f"API key from auth: {api_key}")
             
             if not api_key:
                 # Try to get from query params
                 query_string = environ.get('QUERY_STRING', '')
+                logger.info(f"Query string: {query_string}")
                 if 'apiKey=' in query_string:
                     for param in query_string.split('&'):
                         if param.startswith('apiKey='):
                             api_key = param.split('=')[1]
                             break
+            
+            logger.info(f"Final API key: {api_key}")
             
             if api_key:
                 # Auto-join organization room using API key
@@ -102,6 +110,7 @@ def init_socketio(app: FastAPI):
                 }, room=sid)
         except Exception as e:
             logger.error(f"Error in socket connect: {str(e)}")
+            logger.error(f"Exception details: {type(e).__name__}: {str(e)}")
             # Still allow connection even if there's an error
             await sio.emit('connection_confirmed', {
                 'status': 'connected_with_error',
@@ -111,22 +120,49 @@ def init_socketio(app: FastAPI):
     @sio.event
     async def disconnect(sid):
         logger.info(f"Client disconnected: {sid}")
+        # Clean up any rooms the client was in
+        try:
+            rooms = await sio.get_rooms(sid)
+            for room in rooms:
+                await sio.leave_room(sid, room)
+                logger.info(f"Client {sid} left room: {room}")
+        except Exception as e:
+            logger.error(f"Error cleaning up rooms for client {sid}: {str(e)}")
 
     @sio.event
     async def join_room(sid, data):
+        logger.info(f"Join room request from {sid}: {data}")
         room = data.get('room')
         if room:
-            await sio.enter_room(sid, room)
-            print(f"[SOCKET.IO] Client {sid} explicitly joined room: {room}")
-            
-            # Confirm room join
-            await sio.emit('room_joined', {
-                'room': room,
-                'status': 'joined'
+            try:
+                await sio.enter_room(sid, room)
+                logger.info(f"Client {sid} explicitly joined room: {room}")
+                
+                # Confirm room join
+                await sio.emit('room_joined', {
+                    'room': room,
+                    'status': 'joined'
+                }, room=sid)
+            except Exception as e:
+                logger.error(f"Error joining room {room} for client {sid}: {str(e)}")
+                await sio.emit('room_join_error', {
+                    'room': room,
+                    'error': str(e)
+                }, room=sid)
+        else:
+            logger.warning(f"Client {sid} tried to join room without room name")
+            await sio.emit('room_join_error', {
+                'error': 'No room name provided'
             }, room=sid)
     
     # Mount Socket.IO on the FastAPI app at /socket.io/
-    socket_asgi_app = socketio.ASGIApp(sio, app, socketio_path='/socket.io')
+    socket_asgi_app = socketio.ASGIApp(
+        sio, 
+        app, 
+        socketio_path='/socket.io',
+        cors_allowed_origins="*",
+        cors_credentials=True
+    )
     return socket_asgi_app
 
 # Initialize collections and indexes
