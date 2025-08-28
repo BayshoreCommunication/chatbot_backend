@@ -14,7 +14,7 @@ import json
 
 router = APIRouter()
 
-# Dependency for API key validation
+# Dependency for API key  validation
 from fastapi import Header
 
 async def get_organization_from_api_key_header(api_key: Optional[str] = Header(None, alias="X-API-Key")):
