@@ -1,7 +1,7 @@
 # Configure logging first before importing other modules
 import logging_config
 
-from fastapi import FastAPI, Request, Depends, HTTPException
+from fastapi import FastAPI, Request, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -358,6 +358,23 @@ async def github_webhook(req: Request):
     # Optional: you can verify GitHub secret here
     subprocess.Popen(["/var/www/chatbot_backend/deploy.sh"])
     return {"message": "Deployment triggered"}
+
+# WebSocket probe endpoints for testing WebSocket functionality
+@app.get("/healthz")
+async def healthz():
+    """Health check endpoint for WebSocket probe"""
+    return {"status": "ok"}
+
+@app.websocket("/ws")
+async def ws_endpoint(ws: WebSocket):
+    """WebSocket endpoint for testing WebSocket functionality"""
+    await ws.accept()
+    try:
+        while True:
+            msg = await ws.receive_text()
+            await ws.send_text(f"echo: {msg}")
+    except WebSocketDisconnect:
+        pass
 
 
 # Create the final app instance
