@@ -36,6 +36,7 @@ import os
 from pydantic import BaseModel
 from datetime import datetime
 import pymongo
+from bson import ObjectId
 import re
 import openai
 import socketio
@@ -1056,6 +1057,59 @@ async def get_upload_history(
         history.append(item)
     
     return history
+
+@router.delete("/upload_history/{item_id}")
+async def delete_upload_history_item(
+    item_id: str,
+    organization=Depends(get_organization_from_api_key)
+):
+    """Delete a specific upload history item and its associated document from the knowledge base"""
+    org_id = organization["id"]
+    
+    try:
+        # Find the item in upload history
+        item = upload_history_collection.find_one({
+            "_id": ObjectId(item_id),
+            "org_id": org_id
+        })
+        
+        if not item:
+            raise HTTPException(status_code=404, detail="Upload history item not found")
+        
+        # Delete from upload history
+        result = upload_history_collection.delete_one({
+            "_id": ObjectId(item_id),
+            "org_id": org_id
+        })
+        
+        if result.deleted_count == 0:
+            raise HTTPException(status_code=404, detail="Failed to delete upload history item")
+        
+        # Delete from vector database if we have document info
+        if "file_name" in item or "url" in item:
+            try:
+                # Use the existing delete_organization_document function
+                from services.database import delete_organization_document
+                
+                # For now, we'll delete by file_name or url as document_id
+                document_id = item.get("file_name") or item.get("url")
+                if document_id:
+                    delete_organization_document(org_id, document_id)
+                    print(f"Deleted document from vector database: {document_id}")
+            except Exception as e:
+                print(f"Warning: Failed to delete from vector database: {str(e)}")
+                # Continue even if vector deletion fails
+        
+        return {
+            "status": "success",
+            "message": "Upload history item and associated document deleted successfully"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error deleting upload history item: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/upload_document")
 async def upload_document(
