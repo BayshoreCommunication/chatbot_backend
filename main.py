@@ -359,48 +359,31 @@ async def github_webhook(req: Request):
     subprocess.Popen(["/var/www/chatbot_backend/deploy.sh"])
     return {"message": "Deployment triggered"}
 
+# Add WebSocket endpoints to the FastAPI app BEFORE it gets wrapped
+@app.get("/healthz")
+async def healthz():
+    """Health check endpoint for WebSocket probe"""
+    return {"status": "ok"}
+
+@app.websocket("/ws")
+async def ws_endpoint(ws: WebSocket):
+    """WebSocket endpoint for testing WebSocket functionality"""
+    await ws.accept()
+    try:
+        while True:
+            msg = await ws.receive_text()
+            await ws.send_text(f"echo: {msg}")
+    except WebSocketDisconnect:
+        pass
+
 # Create the final app instance
 if chatbot_available and 'socket_app' in locals():
     # If Socket.IO is available, use the wrapped app
     app = socket_app  # This ensures uvicorn uses the Socket.IO wrapped app
     print("Using Socket.IO wrapped application")
-    
-    # Add WebSocket endpoints to the Socket.IO wrapped app
-    @app.get("/healthz")
-    async def healthz():
-        """Health check endpoint for WebSocket probe"""
-        return {"status": "ok"}
-
-    @app.websocket("/ws")
-    async def ws_endpoint(ws: WebSocket):
-        """WebSocket endpoint for testing WebSocket functionality"""
-        await ws.accept()
-        try:
-            while True:
-                msg = await ws.receive_text()
-                await ws.send_text(f"echo: {msg}")
-        except WebSocketDisconnect:
-            pass
 else:
     # Fallback to regular FastAPI app
     print("Using regular FastAPI application")
-    
-    # Add WebSocket endpoints to the regular FastAPI app
-    @app.get("/healthz")
-    async def healthz():
-        """Health check endpoint for WebSocket probe"""
-        return {"status": "ok"}
-
-    @app.websocket("/ws")
-    async def ws_endpoint(ws: WebSocket):
-        """WebSocket endpoint for testing WebSocket functionality"""
-        await ws.accept()
-        try:
-            while True:
-                msg = await ws.receive_text()
-                await ws.send_text(f"echo: {msg}")
-        except WebSocketDisconnect:
-            pass
 
 if __name__ == "__main__":
     import uvicorn
