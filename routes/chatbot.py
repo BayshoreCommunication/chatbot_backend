@@ -159,9 +159,7 @@ def init_socketio(app: FastAPI):
     socket_asgi_app = socketio.ASGIApp(
         sio, 
         app, 
-        socketio_path='/socket.io',
-        cors_allowed_origins=["*"],
-        cors_credentials=True
+        socketio_path='/socket.io'
     )
     return socket_asgi_app
 
