@@ -378,7 +378,7 @@ async def ask_question(
         # Import the enhanced conversation flow functions
         from services.conversation_flow import (
             process_user_message_for_info, extract_name_from_text, extract_email_from_text,
-            get_enhanced_greeting, get_contextual_response, should_collect_contact_info, 
+            get_enhanced_greeting, get_contextual_response, get_conversation_progression_response, should_collect_contact_info, 
             should_offer_calendar, get_natural_contact_prompt, get_calendar_offer
         )
         
@@ -395,7 +395,44 @@ async def ask_question(
         
         print(f"[DEBUG] Has name: {has_name}, Has email: {has_email}, Conversation count: {conversation_count}")
         
-        # STEP 1: Check for contextual responses first (before AI analysis)
+        # STEP 1: Check for conversation progression responses first (prevents repetitive responses)
+        progression_response = get_conversation_progression_response(request.question, conversation_history, request.user_data)
+        if progression_response:
+            print(f"[DEBUG] Using conversation progression response for: {request.question}")
+            
+            # Store and add to history
+            add_conversation_message(
+                organization_id=org_id,
+                visitor_id=visitor["id"],
+                session_id=request.session_id,
+                role="assistant",
+                content=progression_response,
+                metadata={"mode": "faq", "progression": True}
+            )
+            request.user_data["conversation_history"].append({
+                "role": "assistant",
+                "content": progression_response
+            })
+            
+            # Emit assistant message to dashboard
+            await sio.emit('new_message', {
+                'session_id': request.session_id,
+                'message': {
+                    'role': 'assistant',
+                    'content': progression_response,
+                    'timestamp': datetime.now().isoformat()
+                },
+                'organization_id': org_id
+            }, room=org_api_key)
+            
+            return {
+                "answer": progression_response,
+                "mode": "faq",
+                "language": "en",
+                "user_data": request.user_data
+            }
+        
+        # STEP 2: Check for contextual responses
         contextual_response = get_contextual_response(request.question, conversation_history, request.user_data)
         if contextual_response:
             print(f"[DEBUG] Using contextual response for: {request.question}")
@@ -432,7 +469,7 @@ async def ask_question(
                 "user_data": request.user_data
             }
         
-        # STEP 2: Check if this is a greeting that should get an enhanced response
+        # STEP 3: Check if this is a greeting that should get an enhanced response
         if conversation_count == 0 or any(word in request.question.lower() for word in ["hello", "hi", "hey", "carter injury law"]):
             greeting_response = get_enhanced_greeting(request.question, conversation_count, request.user_data)
             if greeting_response:
@@ -470,10 +507,10 @@ async def ask_question(
                     "user_data": request.user_data
                 }
         
-        # STEP 3: Check if we should collect contact info naturally
+        # STEP 4: Check if we should collect contact info naturally
         should_collect = should_collect_contact_info(conversation_history, request.question, request.user_data)
         
-        # STEP 4: Check if we should offer calendar scheduling
+        # STEP 5: Check if we should offer calendar scheduling
         should_offer_cal = should_offer_calendar(conversation_history, request.question, request.user_data)
         if should_offer_cal:
             calendar_offer = get_calendar_offer(request.user_data)

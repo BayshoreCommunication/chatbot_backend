@@ -72,11 +72,72 @@ def get_enhanced_greeting(user_query: str, conversation_count: int, user_data: D
         
         return random.choice(responses)
 
+def get_conversation_progression_response(user_query: str, conversation_history: list, user_data: Dict[str, Any]) -> Optional[str]:
+    """
+    Handle conversation progression and prevent repetitive responses
+    by providing appropriate next steps based on conversation context
+    """
+    clean_query = user_query.lower().strip()
+    
+    # Check for "next step" or "what next" type questions
+    next_step_indicators = [
+        "what should next", "what next", "next step", "what now", "what do i do",
+        "how do i", "what should i do", "next steps", "what's next"
+    ]
+    
+    if any(indicator in clean_query for indicator in next_step_indicators):
+        # Analyze conversation context to provide appropriate next steps
+        recent_messages = conversation_history[-6:] if len(conversation_history) >= 6 else conversation_history
+        
+        # Check if user mentioned car accident and medical attention
+        has_car_accident = any("car accident" in msg.get("content", "").lower() for msg in recent_messages)
+        has_medical_attention = any("medical attention" in msg.get("content", "").lower() or 
+                                  "doctor" in msg.get("content", "").lower() or
+                                  "checked" in msg.get("content", "").lower() for msg in recent_messages)
+        
+        if has_car_accident and has_medical_attention:
+            return "Great! Since you've received medical attention, the next important step is to document everything. Here's what you should do:\n\n1. **Document the accident** - Take photos of your injuries, damage to your vehicle, and the accident scene if possible\n2. **Keep all medical records** - Save all bills, prescriptions, and doctor's notes\n3. **Don't talk to insurance companies** - Let us handle all communications\n4. **Schedule a consultation** - We can review your case and explain your rights\n\nWould you like to schedule a free consultation to discuss your case in detail?"
+        
+        # Check if user mentioned injury or accident
+        has_injury = any("injury" in msg.get("content", "").lower() or 
+                        "hurt" in msg.get("content", "").lower() or
+                        "pain" in msg.get("content", "").lower() for msg in recent_messages)
+        
+        if has_injury:
+            return "I understand you've been injured. Here are the next steps:\n\n1. **Continue medical treatment** - Follow your doctor's recommendations\n2. **Document everything** - Keep records of all medical visits, medications, and how the injury affects your daily life\n3. **Don't sign anything** - Insurance companies may try to get you to sign documents that limit your rights\n4. **Contact us** - We can help you understand your legal options and fight for the compensation you deserve\n\nWould you like to schedule a free consultation to discuss your case?"
+        
+        # Generic next steps for legal help
+        return "Here are the next steps to get you the help you need:\n\n1. **Schedule a free consultation** - We'll review your case and explain your options\n2. **Gather documentation** - Any relevant documents, photos, or evidence you have\n3. **Don't delay** - There may be time limits on your case\n4. **We'll handle the rest** - Our experienced attorneys will fight for your rights\n\nWould you like to schedule a consultation? I can help you book a time that works for you."
+    
+    # Check for follow-up questions after initial responses
+    follow_up_indicators = [
+        "yeah", "yes", "okay", "ok", "sure", "alright", "right", "correct"
+    ]
+    
+    if any(indicator in clean_query for indicator in follow_up_indicators):
+        # Check recent conversation context
+        recent_messages = conversation_history[-4:] if len(conversation_history) >= 4 else conversation_history
+        
+        # If user just confirmed they received medical attention
+        if any("medical attention" in msg.get("content", "").lower() for msg in recent_messages[-2:]):
+            return "Perfect! Since you've received medical attention, let's talk about your next steps. Have you been contacted by any insurance companies yet? And do you have any photos or documentation from the accident?"
+        
+        # If user just confirmed they were in a car accident
+        if any("car accident" in msg.get("content", "").lower() for msg in recent_messages[-2:]):
+            return "I'm sorry you're going through this. Car accidents can be overwhelming. Have you received any medical attention for your injuries? And do you have any documentation from the accident scene?"
+    
+    return None
+
 def get_contextual_response(user_query: str, conversation_history: list, user_data: Dict[str, Any]) -> Optional[str]:
     """Generate contextual responses for common patterns"""
     
     clean_query = user_query.lower().strip()
     conversation_count = len(conversation_history)
+    
+    # First check for conversation progression
+    progression_response = get_conversation_progression_response(user_query, conversation_history, user_data)
+    if progression_response:
+        return progression_response
     
     # Common question patterns and their responses
     common_patterns = {
@@ -120,7 +181,7 @@ def get_contextual_response(user_query: str, conversation_history: list, user_da
     
     # Check for specific injury types
     injury_types = {
-        r"car accident": "I'm sorry to hear about your car accident. Car accidents can be complex, and you may be entitled to compensation for medical bills, lost wages, and pain and suffering. Would you like to discuss your case?",
+        r"car accident": "I'm sorry to hear about your car accident. Car accidents can be complex, and you may be entitled to compensation for medical bills, lost wages, and pain and suffering. Have you received medical attention for your injuries?",
         r"slip and fall": "Slip and fall accidents can result in serious injuries. Property owners have a duty to maintain safe conditions. Let me help you understand your rights and options.",
         r"medical malpractice": "Medical malpractice cases are complex and require specialized knowledge. Our attorneys have experience handling these cases and can evaluate whether you have a valid claim.",
         r"wrongful death": "I'm so sorry for your loss. Wrongful death cases are among the most difficult, and our attorneys handle them with the compassion and expertise they require.",

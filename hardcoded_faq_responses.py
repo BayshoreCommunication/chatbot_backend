@@ -79,6 +79,23 @@ def find_hardcoded_response(user_question):
     # Convert to lowercase for matching
     question_lower = user_question.lower().strip()
     
+    # Skip hardcoded responses for "next step" type questions to allow conversation progression
+    next_step_indicators = [
+        "what should next", "what next", "next step", "what now", "what do i do",
+        "how do i", "what should i do", "next steps", "what's next"
+    ]
+    
+    if any(indicator in question_lower for indicator in next_step_indicators):
+        return None
+    
+    # Skip hardcoded responses for follow-up confirmations
+    follow_up_indicators = [
+        "yeah", "yes", "okay", "ok", "sure", "alright", "right", "correct"
+    ]
+    
+    if any(indicator in question_lower for indicator in follow_up_indicators):
+        return None
+    
     # Try exact matches first
     if question_lower in HARDCODED_FAQS:
         return HARDCODED_FAQS[question_lower]
