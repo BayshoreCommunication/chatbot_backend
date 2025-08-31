@@ -263,6 +263,47 @@ def get_natural_contact_prompt(user_data: Dict[str, Any], conversation_count: in
         else:
             return f"To send you helpful information, {user_data['name']}, what's your email address?"
 
+def get_natural_email_prompt(user_data: Dict[str, Any], conversation_count: int) -> str:
+    """Generate natural prompts specifically for email collection"""
+    
+    name = user_data.get("name", "")
+    
+    if conversation_count < 10:
+        # Early in conversation - very gentle
+        if name:
+            return f"Thanks, {name}! If you'd like me to send you some helpful information, what's your email address?"
+        else:
+            return "If you'd like me to send you some helpful information, what's your email address?"
+    
+    elif conversation_count < 15:
+        # Mid-conversation - more direct but still friendly
+        if name:
+            return f"Thanks, {name}! If you'd like me to send you some helpful resources, what's your email address?"
+        else:
+            return "If you'd like me to send you some helpful resources, what's your email address?"
+    
+    else:
+        # Later in conversation - more direct
+        if name:
+            return f"To send you helpful information, {name}, what's your email address?"
+        else:
+            return "To send you helpful information, what's your email address?"
+
+def get_natural_name_prompt(user_data: Dict[str, Any], conversation_count: int) -> str:
+    """Generate natural prompts specifically for name collection"""
+    
+    if conversation_count < 10:
+        # Early in conversation - very gentle
+        return "By the way, what should I call you? This helps me personalize our conversation."
+    
+    elif conversation_count < 15:
+        # Mid-conversation - more direct but still friendly
+        return "I'd love to personalize our conversation better. What's your first name?"
+    
+    else:
+        # Later in conversation - more direct
+        return "To better assist you, could you tell me your name?"
+
 def get_calendar_offer(user_data: Dict[str, Any]) -> str:
     """Generate natural calendar scheduling offer"""
     

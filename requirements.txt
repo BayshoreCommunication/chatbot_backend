@@ -95,6 +95,7 @@ pydantic_core==2.33.2
 Pygments==2.19.2
 PyJWT==2.10.1
 pymongo==4.14.0
+pytz==2024.1
 pyparsing==3.2.3
 pypdf==6.0.0
 pytest==8.4.1

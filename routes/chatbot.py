@@ -192,7 +192,7 @@ def is_first_message(org_id: str, session_id: str) -> bool:
 class ChatWidgetSettings(BaseModel):
     name: str
     selectedColor: str
-    leadCapture: boolgti
+    leadCapture: bool
     botBehavior: str
     ai_behavior: Optional[str] = ""
     avatarUrl: Optional[str] = None
@@ -379,8 +379,12 @@ async def ask_question(
         from services.conversation_flow import (
             process_user_message_for_info, extract_name_from_text, extract_email_from_text,
             get_enhanced_greeting, get_contextual_response, get_conversation_progression_response, should_collect_contact_info, 
-            should_offer_calendar, get_natural_contact_prompt, get_calendar_offer
+            should_offer_calendar, get_natural_contact_prompt, get_natural_email_prompt, get_natural_name_prompt, get_calendar_offer
         )
+        
+        # Import accident intake service
+        from services.accident_intake import get_intake_service, reset_intake_session
+        from models.accident_intake import save_accident_intake
         
         # Process the current message for name/email extraction
         request.user_data = process_user_message_for_info(request.question, request.user_data)
@@ -395,7 +399,70 @@ async def ask_question(
         
         print(f"[DEBUG] Has name: {has_name}, Has email: {has_email}, Conversation count: {conversation_count}")
         
-        # STEP 1: Check for conversation progression responses first (prevents repetitive responses)
+        # Only check for contact collection if we don't already have both name and email
+        should_collect = False
+        if not (has_name and has_email):
+            should_collect = should_collect_contact_info(conversation_history, request.question, request.user_data)
+        
+        print(f"[DEBUG] Should collect contact info: {should_collect}")
+        
+        # STEP 1: Check for accident intake first
+        # Check if user mentions car accident and we should start intake
+        accident_keywords = ['car accident', 'auto accident', 'vehicle accident', 'crash', 'collision', 'hit']
+        is_accident_related = any(keyword in request.question.lower() for keyword in accident_keywords)
+        
+        # Get or create intake service for this session
+        intake_service = get_intake_service(request.session_id)
+        
+        # If user mentions accident and we're not already in intake mode, start intake
+        if is_accident_related and not request.user_data.get("intake_mode"):
+            request.user_data["intake_mode"] = True
+            intake_service.reset_intake()
+            print("[DEBUG] Starting accident intake mode")
+        
+        # If in intake mode, process with intake service
+        if request.user_data.get("intake_mode") and not intake_service.is_intake_complete():
+            intake_response, updated_user_data = intake_service.process_message(request.question, request.user_data)
+            request.user_data.update(updated_user_data)
+            
+            # Store and add to history
+            add_conversation_message(
+                organization_id=org_id,
+                visitor_id=visitor["id"],
+                session_id=request.session_id,
+                role="assistant",
+                content=intake_response,
+                metadata={"mode": "intake", "step": intake_service.conversation_step}
+            )
+            request.user_data["conversation_history"].append({
+                "role": "assistant",
+                "content": intake_response
+            })
+            
+            # Emit assistant message to dashboard
+            await sio.emit('new_message', {
+                'session_id': request.session_id,
+                'message': {
+                    'role': 'assistant',
+                    'content': intake_response,
+                    'timestamp': datetime.now().isoformat()
+                },
+                'organization_id': org_id
+            }, room=org_api_key)
+            
+            # Save intake data if completed
+            if intake_service.is_intake_complete():
+                save_accident_intake(org_id, request.session_id, intake_service.get_intake_data())
+            
+            return {
+                "answer": intake_response,
+                "mode": "intake",
+                "language": "en",
+                "user_data": request.user_data,
+                "intake_data": intake_service.get_intake_data()
+            }
+        
+        # STEP 2: Check for conversation progression responses (prevents repetitive responses)
         progression_response = get_conversation_progression_response(request.question, conversation_history, request.user_data)
         if progression_response:
             print(f"[DEBUG] Using conversation progression response for: {request.question}")
@@ -432,7 +499,7 @@ async def ask_question(
                 "user_data": request.user_data
             }
         
-        # STEP 2: Check for contextual responses
+        # STEP 3: Check for contextual responses
         contextual_response = get_contextual_response(request.question, conversation_history, request.user_data)
         if contextual_response:
             print(f"[DEBUG] Using contextual response for: {request.question}")
@@ -469,7 +536,7 @@ async def ask_question(
                 "user_data": request.user_data
             }
         
-        # STEP 3: Check if this is a greeting that should get an enhanced response
+        # STEP 4: Check if this is a greeting that should get an enhanced response
         if conversation_count == 0 or any(word in request.question.lower() for word in ["hello", "hi", "hey", "carter injury law"]):
             greeting_response = get_enhanced_greeting(request.question, conversation_count, request.user_data)
             if greeting_response:
@@ -507,10 +574,9 @@ async def ask_question(
                     "user_data": request.user_data
                 }
         
-        # STEP 4: Check if we should collect contact info naturally
-        should_collect = should_collect_contact_info(conversation_history, request.question, request.user_data)
+        # STEP 5: Contact info collection is already handled above
         
-        # STEP 5: Check if we should offer calendar scheduling
+        # STEP 6: Check if we should offer calendar scheduling
         should_offer_cal = should_offer_calendar(conversation_history, request.question, request.user_data)
         if should_offer_cal:
             calendar_offer = get_calendar_offer(request.user_data)
@@ -549,6 +615,7 @@ async def ask_question(
             }
         
         # Handle contact information collection naturally
+        # Only collect if we don't already have both name and email
         if should_collect and not has_name:
             print("[DEBUG] Name not found, processing name collection")
             
@@ -638,8 +705,8 @@ async def ask_question(
                 else:
                     print("[DEBUG] No valid name found")
                     
-                    # Use natural contact prompt
-                    name_prompt = get_natural_contact_prompt(request.user_data, conversation_count)
+                    # Use natural name prompt
+                    name_prompt = get_natural_name_prompt(request.user_data, conversation_count)
                     
                     # Store and add to history
                     add_conversation_message(
@@ -790,7 +857,7 @@ async def ask_question(
                 }
             else:
                 # Use natural email prompt
-                email_prompt = get_natural_contact_prompt(request.user_data, conversation_count)
+                email_prompt = get_natural_email_prompt(request.user_data, conversation_count)
                 
                 # Store and add to history
                 add_conversation_message(
