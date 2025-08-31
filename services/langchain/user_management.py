@@ -93,10 +93,11 @@ def handle_name_collection(query, user_data, mode, language):
             name = extracted_name
         else:
             # Fall back to basic extraction if query looks like just a name
-            # Only treat as name if we're confident it's not a refusal
+            # Only treat as name if we're confident it's not a refusal and not an email
             if (not query.endswith("?") and len(query.split()) <= 3 and 
                 not any(keyword in query.lower() for keyword in skip_keywords) and
-                not any(pattern in query.lower() for pattern in refusal_patterns)):
+                not any(pattern in query.lower() for pattern in refusal_patterns) and
+                "@" not in query and "." not in query):  # Don't treat emails as names
                 name = query.strip()
             else:
                 name = None

@@ -284,6 +284,11 @@ def extract_name_from_text(text: str) -> Tuple[Optional[str], bool]:
     """
     text = text.strip()
     
+    # Check if the text contains an email address - if so, it's not a name
+    email_pattern = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
+    if re.search(email_pattern, text):
+        return None, False
+    
     # Check for refusal patterns first
     refusal_patterns = [
         r'\b(skip|no|don\'t|dont|won\'t|wont|refuse|not now|later|anonymous)\b',
@@ -355,7 +360,28 @@ def extract_name_from_text(text: str) -> Tuple[Optional[str], bool]:
             
     except Exception as e:
         print(f"Error in OpenAI name extraction: {e}")
-        return None, False
+        # Fall back to basic regex extraction
+        return extract_name_with_regex_fallback(text), False
+
+def extract_name_with_regex_fallback(text: str) -> Optional[str]:
+    """Fallback name extraction using regex patterns"""
+    text = text.strip()
+    
+    # Simple name patterns
+    name_patterns = [
+        r'^([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)$',  # Capitalized words
+        r'^([a-z]+(?:\s[a-z]+)*)$',  # All lowercase words
+    ]
+    
+    for pattern in name_patterns:
+        match = re.search(pattern, text)
+        if match:
+            name = match.group(1).strip()
+            # Basic validation - should be 2-50 characters and not contain special chars
+            if 2 <= len(name) <= 50 and re.match(r'^[A-Za-z\s]+$', name):
+                return name
+    
+    return None
 
 def extract_email_from_text(text: str) -> Tuple[Optional[str], bool]:
     """

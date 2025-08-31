@@ -188,11 +188,11 @@ def is_first_message(org_id: str, session_id: str) -> bool:
     print(f"[DEBUG] Found {conversations_count} previous messages")
     return conversations_count == 0
 
-# Add new ChatWidgetSettings model
+# Add new ChatWidgetSettings model 
 class ChatWidgetSettings(BaseModel):
     name: str
     selectedColor: str
-    leadCapture: bool
+    leadCapture: boolgti
     botBehavior: str
     ai_behavior: Optional[str] = ""
     avatarUrl: Optional[str] = None
@@ -552,125 +552,127 @@ async def ask_question(
         if should_collect and not has_name:
             print("[DEBUG] Name not found, processing name collection")
             
-            # Use the improved name extraction function
-            extracted_name, is_refusal = extract_name_from_text(request.question)
-            print(f"[DEBUG] Extracted name: {extracted_name}, Is refusal: {is_refusal}")
-            
-            if is_refusal:
-                print("[DEBUG] User refused to share name")
-                request.user_data["name"] = "Anonymous User"
-                save_user_profile(org_id, request.session_id, request.user_data)
+            try:
+                # Use the improved name extraction function
+                extracted_name, is_refusal = extract_name_from_text(request.question)
+                print(f"[DEBUG] Extracted name: {extracted_name}, Is refusal: {is_refusal}")
                 
-                # Continue with natural conversation
-                continue_response = "No problem at all! How can I help you with your legal questions today?"
-                
-                # Store and add to history
-                add_conversation_message(
-                    organization_id=org_id,
-                    visitor_id=visitor["id"],
-                    session_id=request.session_id,
-                    role="assistant",
-                    content=continue_response,
-                    metadata={"mode": "faq"}
-                )
-                request.user_data["conversation_history"].append({
-                    "role": "assistant",
-                    "content": continue_response
-                })
-                
-                # Emit assistant message to dashboard
-                await sio.emit('new_message', {
-                    'session_id': request.session_id,
-                    'message': {
-                        'role': 'assistant',
-                        'content': continue_response,
-                        'timestamp': datetime.now().isoformat()
-                    },
-                    'organization_id': org_id
-                }, room=org_api_key)
-                
-                return {
-                    "answer": continue_response,
-                    "mode": "faq",
-                    "language": "en",
-                    "user_data": request.user_data
-                }
-            elif extracted_name:
-                print("[DEBUG] Valid name found")
-                request.user_data["name"] = extracted_name
-                save_user_profile(org_id, request.session_id, request.user_data)
-                
-                # Natural acknowledgment and continue conversation
-                acknowledgment = f"Nice to meet you, {extracted_name}! How can I help you with your legal questions today?"
-                
-                # Store and add to history
-                add_conversation_message(
-                    organization_id=org_id,
-                    visitor_id=visitor["id"],
-                    session_id=request.session_id,
-                    role="assistant",
-                    content=acknowledgment,
-                    metadata={"mode": "faq"}
-                )
-                request.user_data["conversation_history"].append({
-                    "role": "assistant",
-                    "content": acknowledgment
-                })
-                
-                # Emit assistant message to dashboard
-                await sio.emit('new_message', {
-                    'session_id': request.session_id,
-                    'message': {
-                        'role': 'assistant',
-                        'content': acknowledgment,
-                        'timestamp': datetime.now().isoformat()
-                    },
-                    'organization_id': org_id
-                }, room=org_api_key)
-                
-                return {
-                    "answer": acknowledgment,
-                    "mode": "faq",
-                    "language": "en",
-                    "user_data": request.user_data
-                }
-            else:
-                print("[DEBUG] No valid name found")
-                
-                # Use natural contact prompt
-                name_prompt = get_natural_contact_prompt(request.user_data, conversation_count)
-                
-                # Store and add to history
-                add_conversation_message(
-                    organization_id=org_id,
-                    visitor_id=visitor["id"],
-                    session_id=request.session_id,
-                    role="assistant",
-                    content=name_prompt,
-                    metadata={"mode": "faq"}
-                )
-                request.user_data["conversation_history"].append({
-                    "role": "assistant",
-                    "content": name_prompt
-                })
-                
-                # Emit assistant message to dashboard
-                await sio.emit('new_message', {
-                    'session_id': request.session_id,
-                    'message': {
-                        'role': 'assistant',
-                        'content': name_prompt,
-                        'timestamp': datetime.now().isoformat()
-                    },
-                    'organization_id': org_id
-                }, room=org_api_key)
-                
-                return {
-                    "answer": name_prompt,
-                    "mode": "faq",
-                    "language": "en",
-                    "user_data": request.user_data
-                }
+                if is_refusal:
+                    print("[DEBUG] User refused to share name")
+                    request.user_data["name"] = "Anonymous User"
+                    save_user_profile(org_id, request.session_id, request.user_data)
+                    
+                    # Continue with natural conversation
+                    continue_response = "No problem at all! How can I help you with your legal questions today?"
+                    
+                    # Store and add to history
+                    add_conversation_message(
+                        organization_id=org_id,
+                        visitor_id=visitor["id"],
+                        session_id=request.session_id,
+                        role="assistant",
+                        content=continue_response,
+                        metadata={"mode": "faq"}
+                    )
+                    request.user_data["conversation_history"].append({
+                        "role": "assistant",
+                        "content": continue_response
+                    })
+                    
+                    # Emit assistant message to dashboard
+                    await sio.emit('new_message', {
+                        'session_id': request.session_id,
+                        'message': {
+                            'role': 'assistant',
+                            'content': continue_response,
+                            'timestamp': datetime.now().isoformat()
+                        },
+                        'organization_id': org_id
+                    }, room=org_api_key)
+                    
+                    return {
+                        "answer": continue_response,
+                        "mode": "faq",
+                        "language": "en",
+                        "user_data": request.user_data
+                    }
+                elif extracted_name:
+                    print("[DEBUG] Valid name found")
+                    request.user_data["name"] = extracted_name
+                    save_user_profile(org_id, request.session_id, request.user_data)
+                    
+                    # Natural acknowledgment and continue conversation
+                    acknowledgment = f"Nice to meet you, {extracted_name}! How can I help you with your legal questions today?"
+                    
+                    # Store and add to history
+                    add_conversation_message(
+                        organization_id=org_id,
+                        visitor_id=visitor["id"],
+                        session_id=request.session_id,
+                        role="assistant",
+                        content=acknowledgment,
+                        metadata={"mode": "faq"}
+                    )
+                    request.user_data["conversation_history"].append({
+                        "role": "assistant",
+                        "content": acknowledgment
+                    })
+                    
+                    # Emit assistant message to dashboard
+                    await sio.emit('new_message', {
+                        'session_id': request.session_id,
+                        'message': {
+                            'role': 'assistant',
+                            'content': acknowledgment,
+                            'timestamp': datetime.now().isoformat()
+                        },
+                        'organization_id': org_id
+                    }, room=org_api_key)
+                    
+                    return {
+                        "answer": acknowledgment,
+                        "mode": "faq",
+                        "language": "en",
+                        "user_data": request.user_data
+                    }
+                else:
+                    print("[DEBUG] No valid name found")
+                    
+                    # Use natural contact prompt
+                    name_prompt = get_natural_contact_prompt(request.user_data, conversation_count)
+                    
+                    # Store and add to history
+                    add_conversation_message(
+                        organization_id=org_id,
+                        visitor_id=visitor["id"],
+                        session_id=request.session_id,
+                        role="assistant",
+                        content=name_prompt,
+                        metadata={"mode": "faq"}
+                    )
+                    request.user_data["conversation_history"].append({
+                        "role": "assistant",
+                        "content": name_prompt
+                    })
+                    
+                    # Emit assistant message to dashboard
+                    await sio.emit('new_message', {
+                        'session_id': request.session_id,
+                        'message': {
+                            'role': 'assistant',
+                            'content': name_prompt,
+                            'timestamp': datetime.now().isoformat()
+                        },
+                        'organization_id': org_id
+                    }, room=org_api_key)
+                    
+                    return {
+                        "answer": name_prompt,
+                        "mode": "faq",
+                        "language": "en",
+                        "user_data": request.user_data
+                    }
+            except Exception as e:
                 print(f"[DEBUG] Error in AI name extraction: {str(e)}")
                 fallback_response = handle_name_collection(request.question, request.user_data, "faq", "en")
                 
