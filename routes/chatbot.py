@@ -375,11 +375,11 @@ async def ask_question(
         print("[DEBUG] Checking user information collection")
         print(f"[DEBUG] Current user_data: {request.user_data}")
         
-        # Import the improved conversation flow functions
+        # Import the enhanced conversation flow functions
         from services.conversation_flow import (
             process_user_message_for_info, extract_name_from_text, extract_email_from_text,
-            get_natural_greeting, should_collect_contact_info, should_offer_calendar,
-            get_natural_contact_prompt, get_calendar_offer
+            get_enhanced_greeting, get_contextual_response, should_collect_contact_info, 
+            should_offer_calendar, get_natural_contact_prompt, get_calendar_offer
         )
         
         # Process the current message for name/email extraction
@@ -395,11 +395,121 @@ async def ask_question(
         
         print(f"[DEBUG] Has name: {has_name}, Has email: {has_email}, Conversation count: {conversation_count}")
         
-        # Check if we should collect contact info naturally
+        # STEP 1: Check for contextual responses first (before AI analysis)
+        contextual_response = get_contextual_response(request.question, conversation_history, request.user_data)
+        if contextual_response:
+            print(f"[DEBUG] Using contextual response for: {request.question}")
+            
+            # Store and add to history
+            add_conversation_message(
+                organization_id=org_id,
+                visitor_id=visitor["id"],
+                session_id=request.session_id,
+                role="assistant",
+                content=contextual_response,
+                metadata={"mode": "faq"}
+            )
+            request.user_data["conversation_history"].append({
+                "role": "assistant",
+                "content": contextual_response
+            })
+            
+            # Emit assistant message to dashboard
+            await sio.emit('new_message', {
+                'session_id': request.session_id,
+                'message': {
+                    'role': 'assistant',
+                    'content': contextual_response,
+                    'timestamp': datetime.now().isoformat()
+                },
+                'organization_id': org_id
+            }, room=org_api_key)
+            
+            return {
+                "answer": contextual_response,
+                "mode": "faq",
+                "language": "en",
+                "user_data": request.user_data
+            }
+        
+        # STEP 2: Check if this is a greeting that should get an enhanced response
+        if conversation_count == 0 or any(word in request.question.lower() for word in ["hello", "hi", "hey", "carter injury law"]):
+            greeting_response = get_enhanced_greeting(request.question, conversation_count, request.user_data)
+            if greeting_response:
+                print(f"[DEBUG] Using enhanced greeting for: {request.question}")
+                
+                # Store and add to history
+                add_conversation_message(
+                    organization_id=org_id,
+                    visitor_id=visitor["id"],
+                    session_id=request.session_id,
+                    role="assistant",
+                    content=greeting_response,
+                    metadata={"mode": "faq"}
+                )
+                request.user_data["conversation_history"].append({
+                    "role": "assistant",
+                    "content": greeting_response
+                })
+                
+                # Emit assistant message to dashboard
+                await sio.emit('new_message', {
+                    'session_id': request.session_id,
+                    'message': {
+                        'role': 'assistant',
+                        'content': greeting_response,
+                        'timestamp': datetime.now().isoformat()
+                    },
+                    'organization_id': org_id
+                }, room=org_api_key)
+                
+                return {
+                    "answer": greeting_response,
+                    "mode": "faq",
+                    "language": "en",
+                    "user_data": request.user_data
+                }
+        
+        # STEP 3: Check if we should collect contact info naturally
         should_collect = should_collect_contact_info(conversation_history, request.question, request.user_data)
         
-        # Check if we should offer calendar
+        # STEP 4: Check if we should offer calendar scheduling
         should_offer_cal = should_offer_calendar(conversation_history, request.question, request.user_data)
+        if should_offer_cal:
+            calendar_offer = get_calendar_offer(request.user_data)
+            print(f"[DEBUG] Offering calendar: {calendar_offer}")
+            
+            # Store and add to history
+            add_conversation_message(
+                organization_id=org_id,
+                visitor_id=visitor["id"],
+                session_id=request.session_id,
+                role="assistant",
+                content=calendar_offer,
+                metadata={"mode": "appointment"}
+            )
+            request.user_data["conversation_history"].append({
+                "role": "assistant",
+                "content": calendar_offer
+            })
+            
+            # Emit assistant message to dashboard
+            await sio.emit('new_message', {
+                'session_id': request.session_id,
+                'message': {
+                    'role': 'assistant',
+                    'content': calendar_offer,
+                    'timestamp': datetime.now().isoformat()
+                },
+                'organization_id': org_id
+            }, room=org_api_key)
+            
+            return {
+                "answer": calendar_offer,
+                "mode": "appointment",
+                "language": "en",
+                "user_data": request.user_data
+            }
         
         # Handle contact information collection naturally
         if should_collect and not has_name:

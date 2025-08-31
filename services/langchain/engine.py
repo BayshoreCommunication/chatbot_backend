@@ -257,32 +257,84 @@ def ask_bot(query: str, mode="faq", user_data=None, available_slots=None, sessio
         conversation_context = user_data["conversation_history"][-5:] if len(user_data["conversation_history"]) > 0 else []
         conversation_summary = "\n".join([f"{'User' if msg['role'] == 'user' else 'AI'}: {msg['content']}" for msg in conversation_context])
     
-    # STEP 0: Natural conversation flow - allow 4-5 exchanges before collecting info
+    # STEP 0: Enhanced conversation flow with contextual responses
     conversation_count = len(user_data["conversation_history"])
-    is_early_conversation = conversation_count <= 8  # Allow 4-5 exchanges (user + assistant pairs)
     
-    # Only collect info after natural conversation has started
-    if is_early_conversation and "name" not in user_data:
-        # For first few messages, don't force name collection - let conversation flow naturally
-        print(f"[DEBUG] Early conversation (count: {conversation_count}), skipping name collection")
-        pass  # Continue to normal chat flow
+    # Import enhanced conversation flow functions
+    from services.conversation_flow import (
+        get_enhanced_greeting, get_contextual_response, process_user_message_for_info,
+        should_collect_contact_info, should_offer_calendar, get_natural_contact_prompt,
+        get_calendar_offer
+    )
+    
+    # Process user message for name/email extraction
+    user_data = process_user_message_for_info(original_query, user_data)
+    
+    # Check for contextual responses first (before AI analysis)
+    contextual_response = get_contextual_response(original_query, user_data.get("conversation_history", []), user_data)
+    if contextual_response:
+        print(f"[DEBUG] Using contextual response for: {original_query}")
+        return {
+            "answer": contextual_response,
+            "mode": "faq",
+            "user_data": user_data,
+            "sources": [],
+            "suggested_faqs": []
+        }
+    
+    # Check if this is a greeting that should get an enhanced response
+    if conversation_count == 0 or any(word in original_query.lower() for word in ["hello", "hi", "hey", "carter injury law"]):
+        greeting_response = get_enhanced_greeting(original_query, conversation_count, user_data)
+        if greeting_response:
+            print(f"[DEBUG] Using enhanced greeting for: {original_query}")
+            return {
+                "answer": greeting_response,
+                "mode": "faq",
+                "user_data": user_data,
+                "sources": [],
+                "suggested_faqs": []
+            }
     
     # STEP 1: Analyze the query to determine intent and appropriate mode
     analysis = analyze_query(query, user_info, mode, needs_info, has_vector_data, conversation_summary)
     
-    # STEP 2: Handle Information Collection if needed - but only after natural conversation
-    # Calculate engagement score based on conversation depth
-    engagement_score = min(conversation_count / 10.0, 1.0)  # 0-1 scale based on conversation length
-    user_shows_interest = analysis.get("appropriate_mode") in ["appointment", "lead_capture"] or engagement_score > 0.4
+    # STEP 2: Enhanced Information Collection using conversation flow
+    # Check if we should collect contact information naturally
+    should_collect = should_collect_contact_info(user_data.get("conversation_history", []), original_query, user_data)
     
-    # Only collect info if conversation has progressed AND user shows interest
-    if needs_info and not is_early_conversation and user_shows_interest:
+    if should_collect:
         if "name" not in user_data:
-            # If the query could be a name introduction, try to extract it
-            return handle_name_collection(original_query, user_data, analysis["appropriate_mode"], language)
+            # Generate natural name collection prompt
+            name_prompt = get_natural_contact_prompt(user_data, conversation_count)
+            return {
+                "answer": name_prompt,
+                "mode": "lead_capture",
+                "user_data": user_data,
+                "sources": [],
+                "suggested_faqs": []
+            }
         elif "email" not in user_data:
-            # Otherwise try to get their email
-            return handle_email_collection(original_query, user_data, analysis["appropriate_mode"], language)
+            # Generate natural email collection prompt
+            email_prompt = get_natural_contact_prompt(user_data, conversation_count)
+            return {
+                "answer": email_prompt,
+                "mode": "lead_capture", 
+                "user_data": user_data,
+                "sources": [],
+                "suggested_faqs": []
+            }
+    
+    # Check if we should offer calendar scheduling
+    should_offer = should_offer_calendar(user_data.get("conversation_history", []), original_query, user_data)
+    if should_offer:
+        calendar_offer = get_calendar_offer(user_data)
+        return {
+            "answer": calendar_offer,
+            "mode": "appointment",
+            "user_data": user_data,
+            "sources": [],
+            "suggested_faqs": []
+        }
     
     # STEP 3: Handle Appointment Actions if needed
     # FALLBACK: Double-check for appointment patterns in case AI analysis missed them

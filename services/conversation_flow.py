@@ -1,46 +1,136 @@
 #!/usr/bin/env python3
 """
-Natural Conversation Flow Controller for Carter Injury Law
+Enhanced Natural Conversation Flow Controller for Carter Injury Law
 Manages when and how to collect user information during conversations
 """
 
 import re
 import openai
 from typing import Dict, Any, Optional, Tuple
+import random
 
-def get_natural_greeting(user_query: str, conversation_count: int) -> str:
-    """Generate natural, lawyer-like greetings"""
-    greetings = [
-        "Hello. Welcome to Carter Injury Law. My name is Miles, I'm here to assist you.",
-        "Hello. Welcome to Carter Injury Law. My name is Miles, I'm here to assist you.",
-        "Hello. Welcome to Carter Injury Law. My name is Miles, I'm here to assist you.",
-        "Hello. Welcome to Carter Injury Law. My name is Miles, I'm here to assist you.",
-        "Hello. Welcome to Carter Injury Law. My name is Miles, I'm here to assist you."
-    ]
+def get_enhanced_greeting(user_query: str, conversation_count: int, user_data: Dict[str, Any]) -> str:
+    """Generate natural, lawyer-like greetings with personality"""
     
-    # For first message, use a warm greeting
+    # Clean the query for better matching
+    clean_query = user_query.lower().strip()
+    
+    # Check for different types of greetings
+    is_simple_greeting = any(word in clean_query for word in ["hello", "hi", "hey", "good morning", "good afternoon", "good evening"])
+    is_law_firm_greeting = any(word in clean_query for word in ["carter injury law", "carter law", "injury law"])
+    is_help_request = any(word in clean_query for word in ["help", "assist", "need help", "can you help"])
+    
+    # Get user name if available
+    user_name = user_data.get("name", "")
+    
+    # Different greeting strategies based on conversation stage
     if conversation_count == 0:
-        return "Hello. Welcome to Carter Injury Law. My name is Miles, I'm here to assist you."
+        # First message - warm, professional greeting
+        if is_simple_greeting:
+            greetings = [
+                "Hello! Welcome to Carter Injury Law. I'm Miles, your legal assistant. How can I help you today?",
+                "Hi there! I'm Miles from Carter Injury Law. I'm here to assist you with any legal questions or concerns you might have.",
+                "Hello! Thanks for reaching out to Carter Injury Law. I'm Miles, and I'm ready to help you with your legal needs.",
+                "Hi! Welcome to Carter Injury Law. I'm Miles, your dedicated legal assistant. What brings you here today?"
+            ]
+        elif is_law_firm_greeting:
+            greetings = [
+                "Hello! Yes, you've reached Carter Injury Law. I'm Miles, your legal assistant. How can I assist you today?",
+                "Hi there! You're speaking with Miles from Carter Injury Law. I'm here to help with any legal questions or concerns.",
+                "Hello! Welcome to Carter Injury Law. I'm Miles, and I'm ready to assist you with your legal needs."
+            ]
+        elif is_help_request:
+            greetings = [
+                "Absolutely! I'm Miles from Carter Injury Law, and I'm here to help. What legal questions or concerns do you have?",
+                "Of course! I'm Miles, your legal assistant at Carter Injury Law. I'm ready to assist you with any legal matters.",
+                "I'd be happy to help! I'm Miles from Carter Injury Law. What can I assist you with today?"
+            ]
+        else:
+            # Generic first greeting
+            greetings = [
+                "Hello! I'm Miles from Carter Injury Law. How can I assist you today?",
+                "Hi there! I'm Miles, your legal assistant at Carter Injury Law. What brings you here today?",
+                "Hello! Welcome to Carter Injury Law. I'm Miles, and I'm here to help with your legal needs."
+            ]
+        
+        return random.choice(greetings)
     
-    # For subsequent messages, be more conversational
-    return "I'm here to help. What else would you like to know?"
-
-def get_lawyer_response_tone(user_query: str, context: Dict[str, Any]) -> str:
-    """Generate responses with a professional lawyer tone"""
-    
-    # Check if user is asking about specific legal topics
-    legal_keywords = [
-        "accident", "injury", "hurt", "pain", "damage", "claim", "sue", "lawsuit",
-        "insurance", "medical", "hospital", "doctor", "treatment", "settlement",
-        "compensation", "money", "damages", "fault", "negligence", "liability"
-    ]
-    
-    has_legal_context = any(keyword in user_query.lower() for keyword in legal_keywords)
-    
-    if has_legal_context:
-        return "professional_caring"
     else:
-        return "friendly_professional"
+        # Subsequent messages - more conversational
+        if user_name:
+            responses = [
+                f"Hi {user_name}! How else can I help you?",
+                f"Hello {user_name}! What other questions do you have?",
+                f"Hi there {user_name}! Is there anything else you'd like to know?"
+            ]
+        else:
+            responses = [
+                "Hi! How else can I help you?",
+                "Hello! What other questions do you have?",
+                "Hi there! Is there anything else you'd like to know?"
+            ]
+        
+        return random.choice(responses)
+
+def get_contextual_response(user_query: str, conversation_history: list, user_data: Dict[str, Any]) -> Optional[str]:
+    """Generate contextual responses for common patterns"""
+    
+    clean_query = user_query.lower().strip()
+    conversation_count = len(conversation_history)
+    
+    # Common question patterns and their responses
+    common_patterns = {
+        # Identity questions
+        r"who are you": "I'm Miles, your legal assistant at Carter Injury Law. I'm here to help you with legal questions and guide you through our services.",
+        r"what do you do": "I'm a legal assistant at Carter Injury Law, specializing in personal injury cases. I help answer questions, provide information about our services, and assist with scheduling consultations.",
+        r"are you a lawyer": "I'm a legal assistant, not a lawyer. I can answer general questions and help connect you with our experienced attorneys, David J. Carter and Robert Johnson, who handle all legal matters.",
+        
+        # Service questions
+        r"what services": "Carter Injury Law specializes in personal injury cases including auto accidents, slip and falls, medical malpractice, and more. We offer free consultations and work on a no-fee-unless-we-win basis.",
+        r"what cases": "We handle all types of personal injury cases: car accidents, slip and falls, medical malpractice, wrongful death, and more. Our experienced attorneys have helped hundreds of clients recover compensation.",
+        r"do you handle": "Yes, Carter Injury Law handles a wide range of personal injury cases. Our attorneys, David J. Carter and Robert Johnson, have extensive experience in personal injury law and have helped many clients.",
+        
+        # Location questions
+        r"where are you": "Carter Injury Law is located in Tampa, Florida, but we handle cases throughout the state. We can meet with clients in their homes or at other convenient locations.",
+        r"do you serve": "Yes, we serve clients throughout Florida. While we're based in Tampa, our attorneys can travel to meet with you wherever is most convenient.",
+        
+        # Cost questions
+        r"how much": "We offer free initial consultations and work on a contingency fee basis, meaning you don't pay anything unless we win your case. There are no upfront costs or fees.",
+        r"cost": "Our consultations are completely free, and we work on a no-fee-unless-we-win basis. This means you only pay if we successfully recover compensation for you.",
+        r"fee": "We work on a contingency fee basis, which means no upfront costs. You only pay if we win your case and recover compensation for you.",
+        
+        # Appointment questions
+        r"consultation": "We offer free consultations where you can discuss your case with one of our experienced attorneys. Would you like to schedule a consultation?",
+        r"appointment": "I'd be happy to help you schedule a free consultation with one of our attorneys. When would be a good time for you?",
+        r"meet": "Absolutely! We offer free consultations and can meet with you at our office, your home, or another convenient location. Would you like to schedule a meeting?",
+        
+        # Experience questions
+        r"experience": "Our attorneys, David J. Carter and Robert Johnson, have decades of combined experience in personal injury law. They've successfully handled hundreds of cases and recovered millions in compensation for our clients.",
+        r"how long": "Carter Injury Law has been serving clients for many years. Our attorneys have extensive experience and have helped hundreds of clients recover the compensation they deserve.",
+        
+        # Urgency questions
+        r"urgent": "I understand this is urgent. Personal injury cases often have time limits, so it's important to act quickly. Let me help you schedule a consultation as soon as possible.",
+        r"emergency": "If this is a medical emergency, please call 911 immediately. For legal matters, I can help you schedule a consultation right away to discuss your case.",
+    }
+    
+    # Check for pattern matches
+    for pattern, response in common_patterns.items():
+        if re.search(pattern, clean_query):
+            return response
+    
+    # Check for specific injury types
+    injury_types = {
+        r"car accident": "I'm sorry to hear about your car accident. Car accidents can be complex, and you may be entitled to compensation for medical bills, lost wages, and pain and suffering. Would you like to discuss your case?",
+        r"slip and fall": "Slip and fall accidents can result in serious injuries. Property owners have a duty to maintain safe conditions. Let me help you understand your rights and options.",
+        r"medical malpractice": "Medical malpractice cases are complex and require specialized knowledge. Our attorneys have experience handling these cases and can evaluate whether you have a valid claim.",
+        r"wrongful death": "I'm so sorry for your loss. Wrongful death cases are among the most difficult, and our attorneys handle them with the compassion and expertise they require.",
+    }
+    
+    for pattern, response in injury_types.items():
+        if re.search(pattern, clean_query):
+            return response
+    
+    return None
 
 def should_collect_contact_info(conversation_history: list, user_query: str, user_data: Dict[str, Any]) -> bool:
     """Determine if we should collect contact information naturally"""
@@ -53,7 +143,8 @@ def should_collect_contact_info(conversation_history: list, user_query: str, use
     # Check if user shows serious interest
     serious_keywords = [
         "consultation", "appointment", "meet", "talk", "speak", "call", "contact",
-        "help me", "need help", "serious", "urgent", "emergency", "immediately"
+        "help me", "need help", "serious", "urgent", "emergency", "immediately",
+        "my case", "my accident", "my injury", "i was hurt", "i was injured"
     ]
     
     shows_serious_interest = any(keyword in user_query.lower() for keyword in serious_keywords)
@@ -72,14 +163,15 @@ def should_offer_calendar(conversation_history: list, user_query: str, user_data
     """Determine if we should offer calendar scheduling"""
     conversation_count = len(conversation_history)
     
-    # Only offer after 10-12 exchanges (20+ messages)
-    if conversation_count < 20:
+    # Only offer after 8-10 exchanges (16+ messages)
+    if conversation_count < 16:
         return False
     
     # Check if user is ready for next step
     ready_keywords = [
         "next step", "what now", "how do I", "appointment", "meet", "consultation",
-        "talk to lawyer", "speak with", "schedule", "book", "set up"
+        "talk to lawyer", "speak with", "schedule", "book", "set up", "when can",
+        "available", "free time", "convenient"
     ]
     
     shows_readiness = any(keyword in user_query.lower() for keyword in ready_keywords)
@@ -122,7 +214,6 @@ def get_calendar_offer(user_data: Dict[str, Any]) -> str:
         f"{greeting} To better understand your case and provide specific legal advice, I'd recommend speaking with one of our attorneys. Would you like to schedule a free consultation?"
     ]
     
-    import random
     return random.choice(offers)
 
 def extract_name_from_text(text: str) -> Tuple[Optional[str], bool]:
@@ -290,7 +381,8 @@ def calculate_engagement_score(conversation_history, user_query):
     # Points for showing interest keywords
     interest_keywords = [
         "consultation", "appointment", "help", "case", "injured", 
-        "accident", "legal", "lawyer", "attorney", "sue", "claim"
+        "accident", "legal", "lawyer", "attorney", "sue", "claim",
+        "my case", "my accident", "my injury", "i was hurt"
     ]
     
     if any(keyword in user_query.lower() for keyword in interest_keywords):
