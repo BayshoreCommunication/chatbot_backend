@@ -18,27 +18,46 @@ class UserLearningService:
         self.response_analytics = db.response_analytics
         
     def store_interaction(self, org_id: str, session_id: str, interaction_data: Dict[str, Any]):
-        """Store user interaction for learning purposes"""
+        """Store user interaction for learning purposes with enhanced context analysis"""
         try:
+            # Analyze the interaction for learning insights
+            user_question = interaction_data.get("user_question", "")
+            ai_response = interaction_data.get("ai_response", "")
+            
+            # Extract intent and context
+            intent_analysis = self._analyze_user_intent(user_question)
+            response_quality = self._analyze_response_quality(user_question, ai_response)
+            conversation_context = self._extract_conversation_context(interaction_data.get("user_data", {}))
+            
             interaction = {
                 "org_id": org_id,
                 "session_id": session_id,
-                "user_question": interaction_data.get("user_question", ""),
-                "ai_response": interaction_data.get("ai_response", ""),
+                "user_question": user_question,
+                "ai_response": ai_response,
                 "user_satisfaction": interaction_data.get("user_satisfaction"),  # Can be set later
                 "response_time": interaction_data.get("response_time", 0),
                 "mode": interaction_data.get("mode", "faq"),
-                "intent_detected": interaction_data.get("intent_detected", ""),
+                "intent_detected": intent_analysis.get("intent", ""),
+                "intent_confidence": intent_analysis.get("confidence", 0.0),
+                "case_type": intent_analysis.get("case_type", ""),
+                "urgency_level": intent_analysis.get("urgency", "normal"),
                 "knowledge_base_used": interaction_data.get("knowledge_base_used", False),
                 "faq_matched": interaction_data.get("faq_matched", False),
+                "response_quality_score": response_quality.get("score", 0.0),
+                "response_effectiveness": response_quality.get("effectiveness", "unknown"),
                 "follow_up_question": None,  # Will be updated if user asks follow-up
                 "conversation_stage": interaction_data.get("conversation_stage", ""),
+                "conversation_context": conversation_context,
                 "timestamp": datetime.utcnow(),
                 "user_data": interaction_data.get("user_data", {})
             }
             
             result = self.learning_collection.insert_one(interaction)
-            print(f"[LEARNING] Stored interaction: {result.inserted_id}")
+            print(f"[LEARNING] Stored enhanced interaction: {result.inserted_id}")
+            
+            # Update learning patterns
+            self._update_learning_patterns(org_id, interaction)
+            
             return str(result.inserted_id)
             
         except Exception as e:
@@ -225,6 +244,184 @@ class UserLearningService:
             
         except Exception as e:
             print(f"Error getting learning analytics: {str(e)}")
+            return {}
+    
+    def _analyze_user_intent(self, user_question: str) -> Dict[str, Any]:
+        """Analyze user intent and extract context from their question"""
+        question_lower = user_question.lower()
+        
+        # Intent detection
+        intent = "general_inquiry"
+        confidence = 0.5
+        case_type = ""
+        urgency = "normal"
+        
+        # Case type detection
+        if any(word in question_lower for word in ["accident", "crash", "collision", "car", "auto", "vehicle"]):
+            case_type = "auto_accident"
+            intent = "accident_inquiry"
+            confidence = 0.8
+        elif any(word in question_lower for word in ["slip", "fall", "premises", "property"]):
+            case_type = "slip_fall"
+            intent = "premises_liability"
+            confidence = 0.8
+        elif any(word in question_lower for word in ["medical", "malpractice", "doctor", "hospital", "surgery"]):
+            case_type = "medical_malpractice"
+            intent = "medical_inquiry"
+            confidence = 0.8
+        elif any(word in question_lower for word in ["work", "workers", "compensation", "job", "employment"]):
+            case_type = "workers_comp"
+            intent = "workers_comp_inquiry"
+            confidence = 0.8
+        
+        # Urgency detection
+        if any(word in question_lower for word in ["urgent", "emergency", "asap", "immediately", "right away"]):
+            urgency = "high"
+        elif any(word in question_lower for word in ["soon", "quickly", "fast", "priority"]):
+            urgency = "medium"
+        
+        # Appointment intent
+        if any(word in question_lower for word in ["appointment", "schedule", "meeting", "consultation", "book"]):
+            intent = "appointment_request"
+            confidence = 0.9
+        
+        return {
+            "intent": intent,
+            "confidence": confidence,
+            "case_type": case_type,
+            "urgency": urgency
+        }
+    
+    def _analyze_response_quality(self, user_question: str, ai_response: str) -> Dict[str, Any]:
+        """Analyze the quality and effectiveness of AI responses"""
+        score = 0.5  # Default score
+        effectiveness = "unknown"
+        
+        # Response length analysis
+        if len(ai_response) > 100:
+            score += 0.2
+        if len(ai_response) > 300:
+            score += 0.1
+        
+        # Check for helpful elements
+        helpful_indicators = [
+            "consultation", "free", "attorney", "lawyer", "help", "assist", 
+            "information", "advice", "rights", "options", "case", "compensation"
+        ]
+        
+        helpful_count = sum(1 for indicator in helpful_indicators if indicator in ai_response.lower())
+        score += min(helpful_count * 0.05, 0.3)
+        
+        # Check for personalization
+        if any(word in ai_response for word in ["your", "you", "personal", "specific"]):
+            score += 0.1
+        
+        # Determine effectiveness
+        if score > 0.8:
+            effectiveness = "excellent"
+        elif score > 0.6:
+            effectiveness = "good"
+        elif score > 0.4:
+            effectiveness = "fair"
+        else:
+            effectiveness = "poor"
+        
+        return {
+            "score": min(score, 1.0),
+            "effectiveness": effectiveness
+        }
+    
+    def _extract_conversation_context(self, user_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Extract conversation context for learning"""
+        conversation_history = user_data.get("conversation_history", [])
+        
+        context = {
+            "conversation_length": len(conversation_history),
+            "has_name": bool(user_data.get("name")),
+            "has_email": bool(user_data.get("email")),
+            "user_engagement": "low"
+        }
+        
+        # Calculate engagement level
+        if context["conversation_length"] > 6:
+            context["user_engagement"] = "high"
+        elif context["conversation_length"] > 3:
+            context["user_engagement"] = "medium"
+        
+        # Check for case-related keywords in conversation
+        all_messages = " ".join([msg.get("content", "") for msg in conversation_history])
+        case_keywords = ["accident", "injury", "legal", "case", "claim", "compensation"]
+        context["case_related"] = any(keyword in all_messages.lower() for keyword in case_keywords)
+        
+        return context
+    
+    def _update_learning_patterns(self, org_id: str, interaction: Dict[str, Any]):
+        """Update learning patterns based on interaction data"""
+        try:
+            # Store patterns for future improvement
+            pattern_data = {
+                "org_id": org_id,
+                "intent": interaction.get("intent_detected"),
+                "case_type": interaction.get("case_type"),
+                "response_quality": interaction.get("response_quality_score"),
+                "timestamp": datetime.utcnow()
+            }
+            
+            # Update or create pattern record
+            self.learning_collection.update_one(
+                {
+                    "org_id": org_id,
+                    "intent": interaction.get("intent_detected"),
+                    "case_type": interaction.get("case_type")
+                },
+                {
+                    "$set": pattern_data,
+                    "$inc": {"occurrence_count": 1}
+                },
+                upsert=True
+            )
+            
+        except Exception as e:
+            print(f"Error updating learning patterns: {str(e)}")
+    
+    def get_smart_response_suggestions(self, org_id: str, user_question: str) -> Dict[str, Any]:
+        """Get smart response suggestions based on learned patterns"""
+        try:
+            # Analyze the current question
+            intent_analysis = self._analyze_user_intent(user_question)
+            
+            # Find similar successful interactions
+            similar_interactions = self.learning_collection.find({
+                "org_id": org_id,
+                "intent_detected": intent_analysis.get("intent"),
+                "response_quality_score": {"$gte": 0.7}  # Only successful responses
+            }).limit(5)
+            
+            suggestions = {
+                "intent": intent_analysis.get("intent"),
+                "case_type": intent_analysis.get("case_type"),
+                "urgency": intent_analysis.get("urgency"),
+                "successful_patterns": [],
+                "recommended_approach": "standard"
+            }
+            
+            for interaction in similar_interactions:
+                suggestions["successful_patterns"].append({
+                    "response": interaction.get("ai_response", ""),
+                    "quality_score": interaction.get("response_quality_score", 0),
+                    "effectiveness": interaction.get("response_effectiveness", "unknown")
+                })
+            
+            # Determine recommended approach
+            if intent_analysis.get("urgency") == "high":
+                suggestions["recommended_approach"] = "urgent"
+            elif intent_analysis.get("case_type"):
+                suggestions["recommended_approach"] = "case_specific"
+            
+            return suggestions
+            
+        except Exception as e:
+            print(f"Error getting smart response suggestions: {str(e)}")
             return {}
 
 # Global instance

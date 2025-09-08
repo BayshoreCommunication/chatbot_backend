@@ -462,10 +462,10 @@ async def ask_question(
                 "intake_data": intake_service.get_intake_data()
             }
         
-        # STEP 2: Check for conversation progression responses (prevents repetitive responses)
+        # STEP 2: Check for smart conversation progression responses (appreciation, acknowledgments)
         progression_response = get_conversation_progression_response(request.question, conversation_history, request.user_data)
         if progression_response:
-            print(f"[DEBUG] Using conversation progression response for: {request.question}")
+            print(f"[DEBUG] Using smart conversation progression response for: {request.question}")
             
             # Store and add to history
             add_conversation_message(
@@ -474,7 +474,7 @@ async def ask_question(
                 session_id=request.session_id,
                 role="assistant",
                 content=progression_response,
-                metadata={"mode": "faq", "progression": True}
+                metadata={"mode": "faq", "progression": True, "smart_response": True}
             )
             request.user_data["conversation_history"].append({
                 "role": "assistant",
@@ -536,8 +536,12 @@ async def ask_question(
                 "user_data": request.user_data
             }
         
-        # STEP 4: Check if this is a greeting that should get an enhanced response
-        if conversation_count == 0 or any(word in request.question.lower() for word in ["hello", "hi", "hey", "carter injury law"]):
+        # STEP 4: Check if this is a greeting that should get an enhanced response - ONLY for actual greetings
+        # Check if this is a greeting and we haven't already responded to a greeting in this session
+        is_greeting = any(word in request.question.lower() for word in ["hello", "hi", "hey", "good morning", "good afternoon", "good evening"])
+        has_greeting_response = any(msg.get("content", "").startswith("Hello! 👋") for msg in request.user_data.get("conversation_history", []))
+        
+        if is_greeting and not has_greeting_response:
             greeting_response = get_enhanced_greeting(request.question, conversation_count, request.user_data)
             if greeting_response:
                 print(f"[DEBUG] Using enhanced greeting for: {request.question}")
@@ -576,11 +580,11 @@ async def ask_question(
         
         # STEP 5: Contact info collection is already handled above
         
-        # STEP 6: Check if we should offer calendar scheduling
+        # STEP 6: Check if we should offer smart calendar scheduling
         should_offer_cal = should_offer_calendar(conversation_history, request.question, request.user_data)
         if should_offer_cal:
             calendar_offer = get_calendar_offer(request.user_data)
-            print(f"[DEBUG] Offering calendar: {calendar_offer}")
+            print(f"[DEBUG] Offering smart calendar: {calendar_offer}")
             
             # Store and add to history
             add_conversation_message(
@@ -589,7 +593,7 @@ async def ask_question(
                 session_id=request.session_id,
                 role="assistant",
                 content=calendar_offer,
-                metadata={"mode": "appointment"}
+                metadata={"mode": "appointment", "smart_offer": True}
             )
             request.user_data["conversation_history"].append({
                 "role": "assistant",
@@ -1092,28 +1096,36 @@ async def ask_question(
         suggested_faqs = get_suggested_faqs(org_id)
         response["suggested_faqs"] = suggested_faqs
 
-        # Store interaction for learning
+        # Store interaction for enhanced learning
         try:
             from services.user_learning import user_learning_service
+            
+            # Get smart response suggestions before storing
+            smart_suggestions = user_learning_service.get_smart_response_suggestions(org_id, request.question)
             
             interaction_data = {
                 "user_question": request.question,
                 "ai_response": response["answer"],
                 "mode": response.get("mode", "faq"),
-                "intent_detected": "",  # Could be enhanced with intent detection
+                "intent_detected": smart_suggestions.get("intent", ""),
+                "case_type": smart_suggestions.get("case_type", ""),
+                "urgency_level": smart_suggestions.get("urgency", "normal"),
                 "knowledge_base_used": "sources" in response,
                 "faq_matched": "suggested_faqs" in response,
                 "conversation_stage": "early" if len(request.user_data.get("conversation_history", [])) < 6 else "engaged",
+                "response_time": 0,  # Could be calculated if needed
                 "user_data": {
                     "has_name": bool(request.user_data.get("name")),
                     "has_email": bool(request.user_data.get("email")),
-                    "conversation_count": len(request.user_data.get("conversation_history", []))
+                    "conversation_count": len(request.user_data.get("conversation_history", [])),
+                    "user_engagement": smart_suggestions.get("recommended_approach", "standard")
                 }
             }
             
             user_learning_service.store_interaction(org_id, request.session_id, interaction_data)
+            print(f"[LEARNING] Stored enhanced interaction with intent: {smart_suggestions.get('intent')}")
         except Exception as e:
-            print(f"Error storing learning data: {str(e)}")
+            print(f"Error storing enhanced learning data: {str(e)}")
 
         # After getting bot response, emit it to dashboard
         await sio.emit('new_message', {
@@ -2388,6 +2400,66 @@ async def verify_ai_training(
         
     except Exception as e:
         print(f"Error verifying training: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/appointment-confirmation")
+async def appointment_confirmation(
+    request: Request,
+    organization=Depends(get_organization_from_api_key)
+):
+    """Handle appointment confirmation with smart messaging"""
+    try:
+        data = await request.json()
+        session_id = data.get("session_id")
+        appointment_details = data.get("appointment_details", {})
+        
+        if not session_id:
+            raise HTTPException(status_code=400, detail="Session ID is required")
+        
+        org_id = organization["id"]
+        org_api_key = organization.get("api_key")
+        
+        # Get user data for personalization
+        user_profile = get_user_profile(org_id, session_id)
+        user_data = user_profile.get("profile_data", {}) if user_profile else {}
+        
+        # Generate smart confirmation message
+        from services.conversation_flow import get_appointment_confirmation
+        confirmation_message = get_appointment_confirmation(user_data, appointment_details)
+        
+        # Get visitor for storing the message
+        visitor = get_visitor(org_id, session_id)
+        if visitor:
+            # Store confirmation message
+            add_conversation_message(
+                organization_id=org_id,
+                visitor_id=visitor["id"],
+                session_id=session_id,
+                role="assistant",
+                content=confirmation_message,
+                metadata={"mode": "appointment", "confirmation": True}
+            )
+            
+            # Emit confirmation to dashboard
+            await sio.emit('new_message', {
+                'session_id': session_id,
+                'message': {
+                    'role': 'assistant',
+                    'content': confirmation_message,
+                    'timestamp': datetime.now().isoformat()
+                },
+                'organization_id': org_id
+            }, room=org_api_key)
+        
+        return {
+            "status": "success",
+            "message": "Appointment confirmed successfully",
+            "confirmation_message": confirmation_message,
+            "appointment_details": appointment_details
+        }
+        
+    except Exception as e:
+        print(f"Error in appointment confirmation: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/quick-test-ai")

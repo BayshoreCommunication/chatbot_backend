@@ -50,7 +50,7 @@ def initialize():
     
     # Initialize OpenAI
     llm = ChatOpenAI(
-        model_name="gpt-3.5-turbo", 
+        model_name="gpt-4o",     
         temperature=0.5,
         openai_api_key=os.getenv("OPENAI_API_KEY"),
         openai_api_base="https://api.openai.com/v1"
@@ -270,7 +270,7 @@ def ask_bot(query: str, mode="faq", user_data=None, available_slots=None, sessio
     # Process user message for name/email extraction
     user_data = process_user_message_for_info(original_query, user_data)
     
-    # Check for contextual responses first (before AI analysis)
+    # Check for contextual responses first (before AI analysis) - DISABLED to let RAG handle
     contextual_response = get_contextual_response(original_query, user_data.get("conversation_history", []), user_data)
     if contextual_response:
         print(f"[DEBUG] Using contextual response for: {original_query}")
@@ -282,8 +282,12 @@ def ask_bot(query: str, mode="faq", user_data=None, available_slots=None, sessio
             "suggested_faqs": []
         }
     
-    # Check if this is a greeting that should get an enhanced response
-    if conversation_count == 0 or any(word in original_query.lower() for word in ["hello", "hi", "hey", "carter injury law"]):
+    # Check if this is a greeting that should get an enhanced response - ONLY for actual greetings
+    # Check if this is a greeting and we haven't already responded to a greeting in this session
+    is_greeting = any(word in original_query.lower() for word in ["hello", "hi", "hey", "good morning", "good afternoon", "good evening"])
+    has_greeting_response = any(msg.get("content", "").startswith("Hello! 👋") for msg in user_data.get("conversation_history", []))
+    
+    if is_greeting and not has_greeting_response:
         greeting_response = get_enhanced_greeting(original_query, conversation_count, user_data)
         if greeting_response:
             print(f"[DEBUG] Using enhanced greeting for: {original_query}")
