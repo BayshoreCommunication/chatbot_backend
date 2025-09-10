@@ -99,10 +99,10 @@ async def get_all_leads(org: Dict[str, Any] = Depends(get_org_from_api_key)):
             )
             leads.append(lead)
         
-            return LeadsResponse(
-        leads=leads,
-        total_count=len(leads)
-    )
+        return LeadsResponse(
+            leads=leads,
+            total_count=len(leads)
+        )
     
     except Exception as e:
         logger.error(f"Error getting leads: {str(e)}")
