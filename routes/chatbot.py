@@ -388,15 +388,70 @@ async def ask_question(
         from models.accident_intake import save_accident_intake
         
         # Process the current message for name/email extraction
+        original_user_data = request.user_data.copy()
         request.user_data = process_user_message_for_info(request.question, request.user_data)
+        
+        # Check if we just collected contact info in this message
+        name_just_collected = not original_user_data.get("name") and request.user_data.get("name") and request.user_data.get("name") not in ["Anonymous User", "Guest User"]
+        email_just_collected = not original_user_data.get("email") and request.user_data.get("email") and request.user_data.get("email") != "anonymous@user.com"
+        
+        # If both name and email were just collected, save and acknowledge
+        if name_just_collected and email_just_collected:
+            print(f"[DEBUG] Both name and email collected in one message: {request.user_data['name']}, {request.user_data['email']}")
+            save_user_profile(org_id, request.session_id, request.user_data)
+            
+            # Store in vector database
+            store_contact_info_in_vector_db(
+                org_id=org_id,
+                name=request.user_data["name"],
+                email=request.user_data["email"],
+                api_key=org_api_key
+            )
+            
+            # Acknowledge and continue
+            acknowledgment = f"Perfect! Thank you, {request.user_data['name']}. I have your contact information saved. How can I assist you with your legal questions today?"
+            
+            # Store and add to history
+            add_conversation_message(
+                organization_id=org_id,
+                visitor_id=visitor["id"],
+                session_id=request.session_id,
+                role="assistant",
+                content=acknowledgment,
+                metadata={"mode": "faq", "contact_complete": True}
+            )
+            request.user_data["conversation_history"].append({
+                "role": "assistant",
+                "content": acknowledgment
+            })
+            
+            # Emit assistant message to dashboard
+            await sio.emit('new_message', {
+                'session_id': request.session_id,
+                'message': {
+                    'role': 'assistant',
+                    'content': acknowledgment,
+                    'timestamp': datetime.now().isoformat()
+                },
+                'organization_id': org_id
+            }, room=org_api_key)
+            
+            return {
+                "answer": acknowledgment,
+                "mode": "faq",
+                "language": "en",
+                "user_data": request.user_data
+            }
         
         # Calculate conversation depth for natural flow
         conversation_history = request.user_data.get("conversation_history", [])
         conversation_count = len(conversation_history)
         
-        # Check if we need to collect user information naturally
-        has_name = "name" in request.user_data and request.user_data["name"] and request.user_data["name"] not in ["Anonymous User", "Guest User"]
-        has_email = "email" in request.user_data and request.user_data["email"] and request.user_data["email"] != "anonymous@user.com"
+        # Re-check if we need to collect user information naturally (after processing the message)
+        has_name = "name" in request.user_data and request.user_data["name"] and request.user_data["name"] not in ["Anonymous User", "Guest User", "", None]
+        has_email = "email" in request.user_data and request.user_data["email"] and request.user_data["email"] not in ["anonymous@user.com", "", None]
+        
+        print(f"[DEBUG] After processing - Has name: {has_name} ({request.user_data.get('name')}), Has email: {has_email} ({request.user_data.get('email')})")
         
         # Check if this is a returning visitor by looking in vector database
         if not (has_name and has_email):
@@ -647,7 +702,8 @@ async def ask_question(
         
         # Handle contact information collection naturally
         # Only collect if we don't already have both name and email
-        if should_collect and not has_name:
+        # CRITICAL: Skip collection if user just provided contact info or if we already have it
+        if should_collect and not has_name and not name_just_collected:
             print("[DEBUG] Name not found, processing name collection")
             
             try:
@@ -812,7 +868,7 @@ async def ask_question(
                 
                 return fallback_response
                 
-        elif should_collect and has_name and not has_email:
+        elif should_collect and has_name and not has_email and not email_just_collected:
             print("[DEBUG] Email not found, processing email collection")
             
             # Use the improved email extraction function

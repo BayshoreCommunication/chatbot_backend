@@ -263,6 +263,9 @@ def extract_name_from_text(text: str) -> Tuple[Optional[str], bool]:
         r'\b(?:this\s+is\s+|i\s+am\s+|my\s+name\s+is\s+|i\'m\s+|im\s+)([a-zA-Z]+(?:\s+[a-zA-Z]+)*)',
         r'\b(?:call\s+me\s+|name\'s\s+)([a-zA-Z]+(?:\s+[a-zA-Z]+)*)',
         r'\b([a-zA-Z]+(?:\s+[a-zA-Z]+)*)\s+(?:here|speaking)',
+        r'my\s+name\s+is\s+([a-zA-Z]+)',  # "My name is sahak"
+        r'my\s+name\s+([a-zA-Z]+)',  # "my name sahak"
+        r'^(?:name\s+is\s+|name\s+)([a-zA-Z]+(?:\s+[a-zA-Z]+)*)$',  # "name sahak" or "name is sahak"
     ]
     
     for pattern in name_patterns:
@@ -277,7 +280,7 @@ def extract_name_from_text(text: str) -> Tuple[Optional[str], bool]:
     # If no pattern match, try to extract using OpenAI
     try:
         name_extraction_prompt = f"""
-        Extract the person's name from the following text.
+        Extract the person's name from the following text. Be very careful to extract ONLY actual names, not common words.
         
         Text: "{text}"
         
@@ -287,12 +290,17 @@ def extract_name_from_text(text: str) -> Tuple[Optional[str], bool]:
         3. Remove location information like "from Texas", "in California", etc.
         4. If the person is refusing to share their name, return "REFUSED"
         5. If no clear name is found, return "NO_NAME"
+        6. Do NOT extract common words like: okay, yes, no, help, fine, good, sure, maybe
+        7. Names are typically proper nouns like: John, Sarah, Michael, sahak, etc.
         
         Examples:
         "My name is John" -> John
+        "my name sahak" -> sahak
         "Hello this is sahak from texas" -> sahak
         "I am Alice Johnson" -> Alice Johnson
         "I don't want to share my name" -> REFUSED
+        "I'm okay" -> NO_NAME
+        "I need help" -> NO_NAME
         "hello there" -> NO_NAME
         """
         
@@ -321,18 +329,28 @@ def extract_name_with_regex_fallback(text: str) -> Optional[str]:
     """Fallback name extraction using regex patterns"""
     text = text.strip()
     
-    # Simple name patterns
+    # Check for common non-name words first
+    non_names = ['okay', 'yes', 'no', 'help', 'fine', 'good', 'sure', 'maybe', 'thanks', 'thank']
+    if text.lower() in non_names:
+        return None
+    
+    # Enhanced name patterns for better extraction
     name_patterns = [
-        r'^([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)$',  # Capitalized words
-        r'^([a-z]+(?:\s[a-z]+)*)$',  # All lowercase words
+        r'^my\s+name\s+is\s+([a-zA-Z]+(?:\s+[a-zA-Z]+)*)$',  # "my name is sahak"
+        r'^my\s+name\s+([a-zA-Z]+(?:\s+[a-zA-Z]+)*)$',  # "my name sahak"
+        r'^name\s+is\s+([a-zA-Z]+(?:\s+[a-zA-Z]+)*)$',  # "name is sahak"
+        r'^([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)$',  # Capitalized words like "John Smith"
+        r'^([a-z]{2,}(?:\s[a-z]{2,})*)$',  # All lowercase words (2+ chars) like "sahak"
     ]
     
     for pattern in name_patterns:
-        match = re.search(pattern, text)
+        match = re.search(pattern, text, re.IGNORECASE)
         if match:
             name = match.group(1).strip()
-            # Basic validation - should be 2-50 characters and not contain special chars
-            if 2 <= len(name) <= 50 and re.match(r'^[A-Za-z\s]+$', name):
+            # Enhanced validation
+            if (2 <= len(name) <= 50 and 
+                re.match(r'^[A-Za-z\s]+$', name) and 
+                name.lower() not in non_names):
                 return name
     
     return None
