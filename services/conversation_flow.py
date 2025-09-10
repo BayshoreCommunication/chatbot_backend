@@ -8,39 +8,28 @@ import re
 import openai
 from typing import Dict, Any, Optional, Tuple
 import random
+from datetime import datetime
 
 def get_enhanced_greeting(user_query: str, conversation_count: int, user_data: Dict[str, Any]) -> Optional[str]:
-    """Generate smart, context-aware greetings that skip simple hellos and respond to meaningful questions"""
+    """Generate simple, clean greetings for first-time interactions"""
     
     # Clean the query for better matching
     clean_query = user_query.lower().strip()
     
-    # Check for different types of greetings and meaningful content
+    # Check for simple greetings
     is_simple_greeting = any(word in clean_query for word in ["hello", "hi", "hey", "good morning", "good afternoon", "good evening"])
-    is_law_firm_greeting = any(word in clean_query for word in ["carter injury law", "carter law", "injury law"])
-    is_help_request = any(word in clean_query for word in ["help", "assist", "need help", "can you help"])
-    
-    # Check for meaningful content that indicates a real question or case
-    has_meaningful_content = any(word in clean_query for word in [
-        "accident", "injury", "hurt", "crash", "collision", "slip", "fall", "case", "legal", 
-        "lawyer", "attorney", "sue", "claim", "compensation", "damages", "medical", "hospital",
-        "insurance", "fault", "negligence", "settlement", "court", "lawsuit", "consultation",
-        "appointment", "schedule", "meeting", "discuss", "talk", "advice", "question", "problem"
-    ])
     
     # Check if we've already responded to a greeting in this session
     conversation_history = user_data.get("conversation_history", [])
-    has_greeting_response = any(msg.get("content", "").startswith("Hello! 👋") for msg in conversation_history)
+    has_greeting_response = any(
+        msg.get("content", "").startswith(("Hello!", "Hi!", "Hey!")) 
+        for msg in conversation_history if msg.get("role") == "assistant"
+    )
     
-    # Smart logic: Only respond to greetings if they contain meaningful content or are law firm specific
-    if (is_law_firm_greeting or (is_simple_greeting and has_meaningful_content)) and not has_greeting_response:
-        # Use your preferred greeting
-        return "Hello! 👋 Thanks for reaching out to Carter Injury Law. How can I assist you today?"
-    
-    # Skip simple greetings without meaningful content - let RAG system handle them
-    if is_simple_greeting and not has_meaningful_content and not has_greeting_response:
-        # Return a minimal acknowledgment that doesn't interrupt the flow
-        return None
+    # Only respond to simple greetings on first interaction
+    if is_simple_greeting and not has_greeting_response:
+        # Simple, clean greeting without overwhelming information
+        return "Hello! How can I help you today regarding personal injury?"
     
     # For all other cases, return None to let RAG system handle
     return None
@@ -51,32 +40,17 @@ def get_conversation_progression_response(user_query: str, conversation_history:
     """
     clean_query = user_query.lower().strip()
     
-    # Handle appreciation and thank you messages
+    # Handle appreciation and thank you messages with simple, professional responses
     appreciation_patterns = [
-        r'\b(thank you|thanks|appreciate|grateful|helpful|great|awesome|perfect|excellent)\b',
-        r'\b(that\'s helpful|very helpful|exactly what i needed|perfect answer)\b',
-        r'\b(you\'re welcome|no problem|my pleasure|happy to help)\b'
+        r'\b(thank you|thanks|appreciate|grateful)\b',
+        r'\b(that\'s helpful|very helpful|exactly what i needed|perfect answer)\b'
     ]
     
     is_appreciation = any(re.search(pattern, clean_query) for pattern in appreciation_patterns)
     
     if is_appreciation:
-        # Smart appreciation responses based on context
-        name = user_data.get("name", "")
-        if name and name not in ["Anonymous User", "Guest User"]:
-            responses = [
-                f"You're very welcome, {name}! I'm glad I could help. Is there anything else you'd like to know about your legal situation?",
-                f"Happy to help, {name}! Feel free to ask if you have any other questions about your case.",
-                f"My pleasure, {name}! I'm here whenever you need assistance with your legal matters."
-            ]
-        else:
-            responses = [
-                "You're very welcome! I'm glad I could help. Is there anything else you'd like to know about your legal situation?",
-                "Happy to help! Feel free to ask if you have any other questions about your case.",
-                "My pleasure! I'm here whenever you need assistance with your legal matters."
-            ]
-        
-        return random.choice(responses)
+        # Simple, professional thank you responses
+        return "You're welcome! Happy to help."
     
     # Handle simple acknowledgments that don't need full responses
     simple_acknowledgments = [
@@ -97,8 +71,38 @@ def get_contextual_response(user_query: str, conversation_history: list, user_da
     return None
 
 def should_collect_contact_info(conversation_history: list, user_query: str, user_data: Dict[str, Any]) -> bool:
-    """Determine if we should collect contact information naturally - DISABLED to let RAG handle"""
-    # Return False to let RAG system handle contact requests naturally
+    """Determine if we should collect contact information naturally"""
+    # Check if we already have complete contact info
+    has_name = user_data.get("name") and user_data.get("name") not in ["Anonymous User", "Guest User", "Unknown"]
+    has_email = user_data.get("email") and user_data.get("email") not in ["anonymous@user.com", "No email"]
+    
+    # Don't collect if we already have both
+    if has_name and has_email:
+        return False
+    
+    # Check for scheduling/appointment requests
+    scheduling_keywords = [
+        "appointment", "schedule", "meeting", "consultation", "book", "reserve"
+    ]
+    
+    # Check for case interest indicators
+    case_interest_keywords = [
+        "case", "lawsuit", "claim", "legal help", "representation", "attorney", "lawyer"
+    ]
+    
+    clean_query = user_query.lower().strip()
+    has_scheduling_intent = any(keyword in clean_query for keyword in scheduling_keywords)
+    has_case_interest = any(keyword in clean_query for keyword in case_interest_keywords)
+    
+    # Collect info if user shows scheduling intent or strong case interest
+    if has_scheduling_intent:
+        return True
+    
+    # Collect after engaged conversation (4+ exchanges) with case interest
+    conversation_count = len(conversation_history)
+    if conversation_count >= 8 and has_case_interest:  # 4+ exchanges
+        return True
+    
     return False
 
 def should_offer_calendar(conversation_history: list, user_query: str, user_data: Dict[str, Any]) -> bool:
@@ -132,50 +136,29 @@ def should_offer_calendar(conversation_history: list, user_query: str, user_data
     return has_appointment_intent or (has_case_need and is_engaged)
 
 def get_natural_contact_prompt(user_data: Dict[str, Any], conversation_count: int) -> str:
-    """Generate natural prompts for contact information collection - DISABLED"""
-    # Return None to let RAG system handle contact requests naturally
-    return None
+    """Generate natural prompts for contact information collection"""
+    has_name = user_data.get("name") and user_data.get("name") not in ["Anonymous User", "Guest User", "Unknown"]
+    has_email = user_data.get("email") and user_data.get("email") not in ["anonymous@user.com", "No email"]
+    
+    if not has_name:
+        return "Can I have your full name to help you better?"
+    elif not has_email:
+        return "And your email address so we can follow up with you?"
+    
+    return "Thank you for the information. How else can I assist you?"
 
 def get_natural_email_prompt(user_data: Dict[str, Any], conversation_count: int) -> str:
     """Generate natural prompts specifically for email collection"""
-    
     name = user_data.get("name", "")
     
-    if conversation_count < 10:
-        # Early in conversation - very gentle
-        if name:
-            return f"Thanks, {name}! If you'd like me to send you some helpful information, what's your email address?"
-        else:
-            return "If you'd like me to send you some helpful information, what's your email address?"
-    
-    elif conversation_count < 15:
-        # Mid-conversation - more direct but still friendly
-        if name:
-            return f"Thanks, {name}! If you'd like me to send you some helpful resources, what's your email address?"
-        else:
-            return "If you'd like me to send you some helpful resources, what's your email address?"
-    
+    if name and name not in ["Anonymous User", "Guest User", "Unknown"]:
+        return f"Thanks, {name}! And your email address so we can follow up with you?"
     else:
-        # Later in conversation - more direct
-        if name:
-            return f"To send you helpful information, {name}, what's your email address?"
-        else:
-            return "To send you helpful information, what's your email address?"
+        return "And your email address so we can follow up with you?"
 
 def get_natural_name_prompt(user_data: Dict[str, Any], conversation_count: int) -> str:
     """Generate natural prompts specifically for name collection"""
-    
-    if conversation_count < 10:
-        # Early in conversation - very gentle
-        return "By the way, what should I call you? This helps me personalize our conversation."
-    
-    elif conversation_count < 15:
-        # Mid-conversation - more direct but still friendly
-        return "I'd love to personalize our conversation better. What's your first name?"
-    
-    else:
-        # Later in conversation - more direct
-        return "To better assist you, could you tell me your name?"
+    return "Can I have your full name to help you better?"
 
 def get_calendar_offer(user_data: Dict[str, Any]) -> str:
     """Generate smart calendar scheduling offer with context awareness"""
@@ -570,3 +553,88 @@ def reset_user_session(org_id, session_id):
     except Exception as e:
         print(f"[SESSION] Error resetting session: {str(e)}")
         return False
+
+def store_contact_info_in_vector_db(org_id: str, name: str, email: str, api_key: str = None) -> bool:
+    """Store contact information in the vector database for the organization"""
+    try:
+        # Import here to avoid circular imports
+        from services.langchain.engine import add_document
+        
+        # Create a document with contact information
+        contact_document = f"""
+        Contact Information:
+        Name: {name}
+        Email: {email}
+        Organization ID: {org_id}
+        Type: Visitor Contact Information
+        Stored: {datetime.now().isoformat()}
+        
+        This visitor has provided their contact information and should not be asked for it again.
+        """
+        
+        # Store in vector database using the organization's API key
+        result = add_document(text=contact_document, api_key=api_key)
+        
+        if result and result.get("status") == "success":
+            print(f"[VECTOR_DB] Successfully stored contact info for {name} ({email})")
+            return True
+        else:
+            print(f"[VECTOR_DB] Failed to store contact info: {result}")
+            return False
+            
+    except Exception as e:
+        print(f"[VECTOR_DB] Error storing contact info: {str(e)}")
+        return False
+
+def check_returning_visitor_contact(org_id: str, name: str = None, email: str = None, api_key: str = None) -> Dict[str, Any]:
+    """Check if a visitor's contact info is already stored in vector database"""
+    try:
+        # Import here to avoid circular imports
+        from services.langchain.engine import get_org_vectorstore
+        
+        # Get organization's vectorstore
+        vectorstore = get_org_vectorstore(api_key)
+        if not vectorstore:
+            return {"found": False, "name": None, "email": None}
+        
+        # Search for contact information
+        search_queries = []
+        if name:
+            search_queries.append(f"Contact Information Name: {name}")
+        if email:
+            search_queries.append(f"Contact Information Email: {email}")
+        
+        for query in search_queries:
+            try:
+                docs = vectorstore.similarity_search(query, k=3)
+                for doc in docs:
+                    if "Contact Information:" in doc.page_content:
+                        # Extract name and email from the document
+                        content = doc.page_content
+                        stored_name = None
+                        stored_email = None
+                        
+                        # Parse the contact information
+                        lines = content.split('\n')
+                        for line in lines:
+                            if line.strip().startswith("Name:"):
+                                stored_name = line.split(":", 1)[1].strip()
+                            elif line.strip().startswith("Email:"):
+                                stored_email = line.split(":", 1)[1].strip()
+                        
+                        if stored_name and stored_email:
+                            print(f"[VECTOR_DB] Found returning visitor: {stored_name} ({stored_email})")
+                            return {
+                                "found": True,
+                                "name": stored_name,
+                                "email": stored_email
+                            }
+            except Exception as e:
+                print(f"[VECTOR_DB] Error searching for contact: {str(e)}")
+                continue
+        
+        return {"found": False, "name": None, "email": None}
+        
+    except Exception as e:
+        print(f"[VECTOR_DB] Error checking returning visitor: {str(e)}")
+        return {"found": False, "name": None, "email": None}

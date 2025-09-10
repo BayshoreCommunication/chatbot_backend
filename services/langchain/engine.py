@@ -409,15 +409,24 @@ def ask_bot(query: str, mode="faq", user_data=None, available_slots=None, sessio
         }
     
     # STEP 6: Generate the final response
-    final_response = generate_response(
-        query, 
-        user_info, 
-        conversation_summary, 
-        retrieved_context, 
-        personal_information, 
-        analysis, 
-        language
-    )
+    # Check if we need to use OpenAI fallback
+    use_openai_fallback = not retrieved_context or len(retrieved_context.strip()) < 50
+    
+    if use_openai_fallback:
+        print(f"[FALLBACK] Using OpenAI fallback for query: {query[:50]}...")
+        # Use direct OpenAI call for fallback
+        final_response = generate_openai_fallback_response(query, user_info, conversation_summary, language)
+    else:
+        # Use normal response generation with retrieved context
+        final_response = generate_response(
+            query, 
+            user_info, 
+            conversation_summary, 
+            retrieved_context, 
+            personal_information, 
+            analysis, 
+            language
+        )
     
     # Determine final mode for response
     final_mode = analysis["appropriate_mode"]
@@ -429,7 +438,8 @@ def ask_bot(query: str, mode="faq", user_data=None, available_slots=None, sessio
         "answer": final_response,
         "mode": final_mode,
         "language": language,
-        "user_data": user_data
+        "user_data": user_data,
+        "fallback_used": use_openai_fallback
     }
 
 def add_document(file_path=None, url=None, text=None, api_key=None):
@@ -572,6 +582,53 @@ def escalate_to_human(query, user_info):
 def get_vectorstore():
     """Get the global vectorstore instance"""
     return vectorstore
+
+def generate_openai_fallback_response(query: str, user_info: dict, conversation_summary: str, language: str) -> str:
+    """Generate response using direct OpenAI call when no sufficient context is found"""
+    try:
+        fallback_prompt = f"""
+        You are a professional, compassionate legal assistant for Carter Injury Law in Tampa, Florida.
+        
+        User's Question: "{query}"
+        User's Name: {user_info.get('name', 'Not provided')}
+        Language: {language}
+        
+        Recent Conversation Context:
+        {conversation_summary if conversation_summary else "This is the beginning of our conversation."}
+        
+        INSTRUCTIONS:
+        1. Act as a knowledgeable personal injury lawyer assistant
+        2. Be professional, empathetic, and helpful
+        3. If the question is about personal injury law, provide helpful general information
+        4. If it's outside your expertise, politely redirect to legal matters
+        5. Always maintain a caring, professional tone
+        6. Offer to schedule a free consultation when appropriate
+        7. Keep responses concise but informative
+        8. Use natural, conversational language
+        
+        FIRM DETAILS TO MENTION WHEN RELEVANT:
+        - Carter Injury Law - Premier personal injury firm in Tampa
+        - Attorneys David J. Carter and Robert Johnson
+        - Free consultations with no obligation
+        - 30-day no-fee satisfaction guarantee
+        - No fee unless we win your case
+        
+        Generate a helpful, professional response:
+        """
+        
+        response = openai.chat.completions.create(
+            model="gpt-4o",
+            messages=[{"role": "user", "content": fallback_prompt}],
+            temperature=0.7,
+            max_tokens=300
+        )
+        
+        return response.choices[0].message.content.strip()
+        
+    except Exception as e:
+        print(f"[FALLBACK] Error generating OpenAI fallback response: {str(e)}")
+        # Return a basic professional response as last resort
+        return "Thank you for your question. As a legal assistant for Carter Injury Law, I'm here to help with personal injury matters. Could you provide more details about your situation so I can better assist you? We offer free consultations to discuss your case."
 
 def reinitialize_vectorstore():
     """Reinitialize the vectorstore"""

@@ -379,7 +379,8 @@ async def ask_question(
         from services.conversation_flow import (
             process_user_message_for_info, extract_name_from_text, extract_email_from_text,
             get_enhanced_greeting, get_contextual_response, get_conversation_progression_response, should_collect_contact_info, 
-            should_offer_calendar, get_natural_contact_prompt, get_natural_email_prompt, get_natural_name_prompt, get_calendar_offer
+            should_offer_calendar, get_natural_contact_prompt, get_natural_email_prompt, get_natural_name_prompt, get_calendar_offer,
+            store_contact_info_in_vector_db, check_returning_visitor_contact
         )
         
         # Import accident intake service
@@ -396,6 +397,32 @@ async def ask_question(
         # Check if we need to collect user information naturally
         has_name = "name" in request.user_data and request.user_data["name"] and request.user_data["name"] not in ["Anonymous User", "Guest User"]
         has_email = "email" in request.user_data and request.user_data["email"] and request.user_data["email"] != "anonymous@user.com"
+        
+        # Check if this is a returning visitor by looking in vector database
+        if not (has_name and has_email):
+            # Check if we can find existing contact info in vector database
+            extracted_name = request.user_data.get("name") if has_name else None
+            extracted_email = request.user_data.get("email") if has_email else None
+            
+            returning_visitor = check_returning_visitor_contact(
+                org_id=org_id, 
+                name=extracted_name, 
+                email=extracted_email, 
+                api_key=org_api_key
+            )
+            
+            if returning_visitor.get("found"):
+                print(f"[RETURNING_VISITOR] Found existing contact info: {returning_visitor}")
+                request.user_data["name"] = returning_visitor["name"]
+                request.user_data["email"] = returning_visitor["email"]
+                request.user_data["returning_user"] = True
+                
+                # Update user profile with returning visitor info
+                save_user_profile(org_id, request.session_id, request.user_data)
+                
+                # Update has_name and has_email flags
+                has_name = True
+                has_email = True
         
         print(f"[DEBUG] Has name: {has_name}, Has email: {has_email}, Conversation count: {conversation_count}")
         
@@ -672,6 +699,15 @@ async def ask_question(
                     request.user_data["name"] = extracted_name
                     save_user_profile(org_id, request.session_id, request.user_data)
                     
+                    # Store in vector database if we also have email
+                    if request.user_data.get("email") and request.user_data.get("email") not in ["anonymous@user.com"]:
+                        store_contact_info_in_vector_db(
+                            org_id=org_id,
+                            name=extracted_name,
+                            email=request.user_data["email"],
+                            api_key=org_api_key
+                        )
+                    
                     # Natural acknowledgment and continue conversation
                     acknowledgment = f"Nice to meet you, {extracted_name}! How can I help you with your legal questions today?"
                     
@@ -786,6 +822,15 @@ async def ask_question(
             if extracted_email:
                 request.user_data["email"] = extracted_email
                 save_user_profile(org_id, request.session_id, request.user_data)
+                
+                # Store in vector database if we also have name
+                if request.user_data.get("name") and request.user_data.get("name") not in ["Anonymous User", "Guest User"]:
+                    store_contact_info_in_vector_db(
+                        org_id=org_id,
+                        name=request.user_data["name"],
+                        email=extracted_email,
+                        api_key=org_api_key
+                    )
                 
                 # Natural acknowledgment and continue
                 acknowledgment = f"Perfect! I'll make sure to send you helpful information. How can I assist you with your legal questions today?"
@@ -1058,15 +1103,61 @@ async def ask_question(
         if user_context and request.user_data.get("returning_user"):
             enhanced_query = f"{user_context}The user, who you already know, asks: {request.question}"
 
-        # Don't add the enhanced query to conversation history - use original question
-        response = ask_bot(
-            query=enhanced_query,
-            mode=request.mode,
-            user_data=request.user_data,
-            available_slots=request.available_slots,
-            session_id=request.session_id,
-            api_key=org_api_key
-        )
+        # DUPLICATE DETECTION: Check if this question has been asked before
+        try:
+            from services.enhanced_visitor_tracking import check_duplicate_question
+            
+            duplicate_check = check_duplicate_question(request.question, org_id)
+            
+            if duplicate_check.get("is_duplicate") and duplicate_check.get("match_type") == "exact":
+                print(f"[DUPLICATE] Using cached response for: {request.question[:50]}...")
+                
+                cached_answer = duplicate_check.get("cached_answer", "")
+                if cached_answer:
+                    # Use cached response
+                    response = {
+                        "answer": cached_answer,
+                        "mode": request.mode,
+                        "language": "en",
+                        "user_data": request.user_data,
+                        "sources": [],
+                        "suggested_faqs": [],
+                        "cached_response": True
+                    }
+                    
+                    print(f"[DUPLICATE] Using cached response successfully")
+                else:
+                    # Generate new response even though it's a duplicate
+                    response = ask_bot(
+                        query=enhanced_query,
+                        mode=request.mode,
+                        user_data=request.user_data,
+                        available_slots=request.available_slots,
+                        session_id=request.session_id,
+                        api_key=org_api_key
+                    )
+            else:
+                # Generate new response
+                response = ask_bot(
+                    query=enhanced_query,
+                    mode=request.mode,
+                    user_data=request.user_data,
+                    available_slots=request.available_slots,
+                    session_id=request.session_id,
+                    api_key=org_api_key
+                )
+                
+        except Exception as e:
+            print(f"[ERROR] Duplicate detection failed: {str(e)}")
+            # Fallback to normal processing
+            response = ask_bot(
+                query=enhanced_query,
+                mode=request.mode,
+                user_data=request.user_data,
+                available_slots=request.available_slots,
+                session_id=request.session_id,
+                api_key=org_api_key
+            )
 
         # Save assistant message to database FIRST
         try:
@@ -1085,6 +1176,37 @@ async def ask_question(
             import traceback
             print(f"[ERROR] Traceback: {traceback.format_exc()}")
             # Continue processing even if message storage fails
+
+        # ENHANCED VISITOR TRACKING: Track this question and response
+        try:
+            from services.enhanced_visitor_tracking import track_visitor_question, update_visitor_contact_info
+            
+            # Track the question and response
+            track_visitor_question(
+                session_id=request.session_id,
+                organization_id=org_id,
+                question=request.question,
+                answer=response["answer"],
+                user_data=response.get("user_data", {})
+            )
+            
+            # Update contact information if available
+            user_data = response.get("user_data", {})
+            name = user_data.get("name")
+            email = user_data.get("email")
+            
+            if name and name not in ["Anonymous User", "Guest User"]:
+                update_visitor_contact_info(
+                    session_id=request.session_id,
+                    organization_id=org_id,
+                    name=name,
+                    email=email if email and email != "anonymous@user.com" else None
+                )
+                print(f"[TRACKING] Updated visitor contact: {name}, {email}")
+            
+        except Exception as e:
+            print(f"[ERROR] Enhanced visitor tracking failed: {str(e)}")
+            # Continue processing even if tracking fails
 
         # Then update conversation history in user_data to match database order
         response["user_data"]["conversation_history"].append({
