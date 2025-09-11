@@ -168,7 +168,7 @@ def get_org_vectorstore(api_key):
         return vectorstore
 
 @create_error_handler
-def ask_bot(query: str, mode="faq", user_data=None, available_slots=None, session_id=None, api_key=None):
+def ask_bot(query: str, mode="faq", user_data=None, available_slots=None, session_id=None, api_key=None, faq_data=None):
     """Process user query using a central AI-driven approach"""
     # Initialize user data if None
     if user_data is None:
@@ -383,6 +383,18 @@ def ask_bot(query: str, mode="faq", user_data=None, available_slots=None, sessio
     personal_information = {}
     if analysis["needs_knowledge_lookup"] and org_vectorstore is not None:
         retrieved_context, personal_information = search_knowledge_base(query, org_vectorstore, user_info)
+
+    # STEP 4.5: Merge FAQ context with retrieved context when present
+    if faq_data:
+        try:
+            faq_context = f"FAQ Information: {faq_data.get('response', '')}"
+            if retrieved_context:
+                retrieved_context = f"{faq_context}\n\nDocument/Website Information: {retrieved_context}"
+            else:
+                retrieved_context = faq_context
+            print(f"[UNIFIED] Merged FAQ context with retrieved context. Length: {len(retrieved_context)}")
+        except Exception as e:
+            print(f"[UNIFIED] Failed to merge FAQ context: {str(e)}")
     
     # STEP 5: Handle special cases if needed
     if analysis["special_handling"] == "identity":
@@ -409,8 +421,8 @@ def ask_bot(query: str, mode="faq", user_data=None, available_slots=None, sessio
         }
     
     # STEP 6: Generate the final response
-    # Check if we need to use OpenAI fallback
-    use_openai_fallback = not retrieved_context or len(retrieved_context.strip()) < 50
+    # Prefer using retrieved context whenever present; fallback only when none
+    use_openai_fallback = not retrieved_context or len(retrieved_context.strip()) == 0
     
     if use_openai_fallback:
         print(f"[FALLBACK] Using OpenAI fallback for query: {query[:50]}...")
@@ -433,6 +445,40 @@ def ask_bot(query: str, mode="faq", user_data=None, available_slots=None, sessio
     # Reset to FAQ mode if we've completed other flows
     if has_booked_appointment and final_mode == "appointment":
         final_mode = "faq"
+    
+    # Post-process: keep answers concise and natural (3-5 sentences, limit length)
+    try:
+        if isinstance(final_response, str):
+            # Normalize whitespace
+            normalized = re.sub(r"\s+", " ", final_response).strip()
+            # Split into sentences conservatively
+            sentences = re.split(r"(?<=[.!?])\s+", normalized)
+            # Keep up to 5 sentences
+            if len(sentences) > 5:
+                sentences = sentences[:5]
+            concise = " ".join(sentences).strip()
+            # Hard cap characters to avoid long marketing copy
+            if len(concise) > 700:
+                concise = concise[:700].rsplit(" ", 1)[0] + "..."
+            final_response = concise
+    except Exception:
+        pass
+
+    # De-duplicate: avoid repeating the same assistant message back-to-back
+    try:
+        last_assistant_msg = None
+        if session_id and api_key:
+            # We already fetched latest conversations earlier; re-fetch minimal or use user_data history
+            history = user_data.get("conversation_history", [])
+            for msg in reversed(history):
+                if msg.get("role") == "assistant":
+                    last_assistant_msg = (msg.get("content") or "").strip()
+                    break
+        if last_assistant_msg and last_assistant_msg == (final_response or "").strip():
+            # If duplicate, add a concise follow-up instead of repeating
+            final_response = final_response + "\n\nIs there anything specific about your case you'd like me to look up?"
+    except Exception:
+        pass
     
     return {
         "answer": final_response,
