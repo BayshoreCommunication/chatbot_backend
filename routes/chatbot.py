@@ -336,6 +336,7 @@ async def ask_question(
             request.user_data.update(user_profile["profile_data"])
             request.user_data["returning_user"] = True
             print(f"[DEBUG] Loaded user profile: {user_profile['profile_data']}")
+            print(f"[DEBUG] Loaded calendar_offered: {request.user_data.get('calendar_offered', False)}")
         else:
             print("[DEBUG] No user profile found")
 
@@ -665,6 +666,7 @@ async def ask_question(
         # STEP 6: Check if we should offer smart calendar scheduling (limit repeats per session)
         should_offer_cal = should_offer_calendar(conversation_history, request.question, request.user_data)
         if should_offer_cal and not request.user_data.get("calendar_offered", False):
+            print(f"[DEBUG] First calendar offer trigger - calendar_offered: {request.user_data.get('calendar_offered', False)}")
             calendar_offer = get_calendar_offer(request.user_data)
             request.user_data["calendar_offered"] = True
             print(f"[DEBUG] Offering smart calendar: {calendar_offer}")
@@ -1100,10 +1102,12 @@ async def ask_question(
                 "suggested_faqs": suggested_faqs
             }
 
-        # Check if we should offer calendar scheduling
-        if should_offer_cal:
-            print("[DEBUG] Offering calendar scheduling")
+        # Check if we should offer calendar scheduling (limit repeats per session)
+        if should_offer_cal and not request.user_data.get("calendar_offered", False):
+            print(f"[DEBUG] Offering calendar scheduling - calendar_offered: {request.user_data.get('calendar_offered', False)}")
             calendar_offer = get_calendar_offer(request.user_data)
+            request.user_data["calendar_offered"] = True
+            print(f"[DEBUG] Set calendar_offered to True")
             
             # Store and add to history
             add_conversation_message(
@@ -1305,6 +1309,10 @@ async def ask_question(
             print(f"[LEARNING] Stored enhanced interaction with intent: {smart_suggestions.get('intent')}")
         except Exception as e:
             print(f"Error storing enhanced learning data: {str(e)}")
+
+        # Save updated user_data back to user profile (including calendar_offered flag)
+        save_user_profile(org_id, request.session_id, request.user_data)
+        print(f"[DEBUG] Saved user profile with calendar_offered: {request.user_data.get('calendar_offered', False)}")
 
         # After getting bot response, emit it to dashboard
         await sio.emit('new_message', {

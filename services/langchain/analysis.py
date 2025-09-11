@@ -322,11 +322,11 @@ def generate_response(query, user_info, conversation_summary, retrieved_context,
             query_lower = query.lower()
             
             if "cases" in query_lower and ("outside" in query_lower or "tampa" in query_lower):
-                return "Yes, Carter Injury Law handles personal injury cases throughout Florida, not just in Tampa. We serve clients in surrounding areas and can travel to meet with you. Our experienced attorneys David J. Carter and Robert Johnson are licensed to practice throughout the state. Would you like to schedule a free consultation to discuss your case?"
+                return "Yes, Carter Injury Law handles personal injury cases throughout Florida, not just in Tampa. We serve clients in surrounding areas and can travel to meet with you. Our experienced attorneys David J. Carter and Robert Johnson are licensed to practice throughout the state."
             elif "help" in query_lower or "assist" in query_lower:
-                return "I'm here to help you with any questions about personal injury law, our services, or to schedule a consultation. Carter Injury Law offers free initial consultations and we work on a no-fee-unless-we-win basis. What specific questions do you have?"
+                return "I'm here to help you with any questions about personal injury law, our services, or legal matters. Carter Injury Law offers free initial consultations and we work on a no-fee-unless-we-win basis. What specific questions do you have?"
             elif "accident" in query_lower:
-                return "I'm sorry to hear about your accident. Carter Injury Law specializes in all types of personal injury cases including auto accidents, slip and falls, and more. We offer free consultations and work on a contingency fee basis. Would you like to discuss your case with one of our experienced attorneys?"
+                return "I'm sorry to hear about your accident. Carter Injury Law specializes in all types of personal injury cases including auto accidents, slip and falls, and more. We offer free consultations and work on a contingency fee basis."
             else:
                 return f"Thank you for your question about {query}. As a legal assistant for Carter Injury Law, I'm here to help with personal injury matters. Could you provide more details about your situation so I can better assist you?"
 

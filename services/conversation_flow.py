@@ -109,6 +109,11 @@ def should_offer_calendar(conversation_history: list, user_query: str, user_data
     """Determine if we should offer calendar scheduling based on smart context analysis"""
     clean_query = user_query.lower().strip()
     
+    # Don't offer if we already offered in this session
+    if user_data.get("calendar_offered", False):
+        print(f"[CALENDAR] Calendar already offered in this session - skipping")
+        return False
+    
     # Check for appointment/scheduling keywords
     appointment_keywords = [
         "appointment", "schedule", "meeting", "consultation", "talk", "discuss", 
@@ -133,7 +138,16 @@ def should_offer_calendar(conversation_history: list, user_query: str, user_data
     conversation_count = len(conversation_history)
     is_engaged = conversation_count > 4  # At least 2 exchanges
     
-    return has_appointment_intent or (has_case_need and is_engaged)
+    should_offer = has_appointment_intent or (has_case_need and is_engaged)
+    
+    print(f"[CALENDAR] Query: '{clean_query}'")
+    print(f"[CALENDAR] has_appointment_intent: {has_appointment_intent}")
+    print(f"[CALENDAR] has_case_need: {has_case_need}")
+    print(f"[CALENDAR] conversation_count: {conversation_count}")
+    print(f"[CALENDAR] is_engaged: {is_engaged}")
+    print(f"[CALENDAR] should_offer: {should_offer}")
+    
+    return should_offer
 
 def get_natural_contact_prompt(user_data: Dict[str, Any], conversation_count: int) -> str:
     """Generate natural prompts for contact information collection"""

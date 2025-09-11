@@ -328,10 +328,11 @@ def ask_bot(query: str, mode="faq", user_data=None, available_slots=None, sessio
                 "suggested_faqs": []
             }
     
-    # Check if we should offer calendar scheduling
+    # Check if we should offer calendar scheduling (limit repeats per session)
     should_offer = should_offer_calendar(user_data.get("conversation_history", []), original_query, user_data)
-    if should_offer:
+    if should_offer and not user_data.get("calendar_offered", False):
         calendar_offer = get_calendar_offer(user_data)
+        user_data["calendar_offered"] = True
         return {
             "answer": calendar_offer,
             "mode": "appointment",
@@ -674,7 +675,7 @@ def generate_openai_fallback_response(query: str, user_info: dict, conversation_
     except Exception as e:
         print(f"[FALLBACK] Error generating OpenAI fallback response: {str(e)}")
         # Return a basic professional response as last resort
-        return "Thank you for your question. As a legal assistant for Carter Injury Law, I'm here to help with personal injury matters. Could you provide more details about your situation so I can better assist you? We offer free consultations to discuss your case."
+        return "Thank you for your question. As a legal assistant for Carter Injury Law, I'm here to help with personal injury matters. Could you provide more details about your situation so I can better assist you?"
 
 def reinitialize_vectorstore():
     """Reinitialize the vectorstore"""
