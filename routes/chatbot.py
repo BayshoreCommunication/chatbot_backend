@@ -662,10 +662,11 @@ async def ask_question(
         
         # STEP 5: Contact info collection is already handled above
         
-        # STEP 6: Check if we should offer smart calendar scheduling
+        # STEP 6: Check if we should offer smart calendar scheduling (limit repeats per session)
         should_offer_cal = should_offer_calendar(conversation_history, request.question, request.user_data)
-        if should_offer_cal:
+        if should_offer_cal and not request.user_data.get("calendar_offered", False):
             calendar_offer = get_calendar_offer(request.user_data)
+            request.user_data["calendar_offered"] = True
             print(f"[DEBUG] Offering smart calendar: {calendar_offer}")
             
             # Store and add to history
