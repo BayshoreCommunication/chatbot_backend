@@ -233,7 +233,7 @@ def extract_slot_info(query, available_slots):
     
     try:
         slot_response = openai.chat.completions.create(
-           model="gpt-4o",
+            model="gpt-3.5-turbo",
             messages=[{"role": "user", "content": slot_selection_prompt}],
             response_format={"type": "json_object"},
             temperature=0.1
@@ -370,7 +370,7 @@ def analyze_appointment_query(query):
     
     try:
         intent_response = openai.chat.completions.create(
-           model="gpt-4o",
+            model="gpt-3.5-turbo",
             messages=[{"role": "user", "content": intent_analysis_prompt}],
             response_format={"type": "json_object"},
             temperature=0.1
@@ -449,23 +449,7 @@ def handle_booking(query, user_data, available_slots, language, api_key=None):
         ])
         
         if not has_specific_details:
-            # Enhanced, more natural appointment offering
-            user_name = user_data.get("name", "")
-            greeting = f"Perfect, {user_name}!" if user_name and user_name not in ["Anonymous User", "Guest User"] else "I'd be happy to help!"
-            
-            response = f"""{greeting} Let me show you our available consultation times. 
-
-📅 **Available Appointments:**
-{available_slots}
-
-💡 **About Our Free Consultation:**
-• Meet with attorneys David J. Carter or Robert Johnson
-• Discuss your case in detail and get personalized legal advice
-• Learn about your rights and options
-• Completely free with no obligation
-• 30-day satisfaction guarantee
-
-Simply tell me which time works best for you, and I'll get you scheduled right away!"""
+            response = f"I'd be happy to help you schedule an appointment! Here are the available slots:\n\n{available_slots}"
             
             user_data["api_call_count"] = 0
             

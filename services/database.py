@@ -15,36 +15,8 @@ load_dotenv()
 # Get MongoDB connection string
 MONGO_URI = os.getenv("MONGO_URI")
 
-# Connect to MongoDB with improved connection options
-try:
-    # Add connection options to handle DNS timeouts and improve reliability
-    client = pymongo.MongoClient(
-        MONGO_URI,
-        serverSelectionTimeoutMS=30000,  # 30 seconds timeout
-        connectTimeoutMS=20000,          # 20 seconds connection timeout
-        socketTimeoutMS=20000,           # 20 seconds socket timeout
-        maxPoolSize=10,                  # Connection pool size
-        retryWrites=True,
-        retryReads=True,
-        w="majority"
-    )
-    
-    # Test the connection
-    client.admin.command('ping')
-    print("✅ Successfully connected to MongoDB!")
-    
-except pymongo.errors.ServerSelectionTimeoutError as e:
-    print(f"❌ MongoDB connection failed: {e}")
-    print("🔧 Troubleshooting tips:")
-    print("   1. Check your internet connection")
-    print("   2. Verify the MongoDB URI is correct")
-    print("   3. Check if MongoDB Atlas is accessible")
-    print("   4. Try using a different DNS server")
-    raise
-except Exception as e:
-    print(f"❌ Unexpected error connecting to MongoDB: {e}")
-    raise
-
+# Connect to MongoDB
+client = pymongo.MongoClient(MONGO_URI)
 db = client.saas_chatbot_db
 
 def get_database():
@@ -107,7 +79,7 @@ def create_organization(name: str, subscription_tier: str = "free", user_id: str
     # Generate unique namespace for vector DB
     pinecone_namespace = f"org_{uuid.uuid4().hex}"
     
-    current_time = datetime.datetime.now()
+    current_time = datetime.datetime.utcnow()
     
     org_data = {
         "id": str(uuid.uuid4()),
@@ -140,7 +112,7 @@ def get_organization_by_api_key(api_key: str) -> Optional[Dict[str, Any]]:
 def update_organization(org_id: str, update_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Update organization data"""
     # Add updated_at timestamp
-    update_data["updated_at"] = datetime.datetime.now()
+    update_data["updated_at"] = datetime.datetime.utcnow()
     
     organizations.update_one({"id": org_id}, {"$set": update_data})
     return organizations.find_one({"id": org_id})
@@ -172,7 +144,7 @@ def create_or_update_visitor(organization_id: str, session_id: str, visitor_data
         # Update existing visitor
         visitors.update_one(
             {"organization_id": organization_id, "session_id": session_id},
-            {"$set": {**visitor_data, "last_active": visitor_data.get("last_active", datetime.datetime.now())}}
+            {"$set": {**visitor_data, "last_active": visitor_data.get("last_active", datetime.datetime.utcnow())}}
         )
         return visitors.find_one({"organization_id": organization_id, "session_id": session_id})
     else:
@@ -182,8 +154,8 @@ def create_or_update_visitor(organization_id: str, session_id: str, visitor_data
             "id": visitor_id,
             "organization_id": organization_id,
             "session_id": session_id,
-                    "created_at": datetime.datetime.now(),  # Add created_at timestamp
-        "last_active": visitor_data.get("last_active", datetime.datetime.now()),
+            "created_at": datetime.datetime.utcnow(),  # Add created_at timestamp
+            "last_active": visitor_data.get("last_active", datetime.datetime.utcnow()),
             **visitor_data
         }
         visitors.insert_one(new_visitor)
@@ -201,18 +173,14 @@ def set_agent_mode(organization_id: str, session_id: str, agent_id: str = None) 
     
     update_data = {
         "is_agent_mode": True,
-        "agent_takeover_at": datetime.datetime.now(),
+        "agent_takeover_at": datetime.datetime.utcnow(),
         "agent_id": agent_id
     }
     
-    result = visitors.update_one(
+    visitors.update_one(
         {"organization_id": organization_id, "session_id": session_id},
         {"$set": update_data}
     )
-    
-    if result.modified_count == 0:
-        print(f"Warning: No document was modified for session {session_id}")
-        return None
     
     return visitors.find_one({"organization_id": organization_id, "session_id": session_id})
 
@@ -228,14 +196,10 @@ def set_bot_mode(organization_id: str, session_id: str) -> Dict[str, Any]:
         "agent_id": None
     }
     
-    result = visitors.update_one(
+    visitors.update_one(
         {"organization_id": organization_id, "session_id": session_id},
         {"$set": update_data}
     )
-    
-    if result.modified_count == 0:
-        print(f"Warning: No document was modified for session {session_id}")
-        return None
     
     return visitors.find_one({"organization_id": organization_id, "session_id": session_id})
 
@@ -254,36 +218,19 @@ def add_conversation_message(
     metadata: Dict[str, Any] = None
 ) -> Dict[str, Any]:
     """Add a message to the conversation history"""
-    try:
-        print(f"[DEBUG] Adding conversation message: org_id={organization_id}, session_id={session_id}, role={role}")
-        message = {
-            "id": str(uuid.uuid4()),
-            "organization_id": organization_id,
-            "visitor_id": visitor_id,
-            "session_id": session_id,
-            "role": role,
-            "content": content,
-            "created_at": datetime.datetime.now(),  # Explicitly set current timestamp
-            "metadata": metadata or {}
-        }
-        
-        print(f"[DEBUG] Message to insert: {message}")
-        result = conversations.insert_one(message)
-        print(f"[DEBUG] Insert result: {result.inserted_id}")
-        
-        # Verify the message was saved
-        saved_message = conversations.find_one({"id": message["id"]})
-        if saved_message:
-            print(f"[DEBUG] Message successfully saved to database")
-        else:
-            print(f"[ERROR] Message was not found in database after insert")
-            
-        return message
-    except Exception as e:
-        print(f"[ERROR] Failed to add conversation message: {str(e)}")
-        import traceback
-        print(f"[ERROR] Traceback: {traceback.format_exc()}")
-        raise
+    message = {
+        "id": str(uuid.uuid4()),
+        "organization_id": organization_id,
+        "visitor_id": visitor_id,
+        "session_id": session_id,
+        "role": role,
+        "content": content,
+        "created_at": datetime.datetime.utcnow(),  # Explicitly set current timestamp
+        "metadata": metadata or {}
+    }
+    
+    conversations.insert_one(message)
+    return message
 
 def get_conversation_history(organization_id, session_id):
     """Retrieve conversation history from MongoDB for a specific session"""
@@ -323,7 +270,7 @@ def add_organization_document(organization_id: str, document_data: Dict[str, Any
         document_data["document_id"] = str(uuid.uuid4())
     
     document_data["organization_id"] = organization_id
-    document_data["created_at"] = document_data.get("created_at", datetime.datetime.now())
+    document_data["created_at"] = document_data.get("created_at", datetime.datetime.utcnow())
     
     # Check if document already exists
     existing = documents.find_one({
@@ -373,7 +320,7 @@ def save_user_profile(organization_id: str, session_id: str, profile_data: Dict[
     profile = {
         "organization_id": organization_id,
         "session_id": session_id,
-        "updated_at": datetime.datetime.now(),  # Use Python's datetime module
+        "updated_at": datetime.datetime.utcnow(),  # Use Python's datetime module
         "profile_data": profile_data
     }
     
@@ -431,8 +378,8 @@ def create_subscription(
         "subscription_status": "active",
         "current_period_start": current_period_start,
         "current_period_end": current_period_end,
-        "created_at": datetime.datetime.now(),
-        "updated_at": datetime.datetime.now()
+        "created_at": datetime.datetime.utcnow(),
+        "updated_at": datetime.datetime.utcnow()
     }
     
     result = subscriptions.insert_one(subscription_data)
@@ -472,7 +419,7 @@ def update_subscription_status(stripe_subscription_id: str, status: str) -> Opti
         {
             "$set": {
                 "subscription_status": status,
-                "updated_at": datetime.datetime.now()
+                "updated_at": datetime.datetime.utcnow()
             }
         }
     )
@@ -490,16 +437,11 @@ def update_subscription_period(
             "$set": {
                 "current_period_start": current_period_start,
                 "current_period_end": current_period_end,
-                "updated_at": datetime.datetime.now()
+                "updated_at": datetime.datetime.utcnow()
             }
         }
     )
     return get_subscription_by_stripe_id(stripe_subscription_id)
 
 # Initialize database on module import
-try:
-    init_db()
-    print("✅ Database indexes initialized successfully")
-except Exception as e:
-    print(f"⚠️ Warning: Database index initialization failed: {e}")
-    print("This is usually not critical - indexes may already exist") 
+init_db() 

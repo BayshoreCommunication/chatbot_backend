@@ -191,16 +191,7 @@ def search_knowledge_base(query, vectorstore, user_info):
             except Exception as e:
                 print(f"Error in identity fallback search: {str(e)}")
         
-        # Check if we have sufficient context from vector search
-        has_sufficient_context = retrieved_context and len(retrieved_context.strip()) > 100
-        
-        # If we don't have sufficient context, mark for OpenAI fallback
-        if not has_sufficient_context:
-            print(f"[FALLBACK] Insufficient context from vector search (length: {len(retrieved_context) if retrieved_context else 0})")
-            # Return empty context to trigger OpenAI fallback in the main flow
-            return "", personal_information
-        
-        # If we got no useful identity information, provide a minimal fallback for identity queries only
+        # If we got no useful identity information, provide a minimal fallback
         if (is_identity_query or is_experience_query) and (not retrieved_context or len(retrieved_context) < 50):
             retrieved_context = "I am a legal professional with expertise in various areas of law including civil, corporate, and constitutional matters. I provide legal consultation and representation services to clients. I have multiple years of experience in the legal field."
         
@@ -228,7 +219,7 @@ def extract_personal_information(user_context):
     
     try:
         personal_info_response = openai.chat.completions.create(
-           model="gpt-4o",
+            model="gpt-3.5-turbo",
             messages=[{"role": "user", "content": personal_information_prompt}],
             response_format={"type": "json_object"},
             temperature=0.1

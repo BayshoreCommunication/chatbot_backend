@@ -26,7 +26,7 @@ def handle_json_decode_error(error_message, language="en", user_data=None):
     print(f"JSON Decode Error: {error_message}")
     
     # Simple message about who the assistant is as fallback
-    response = "Hello! 👋 Thanks for reaching out to Carter Injury Law. How can I assist you today?"
+    response = "I'm an AI assistant here to help with your questions and appointment scheduling. How can I assist you today?"
     
     return {
         "answer": response,
@@ -41,7 +41,7 @@ def handle_general_error(error_message, language="en", user_data=None):
     
     try:
         # Simple message about who the assistant is as fallback
-        response = "Hello! 👋 Thanks for reaching out to Carter Injury Law. How can I assist you today?"
+        response = "I'm an AI assistant here to help with your questions and appointment scheduling. How can I assist you today?"
         
         return {
             "answer": response,

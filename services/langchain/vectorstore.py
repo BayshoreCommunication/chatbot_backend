@@ -1,4 +1,4 @@
-import pinecone
+from pinecone import Pinecone
 from langchain_pinecone import PineconeVectorStore
 import os
 from langchain_community.document_loaders import WebBaseLoader, PyPDFLoader
@@ -15,7 +15,7 @@ from urllib.parse import urljoin, urlparse
 def initialize_vectorstore(embeddings, api_key=None):
     """Initialize the Pinecone vector store with optional organization namespace"""
     # Initialize Pinecone
-    pc = pinecone.Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
+    pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
     index_name = os.getenv("PINECONE_INDEX")
     print(f"PINECONE_INDEX: {index_name}")  # Debug print
     
@@ -29,7 +29,7 @@ def initialize_vectorstore(embeddings, api_key=None):
 
     # Use fallback value if index_name is None
     if index_name is None:
-        index_name = "bayshoreai"
+        index_name = "bayai"
         print(f"Using fallback index_name: {index_name}")
 
     # Check if index exists, if not create it
@@ -82,13 +82,13 @@ def add_document_to_vectorstore(vectorstore, pc, index_name, embeddings, api_key
     
     # Ensure index_name is never None
     if index_name is None:
-        index_name = "bayshoreai"
+        index_name = "bayai"
         print(f"CRITICAL: Using hardcoded fallback index_name: {index_name}")
     
     # Check if PC connection is established
     if pc is None:
         print("Pinecone connection is None, initializing...")
-        pc = pinecone.Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
+        pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
     
     # List available indexes
     try:
@@ -126,41 +126,87 @@ def add_document_to_vectorstore(vectorstore, pc, index_name, embeddings, api_key
                 
         elif url:
             print(f"Loading URL from {url}")
-            # Check if the URL contains a parameter for comprehensive scraping
-            if "scrape_website=true" in url.lower() or "scrape_site=true" in url.lower():
-                # Extract the actual URL without the parameters
-                base_url = url.split('?')[0] if '?' in url else url
+            try:
+                # Check if the URL contains a parameter for comprehensive scraping
+                if "scrape_website=true" in url.lower() or "scrape_site=true" in url.lower():
+                    # Extract the actual URL without the parameters
+                    base_url = url.split('?')[0] if '?' in url else url
+                    
+                    # Extract max_pages if specified
+                    max_pages = 10  # Default
+                    if "max_pages=" in url.lower():
+                        try:
+                            # Extract the max_pages value
+                            for param in url.split('?')[1].split('&'):
+                                if param.lower().startswith("max_pages="):
+                                    max_pages = int(param.split('=')[1])
+                                    break
+                        except:
+                            pass
+                    
+                    print(f"Performing comprehensive website scraping of {base_url} with max_pages={max_pages}")
+                    documents = scrape_website_content(base_url, max_pages)
+                else:
+                    # Use standard WebBaseLoader for single page with enhanced error handling
+                    print(f"Attempting to load single page: {url}")
+                    
+                    # Try to access URL first to check if it's reachable
+                    import requests
+                    headers = {
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                    }
+                    
+                    try:
+                        # Test URL accessibility
+                        print(f"Testing URL accessibility: {url}")
+                        response = requests.get(url, headers=headers, timeout=15)
+                        response.raise_for_status()
+                        print(f"URL is accessible. Status code: {response.status_code}")
+                        print(f"Content length: {len(response.text)} characters")
+                        
+                        # Check if content is not empty
+                        if len(response.text.strip()) < 100:
+                            raise Exception(f"URL returned very little content ({len(response.text)} characters). The page might be empty or require JavaScript.")
+                            
+                    except requests.exceptions.Timeout:
+                        raise Exception(f"Timeout error: The website {url} took too long to respond (>15 seconds). Try again later.")
+                    except requests.exceptions.ConnectionError:
+                        raise Exception(f"Connection error: Unable to connect to {url}. Check if the website is accessible.")
+                    except requests.exceptions.HTTPError as e:
+                        if response.status_code == 403:
+                            raise Exception(f"Access denied (403): The website {url} is blocking automated requests. This is common with sites using Cloudflare or similar protection.")
+                        elif response.status_code == 404:
+                            raise Exception(f"Page not found (404): The URL {url} does not exist.")
+                        elif response.status_code >= 500:
+                            raise Exception(f"Server error ({response.status_code}): The website {url} is experiencing technical difficulties.")
+                        else:
+                            raise Exception(f"HTTP error {response.status_code}: Unable to access {url}")
+                    except Exception as e:
+                        raise Exception(f"Network error accessing {url}: {str(e)}")
+                    
+                    # If URL is accessible, try WebBaseLoader
+                    try:
+                        print(f"URL test successful, proceeding with WebBaseLoader")
+                        loader = WebBaseLoader(url)
+                        documents = loader.load()
+                        print(f"WebBaseLoader successful")
+                    except Exception as e:
+                        print(f"WebBaseLoader failed: {str(e)}")
+                        # Fallback to manual scraping if WebBaseLoader fails
+                        print("Falling back to manual scraping...")
+                        documents = scrape_website_content(url, 1)  # Just scrape the single page
                 
-                # Extract max_pages and platform if specified
-                max_pages = 10  # Default
-                platform = "website"  # Default
+                print(f"Loaded {len(documents)} documents from URL")
                 
-                if "?" in url:
-                    params = url.split('?')[1].split('&')
-                    for param in params:
-                        if param.lower().startswith("max_pages="):
-                            try:
-                                max_pages = int(param.split('=')[1])
-                            except:
-                                pass
-                        elif param.lower().startswith("platform="):
-                            try:
-                                platform = param.split('=')[1]
-                            except:
-                                pass
-                
-                # Ensure platform is always provided - fallback for backward compatibility
-                if not platform:
-                    platform = "website"
-                
-                print(f"Performing comprehensive website scraping of {base_url} with max_pages={max_pages}, platform={platform}")
-                documents = scrape_website_content(base_url, max_pages, platform)
-            else:
-                # Use standard WebBaseLoader for single page
-                loader = WebBaseLoader(url)
-                documents = loader.load()
-            
-            print(f"Loaded {len(documents)} documents from URL")
+                # Validate that we got meaningful content
+                total_content_length = sum(len(doc.page_content) for doc in documents)
+                if total_content_length < 100:
+                    raise Exception(f"Extracted content is too short ({total_content_length} characters). The page might be mostly JavaScript-based or have access restrictions.")
+                    
+            except Exception as e:
+                error_msg = f"Failed to load URL {url}: {str(e)}"
+                print(error_msg)
+                raise Exception(error_msg)
         
         elif text:
             print(f"Processing text input of length: {len(text)}")
@@ -186,7 +232,7 @@ def add_document_to_vectorstore(vectorstore, pc, index_name, embeddings, api_key
                     try:
                         # Make sure index_name is passed correctly
                         if not index_name:
-                            index_name = "bayshoreai"
+                            index_name = "bayai"
                             print(f"Using default index name: {index_name}")
                             
                         # Get Pinecone index
@@ -309,183 +355,18 @@ def add_document_to_vectorstore(vectorstore, pc, index_name, embeddings, api_key
         print(f"Error processing documents: {str(e)}")
         return {"status": "error", "message": str(e)}
 
-def extract_faq_content(soup, url):
-    """
-    Extract FAQ content specifically from FAQ pages
-    Returns structured FAQ text or None if no FAQ content found
-    """
-    faq_text = ""
-    
-    # Check if this is an FAQ page
-    if "/faq" in url.lower() or "frequently" in soup.get_text().lower():
-        print(f"Detected FAQ page: {url}")
-        
-        # Method 1: Look for FAQ structured content (Carter Injury Law style)
-        # Look for question-answer pairs in various HTML structures
-        
-        # Look for h2/h3 tags that might contain questions
-        questions = soup.find_all(['h2', 'h3', 'h4'], string=lambda text: text and ('?' in text or 'how' in text.lower() or 'what' in text.lower() or 'who' in text.lower() or 'when' in text.lower() or 'where' in text.lower() or 'why' in text.lower()))
-        
-        for question in questions:
-            question_text = question.get_text(strip=True)
-            
-            # Find the answer (next sibling elements)
-            answer_text = ""
-            next_elem = question.next_sibling
-            
-            # Collect answer text from following elements
-            while next_elem:
-                if hasattr(next_elem, 'name'):
-                    # Stop if we hit another question
-                    if next_elem.name in ['h2', 'h3', 'h4'] and ('?' in next_elem.get_text() or 'how' in next_elem.get_text().lower()):
-                        break
-                    
-                    # Collect text from paragraph, div, or list elements
-                    if next_elem.name in ['p', 'div', 'ul', 'ol', 'li']:
-                        answer_text += " " + next_elem.get_text(strip=True)
-                
-                next_elem = next_elem.next_sibling
-                
-                # Limit answer length to prevent runaway collection
-                if len(answer_text) > 1000:
-                    break
-            
-            if answer_text.strip():
-                faq_text += f"\nQ: {question_text}\nA: {answer_text.strip()}\n"
-        
-        # Method 2: Look for FAQ sections with specific classes or IDs
-        faq_sections = soup.find_all(['div', 'section'], class_=lambda c: c and any(keyword in c.lower() for keyword in ['faq', 'question', 'accordion']))
-        
-        for section in faq_sections:
-            section_text = section.get_text(separator="\n", strip=True)
-            if section_text and len(section_text) > 50:  # Only include substantial content
-                faq_text += f"\n{section_text}\n"
-        
-        # Method 3: Carter Injury Law specific - look for their FAQ structure
-        # Based on the website content you provided
-        carter_faqs = [
-            ("How much will it cost me to hire you?", "We work on a contingency fee basis - no fee unless we win your case. Our 30-day satisfaction guarantee ensures you're completely satisfied with our services."),
-            ("How long will my personal injury case take?", "Case duration varies depending on complexity, but we work efficiently to resolve cases as quickly as possible while maximizing your compensation."),
-            ("How much is my case worth?", "Case value depends on factors like injury severity, medical expenses, lost wages, and pain and suffering. We provide free case evaluations to assess your claim's potential value."),
-            ("Who pays my medical bills after an accident?", "Medical bills may be covered by your insurance, the at-fault party's insurance, or through other means. We help coordinate payment and ensure you receive proper coverage."),
-            ("How long do I have to file my claim?", "In Florida, the statute of limitations for personal injury cases is typically 2-4 years, but this varies by case type. It's important to act quickly to preserve evidence and protect your rights."),
-            ("Will my insurance go up if I make a claim?", "Generally, filing a claim against another party's insurance shouldn't affect your rates. However, filing claims with your own insurance may impact premiums depending on your policy and circumstances.")
-        ]
-        
-        # Add Carter Injury Law specific FAQs if this appears to be their site
-        if "carterinjurylaw" in url.lower() or "carter injury" in soup.get_text().lower():
-            print("Adding Carter Injury Law specific FAQ content")
-            for q, a in carter_faqs:
-                faq_text += f"\nQ: {q}\nA: {a}\n"
-    
-    return faq_text.strip() if faq_text.strip() else None
-
-def extract_social_media_content(soup, url, domain):
-    """
-    Extract relevant content from social media platforms
-    """
-    content = ""
-    
-    try:
-        if "facebook.com" in domain:
-            # Extract Facebook page content
-            # Look for page description, about section, posts
-            about_section = soup.find("div", {"data-overviewsection": "about"}) or soup.find("div", class_=lambda c: c and "about" in c.lower())
-            if about_section:
-                content += f"About: {about_section.get_text(strip=True)}\n"
-            
-            # Look for page posts or timeline content
-            posts = soup.find_all("div", {"data-testid": "post_message"}) or soup.find_all("div", class_=lambda c: c and "post" in c.lower())
-            for post in posts[:5]:  # Limit to 5 posts
-                post_text = post.get_text(strip=True)
-                if len(post_text) > 20:  # Only include substantial posts
-                    content += f"Post: {post_text}\n"
-        
-        elif "linkedin.com" in domain:
-            # Extract LinkedIn company/profile content
-            # Look for company description, about section
-            about_section = soup.find("section", class_=lambda c: c and "about" in c.lower()) or soup.find("div", class_=lambda c: c and "summary" in c.lower())
-            if about_section:
-                content += f"About: {about_section.get_text(strip=True)}\n"
-            
-            # Look for experience, skills, company info
-            experience = soup.find_all("div", class_=lambda c: c and ("experience" in c.lower() or "position" in c.lower()))
-            for exp in experience[:3]:
-                exp_text = exp.get_text(strip=True)
-                if len(exp_text) > 20:
-                    content += f"Experience: {exp_text}\n"
-        
-        elif "instagram.com" in domain:
-            # Extract Instagram profile content
-            # Look for bio, highlights
-            bio = soup.find("div", class_=lambda c: c and "bio" in c.lower()) or soup.find("span", class_=lambda c: c and "bio" in c.lower())
-            if bio:
-                content += f"Bio: {bio.get_text(strip=True)}\n"
-        
-        elif "twitter.com" in domain or "x.com" in domain:
-            # Extract Twitter/X profile content
-            # Look for bio, pinned tweets
-            bio = soup.find("div", {"data-testid": "UserDescription"}) or soup.find("div", class_=lambda c: c and "bio" in c.lower())
-            if bio:
-                content += f"Bio: {bio.get_text(strip=True)}\n"
-                
-            # Look for recent tweets
-            tweets = soup.find_all("div", {"data-testid": "tweetText"}) or soup.find_all("div", class_=lambda c: c and "tweet" in c.lower())
-            for tweet in tweets[:3]:  # Limit to 3 tweets
-                tweet_text = tweet.get_text(strip=True)
-                if len(tweet_text) > 20:
-                    content += f"Tweet: {tweet_text}\n"
-        
-        elif "youtube.com" in domain:
-            # Extract YouTube channel content
-            # Look for channel description, video titles
-            channel_desc = soup.find("div", {"id": "description"}) or soup.find("div", class_=lambda c: c and "description" in c.lower())
-            if channel_desc:
-                content += f"Channel Description: {channel_desc.get_text(strip=True)}\n"
-            
-            # Look for video titles and descriptions
-            videos = soup.find_all("div", {"id": "meta"}) or soup.find_all("h3", class_=lambda c: c and "title" in c.lower())
-            for video in videos[:5]:  # Limit to 5 videos
-                video_text = video.get_text(strip=True)
-                if len(video_text) > 10:
-                    content += f"Video: {video_text}\n"
-        
-        # Fallback: extract any meaningful text content
-        if not content:
-            # Remove common social media navigation elements
-            for nav in soup.find_all(["nav", "header", "footer", "aside"]):
-                nav.decompose()
-            
-            # Get main content areas
-            main_areas = soup.find_all(["main", "article", "section", "div"], class_=lambda c: c and any(keyword in c.lower() for keyword in ["content", "main", "post", "bio", "about", "description"]))
-            
-            for area in main_areas:
-                area_text = area.get_text(strip=True)
-                if len(area_text) > 50:  # Only include substantial content
-                    content += f"{area_text}\n"
-    
-    except Exception as e:
-        print(f"Error extracting social media content: {str(e)}")
-        # Fallback to basic text extraction
-        content = soup.get_text(separator="\n", strip=True)
-        content = "\n".join(line.strip() for line in content.split("\n") if line.strip() and len(line.strip()) > 10)
-    
-    return content.strip() if content.strip() else None
-
-def scrape_website_content(base_url, max_pages=10, platform="website"):
+def scrape_website_content(base_url, max_pages=10):
     """
     Scrape content from a website, following internal links up to max_pages
-    Enhanced to handle social media platforms
     
     Args:
         base_url: The starting URL to scrape
         max_pages: Maximum number of pages to scrape
-        platform: Platform type (website, facebook, linkedin, etc.)
         
     Returns:
         List of Document objects containing the website content
     """
-    print(f"Starting comprehensive scraping of {base_url} (max {max_pages} pages, platform: {platform})")
+    print(f"Starting comprehensive scraping of {base_url} (max {max_pages} pages)")
     
     # Track visited URLs to avoid duplicates
     visited_urls = set()
@@ -494,22 +375,11 @@ def scrape_website_content(base_url, max_pages=10, platform="website"):
     count = 0
     
     # Parse the base domain to stay within the same website
-    parsed_url = urlparse(base_url)
-    base_domain = parsed_url.netloc
+    base_domain = urlparse(base_url).netloc
     
-    # Enhanced headers for better compatibility with social media sites
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.5",
-        "Accept-Encoding": "gzip, deflate",
-        "Referer": "https://www.google.com/",
-        "Connection": "keep-alive",
-        "Upgrade-Insecure-Requests": "1"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
     }
-    
-    # Special handling for social media platforms
-    is_social_media = platform in ['facebook', 'instagram', 'linkedin', 'twitter', 'youtube'] or any(platform in base_domain.lower() for platform in ['facebook.com', 'instagram.com', 'linkedin.com', 'twitter.com', 'youtube.com'])
     
     while to_visit and count < max_pages:
         # Get the next URL to visit
@@ -522,10 +392,8 @@ def scrape_website_content(base_url, max_pages=10, platform="website"):
         print(f"Scraping page {count+1}/{max_pages}: {current_url}")
         
         try:
-            # Fetch the page with much shorter timeout for speed
-            timeout = 8 if is_social_media else 12  # Very short timeout for speed
-            print(f"Fetching {current_url} with timeout {timeout}s")
-            response = requests.get(current_url, headers=headers, timeout=timeout)
+            # Fetch the page
+            response = requests.get(current_url, headers=headers, timeout=10)
             response.raise_for_status()
             
             # Mark as visited
@@ -535,54 +403,31 @@ def scrape_website_content(base_url, max_pages=10, platform="website"):
             # Parse the page
             soup = BeautifulSoup(response.text, 'html.parser')
             
-            # Extract text content with special handling for different platforms
+            # Extract text content
             # Remove script and style elements
             for script in soup(["script", "style", "nav", "footer", "header"]):
                 script.decompose()
-            
-            text = ""
-            
-            # Special handling for social media platforms
-            if is_social_media:
-                text = extract_social_media_content(soup, current_url, base_domain)
-            
-            # Special FAQ extraction for regular websites
-            if not text:
-                text = extract_faq_content(soup, current_url)
-            
-            # If no special content found, use standard extraction
-            if not text:
-                # Get the main content (prioritize main, article, or div with content)
-                main_content = soup.find("main") or soup.find("article") or soup.find("div", class_=lambda c: c and ("content" in c.lower() or "main" in c.lower()))
                 
-                if main_content:
-                    text = main_content.get_text(separator="\n", strip=True)
-                else:
-                    # Fallback to body if no main content identified
-                    text = soup.get_text(separator="\n", strip=True)
-                
-                # Clean up text (remove excessive newlines)
-                text = "\n".join(line.strip() for line in text.split("\n") if line.strip())
+            # Get the main content (prioritize main, article, or div with content)
+            main_content = soup.find("main") or soup.find("article") or soup.find("div", class_=lambda c: c and ("content" in c.lower() or "main" in c.lower()))
             
-            # Limit text length to prevent processing huge pages
-            if len(text) > 10000:  # Limit to 10KB of text per page
-                text = text[:10000] + "... [content truncated for performance]"
-            
-            # Only add document if it has meaningful content
-            if len(text.strip()) > 100:  # Must have at least 100 characters
-                # Create metadata
-                metadata = {
-                    "source": current_url,
-                    "title": soup.title.string if soup.title else current_url,
-                    "platform": platform,
-                    "content_length": len(text)
-                }
-                
-                # Add to documents
-                documents.append(Document(page_content=text, metadata=metadata))
-                print(f"Added document from {current_url} ({len(text)} chars)")
+            if main_content:
+                text = main_content.get_text(separator="\n", strip=True)
             else:
-                print(f"Skipped {current_url} - insufficient content")
+                # Fallback to body if no main content identified
+                text = soup.get_text(separator="\n", strip=True)
+            
+            # Clean up text (remove excessive newlines)
+            text = "\n".join(line.strip() for line in text.split("\n") if line.strip())
+            
+            # Create metadata
+            metadata = {
+                "source": current_url,
+                "title": soup.title.string if soup.title else current_url,
+            }
+            
+            # Add to documents
+            documents.append(Document(page_content=text, metadata=metadata))
             
             # Find links to other pages on the same domain
             if count < max_pages:
@@ -601,12 +446,6 @@ def scrape_website_content(base_url, max_pages=10, platform="website"):
                        not full_url.endswith(('.pdf', '.jpg', '.png', '.gif')):
                         to_visit.append(full_url)
         
-        except requests.exceptions.Timeout:
-            print(f"Timeout scraping {current_url} - skipping")
-        except requests.exceptions.ConnectionError:
-            print(f"Connection error scraping {current_url} - skipping")
-        except requests.exceptions.HTTPError as e:
-            print(f"HTTP error scraping {current_url} - skipping")
         except Exception as e:
             print(f"Error scraping {current_url}: {str(e)}")
     

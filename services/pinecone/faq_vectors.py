@@ -1,5 +1,5 @@
 from typing import List, Dict, Any
-import pinecone
+from pinecone import Pinecone
 from services.openai_service import get_embeddings
 from services.database import db
 import os
@@ -14,7 +14,7 @@ pc = None
 def init_pinecone():
     """Initialize Pinecone with environment credentials"""
     global pc
-    pc = pinecone.Pinecone(
+    pc = Pinecone(
         api_key=os.getenv("PINECONE_API_KEY"),
         environment=os.getenv("PINECONE_ENV")
     )
@@ -25,7 +25,7 @@ def get_faq_index():
     if not pc:
         init_pinecone()
 
-    INDEX_NAME = os.getenv("PINECONE_INDEX", "bayshoreai")
+    INDEX_NAME = os.getenv("PINECONE_INDEX", "bayai")
     DIMENSION = 1024  # Match your existing index dimension
 
     # Get existing index

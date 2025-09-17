@@ -42,7 +42,7 @@ class ConversationMessage(BaseModel):
     visitor_id: str
     organization_id: str
     session_id: str
-    role: str  
+    role: str  # user or assistant
     content: str
     created_at: datetime = Field(default_factory=datetime.now)
     metadata: Dict[str, Any] = Field(default_factory=dict)

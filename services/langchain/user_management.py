@@ -39,16 +39,16 @@ def handle_name_collection(query, user_data, mode, language):
             "user_data": user_data
         }
         
-    # If query is empty (first message), give a natural greeting instead of asking for name
+    # If query is empty (first message), just ask for name
     if not query.strip():
         # Add this interaction to history
         user_data["conversation_history"].append({
             "role": "assistant", 
-            "content": "Hello! How can I help you today?"
+            "content": "Hello! Before we begin, may I know your name?"
         })
         
         return {
-            "answer": "Hello! How can I help you today?",
+            "answer": "Hello! Before we begin, may I know your name?",
             "mode": mode,
             "language": language,
             "user_data": user_data
@@ -62,16 +62,10 @@ def handle_name_collection(query, user_data, mode, language):
     
     Rules:
     1. Only extract actual names of people, not greetings or other words
-    2. Remove introductory phrases like "Hello this is", "My name is", "I am", etc.
-    3. If no clear name is found, or if the text appears to be a refusal to provide a name, respond with "No name found"
-    4. Return the full name if available (first and last name)
-    5. Don't include titles (Mr, Mrs, Dr, etc.)
-    6. Check if the text contains refusal phrases like "don't want to share", "won't give my name", etc.
-    
-    Examples:
-    "Hello this is sahak from taxas" -> sahak
-    "My name is John Smith" -> John Smith
-    "I am Alice" -> Alice
+    2. If no clear name is found, or if the text appears to be a refusal to provide a name, respond with "No name found"
+    3. Return the full name if available (first and last name)
+    4. Don't include titles (Mr, Mrs, Dr, etc.)
+    5. Check if the text contains refusal phrases like "don't want to share", "won't give my name", etc.
     
     Output only the extracted name, nothing else.
     """
@@ -79,7 +73,7 @@ def handle_name_collection(query, user_data, mode, language):
     try:
         # Call OpenAI for name extraction
         name_response = openai.chat.completions.create(
-            model="gpt-4o",
+            model="gpt-3.5-turbo",
             messages=[{"role": "user", "content": name_extraction_prompt}],
             max_tokens=20,
             temperature=0.1
@@ -93,11 +87,10 @@ def handle_name_collection(query, user_data, mode, language):
             name = extracted_name
         else:
             # Fall back to basic extraction if query looks like just a name
-            # Only treat as name if we're confident it's not a refusal and not an email
+            # Only treat as name if we're confident it's not a refusal
             if (not query.endswith("?") and len(query.split()) <= 3 and 
                 not any(keyword in query.lower() for keyword in skip_keywords) and
-                not any(pattern in query.lower() for pattern in refusal_patterns) and
-                "@" not in query and "." not in query):  # Don't treat emails as names
+                not any(pattern in query.lower() for pattern in refusal_patterns)):
                 name = query.strip()
             else:
                 name = None
@@ -141,7 +134,7 @@ def extract_name_with_regex(query):
     from re import findall, IGNORECASE
     
     name_extraction_patterns = [
-        r"(?:hello this is|my name is|i am|i'm|this is) ([A-Za-z\s\.]+(?:\s[A-Za-z\.]+){0,4})",
+        r"(?:my name is|i am|i'm|this is) ([A-Za-z\s\.]+(?:\s[A-Za-z\.]+){0,4})",
         r"(?:hi|hello|hey)(?:,|!) (?:i am|i'm|this is) ([A-Za-z\s\.]+(?:\s[A-Za-z\.]+){0,4})",
         r"(?:^|\s)([A-Z][a-z]+(?:\s[A-Z][a-z]+){0,3})",
         r"(?:^)([A-Za-z]+(?:\s[A-Za-z]+){0,3})"
@@ -213,7 +206,7 @@ def handle_email_collection(query, user_data, mode, language):
                     """
                     
                     welcome_response = openai.chat.completions.create(
-                        model="gpt-4o",
+                        model="gpt-3.5-turbo",
                         messages=[{"role": "user", "content": welcome_prompt}],
                         max_tokens=100,
                         temperature=0.7
@@ -221,13 +214,13 @@ def handle_email_collection(query, user_data, mode, language):
                     
                     intro_message = welcome_response.choices[0].message.content.strip()
                 else:
-                    intro_message = "Hello. Welcome to Carter Injury Law. My name is Miles, I'm here to assist you."
+                    intro_message = "Thank you. How can I assist you today?"
             else:
-                intro_message = "Hello. Welcome to Carter Injury Law. My name is Miles, I'm here to assist you."
+                intro_message = "Thank you. How can I assist you today?"
                 
         except Exception as e:
             print(f"Error generating identity welcome: {str(e)}")
-            intro_message = "Hello. Welcome to Carter Injury Law. My name is Miles, I'm here to assist you."
+            intro_message = "Thank you. How can I assist you today?"
         
         # Add this interaction to history
         user_data["conversation_history"].append({
@@ -276,7 +269,7 @@ def handle_email_collection(query, user_data, mode, language):
                     """
                     
                     welcome_response = openai.chat.completions.create(
-                        model="gpt-4o",
+                        model="gpt-3.5-turbo",
                         messages=[{"role": "user", "content": welcome_prompt}],
                         max_tokens=100,
                         temperature=0.7
@@ -284,13 +277,13 @@ def handle_email_collection(query, user_data, mode, language):
                     
                     intro_message = welcome_response.choices[0].message.content.strip()
                 else:
-                    intro_message = "Hello. Welcome to Carter Injury Law. My name is Miles, I'm here to assist you."
+                    intro_message = f"Thank you for providing your email. How can I assist you today?"
             else:
-                intro_message = "Hello. Welcome to Carter Injury Law. My name is Miles, I'm here to assist you."
+                intro_message = f"Thank you for providing your email. How can I assist you today?"
                 
         except Exception as e:
             print(f"Error generating identity welcome: {str(e)}")
-            intro_message = "Hello. Welcome to Carter Injury Law. My name is Miles, I'm here to assist you."
+            intro_message = f"Thank you for providing your email. How can I assist you today?"
         
         # Add this interaction to history
         user_data["conversation_history"].append({
@@ -310,7 +303,7 @@ def handle_email_collection(query, user_data, mode, language):
             # Set anonymous email and proceed
             user_data["email"] = "anonymous@user.com"
             
-            intro_message = "Hello. Welcome to Carter Injury Law. My name is Miles, I'm here to assist you."
+            intro_message = "That's fine. How can I assist you today?"
             
             # Add this interaction to history
             user_data["conversation_history"].append({
@@ -360,7 +353,7 @@ def extract_personal_information(user_context):
     
     try:
         personal_info_response = openai.chat.completions.create(
-            model="gpt-4o",
+            model="gpt-3.5-turbo",
             messages=[{"role": "user", "content": personal_information_prompt}],
             response_format={"type": "json_object"},
             temperature=0.1

@@ -1,7 +1,6 @@
 import openai
 import json
 import re
-import os
 
 def analyze_query(query, user_info, mode, needs_info, has_vector_data, conversation_summary):
     """Use AI to analyze a query and determine the best response approach"""
@@ -117,7 +116,7 @@ def analyze_query(query, user_info, mode, needs_info, has_vector_data, conversat
     # Call OpenAI for central analysis
     try:
         analysis_response = openai.chat.completions.create(
-            model="gpt-4o",
+            model="gpt-3.5-turbo",
             messages=[{"role": "user", "content": analysis_prompt}],
             response_format={"type": "json_object"},
             temperature=0.2
@@ -167,79 +166,23 @@ def generate_response(query, user_info, conversation_summary, retrieved_context,
     
     is_identity_query = any(keyword in query.lower() for keyword in identity_keywords)
     
-    # Detect if this is an injury/accident-related query for empathy
-    injury_keywords = ["accident", "injured", "hurt", "pain", "hospital", "medical", "crash", "collision", "slip", "fall"]
-    is_injury_query = any(keyword in query.lower() for keyword in injury_keywords)
-    
-    # Build a comprehensive, natural prompt
+    # Build a prompt that includes all relevant context
     final_prompt = f"""
-    You are a professional, compassionate personal injury lawyer assistant for Carter Injury Law in Tampa, Florida. 
-    You speak naturally and professionally, providing helpful legal guidance to people in difficult situations.
-
-    CONTEXT INFORMATION:
-    - User's Query: "{query}"
-    - User's Name: {user_info.get('name', 'Not provided')}
-    - User's Intent: {analysis.get("intent", "General inquiry")}
-    - Language Preference: {language}
+    You are responding to a user's query based on information in your knowledge base.
     
-    CONVERSATION HISTORY (Recent context):
-    {conversation_summary if conversation_summary else "This is the beginning of our conversation."}
+    USER QUERY: "{query}"
     
-    KNOWLEDGE BASE INFORMATION:
-    {retrieved_context if retrieved_context else "No specific knowledge base information retrieved for this query."}
+    CONVERSATION HISTORY(Last 6 messages):
+    {conversation_summary}
     
-    FIRM DETAILS FOUND:
-    {json.dumps(personal_information) if personal_information else "Using general firm knowledge."}
+    {"RETRIEVED INFORMATION:" if retrieved_context else ""}
+    {retrieved_context}
     
-    PROFESSIONAL LAWYER PERSONA GUIDELINES:
+    {"PERSONAL INFORMATION FOUND:" if personal_information else ""}
+    {json.dumps(personal_information) if personal_information else ""}
     
-    1. PROFESSIONAL COMMUNICATION:
-       - Maintain a polite, professional tone at all times
-       - Be informative and helpful without being overly casual
-       - Show empathy for injury situations with appropriate concern
-       - Use clear, understandable language for legal concepts
-    
-    2. INJURY CASE EMPATHY:
-       {"- Acknowledge their difficult situation professionally" if is_injury_query else ""}
-       {"- Express appropriate concern: 'I understand this situation must be challenging'" if is_injury_query else ""}
-       {"- Focus on how the firm can help with their legal needs" if is_injury_query else ""}
-    
-    3. FIRM EXPERTISE TO HIGHLIGHT:
-       - Carter Injury Law: Premier personal injury firm in Tampa
-       - Attorneys David J. Carter and Robert Johnson
-       - 30-day no-fee satisfaction guarantee
-       - Free consultations with no obligation
-       - Extensive experience in personal injury law
-       - Proven track record helping accident victims
-    
-    4. PROFESSIONAL INFORMATION DELIVERY:
-       - Explain legal concepts clearly and accurately
-       - Provide actionable guidance when appropriate
-       - Reference relevant legal procedures and rights
-       - Build confidence through demonstrated expertise
-       - Offer next steps like free consultations
-    
-    5. TRUST AND CREDIBILITY:
-       - Reference firm achievements and experience naturally
-       - Mention the no-fee-unless-we-win approach
-       - Highlight free consultation value proposition
-       - Share relevant legal insights professionally
-    
-    6. LEGAL DISCLAIMERS (include naturally):
-       - "Every case has unique circumstances"
-       - "For specific legal advice, I recommend consulting with our attorneys"
-       - "A free consultation can help determine your best options"
-    
-    CRITICAL INSTRUCTIONS:
-    - Act as a knowledgeable legal professional
-    - Use retrieved information to provide accurate responses
-    - Be helpful and informative first, promotional second
-    - Maintain professional boundaries while being approachable
-    - For injury cases, show appropriate professional concern
-    - Make legal information accessible but accurate
-    - Offer concrete next steps when appropriate
-    
-    Generate a professional, helpful lawyer assistant response:"""
+    USER INTENT: {analysis["intent"]}   
+    """
     
     # Add special instruction for identity queries
     if is_identity_query:
@@ -281,7 +224,7 @@ def generate_response(query, user_info, conversation_summary, retrieved_context,
     try:
         # Call OpenAI for final response generation
         response_completion = openai.chat.completions.create(
-            model="gpt-4o",
+            model="gpt-3.5-turbo",
             messages=[{"role": "user", "content": final_prompt}],
             temperature=0.7
         )
@@ -294,41 +237,9 @@ def generate_response(query, user_info, conversation_summary, retrieved_context,
         return final_response
     except Exception as e:
         print(f"Error generating response: {str(e)}")
-        print(f"OpenAI API Key present: {bool(os.getenv('OPENAI_API_KEY'))}")
-        
-        # Try a simpler OpenAI call as fallback
-        try:
-            simple_prompt = f"""Answer this question professionally and helpfully: {query}
-            
-            Context: You are a legal assistant for Carter Injury Law, specializing in personal injury cases.
-            
-            Question: {query}
-            
-            Provide a direct, helpful answer:"""
-            
-            fallback_response = openai.chat.completions.create(
-                model="gpt-4o",
-                messages=[{"role": "user", "content": simple_prompt}],
-                temperature=0.7,
-                max_tokens=200
-            )
-            
-            return fallback_response.choices[0].message.content.strip()
-            
-        except Exception as fallback_error:
-            print(f"Fallback response generation failed: {str(fallback_error)}")
-            
-            # Manual intelligent response based on query content
-            query_lower = query.lower()
-            
-            if "cases" in query_lower and ("outside" in query_lower or "tampa" in query_lower):
-                return "Yes, Carter Injury Law handles personal injury cases throughout Florida, not just in Tampa. We serve clients in surrounding areas and can travel to meet with you. Our experienced attorneys David J. Carter and Robert Johnson are licensed to practice throughout the state."
-            elif "help" in query_lower or "assist" in query_lower:
-                return "I'm here to help you with any questions about personal injury law, our services, or legal matters. Carter Injury Law offers free initial consultations and we work on a no-fee-unless-we-win basis. What specific questions do you have?"
-            elif "accident" in query_lower:
-                return "I'm sorry to hear about your accident. Carter Injury Law specializes in all types of personal injury cases including auto accidents, slip and falls, and more. We offer free consultations and work on a contingency fee basis."
-            else:
-                return f"Thank you for your question about {query}. As a legal assistant for Carter Injury Law, I'm here to help with personal injury matters. Could you provide more details about your situation so I can better assist you?"
+        if is_identity_query and retrieved_context:
+            return "I am a legal professional with expertise in civil, corporate, and constitutional matters. How can I assist you today?"
+        return "How can I assist you today?"
 
 def remove_greeting(response, user_name):
     """Remove greeting patterns from the beginning of responses"""

@@ -1,9 +1,8 @@
 # Configure logging first before importing other modules
 import logging_config
 
-from fastapi import FastAPI, Request, Depends, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 import os
 from dotenv import load_dotenv
@@ -17,57 +16,18 @@ from pathlib import Path
 import traceback
 from routes import instant_reply
 from services.auth import seed_default_admin
-from contextlib import asynccontextmanager
-from fastapi import FastAPI, Request, Response
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import JSONResponse
-import json
-import traceback
-import os
-from datetime import datetime
-from bson import ObjectId
-from pymongo import MongoClient
-from motor.motor_asyncio import AsyncIOMotorClient
-import redis.asyncio as redis
-from dotenv import load_dotenv
-import subprocess
 
-# Load environment variables
-load_dotenv()
+class MongoJSONEncoder(json.JSONEncoder):
+    def default(self, o):
+        if isinstance(o, ObjectId):
+            return str(o)
+        return super().default(o)
 
-# Import routers - will be imported individually below
-from services.auth import seed_default_admin
-from services.cache import cache
-
-# Check feature availability - More resilient for production deployment
-chatbot_available = os.getenv("OPENAI_API_KEY") is not None
-conversations_available = os.getenv("MONGO_URI") is not None
-faq_available = os.getenv("PINECONE_API_KEY") is not None
-instant_reply_available = True  # Always available
-lead_available = True  # Always available
-appointment_available = True  # Always available (will work without Calendly)
-appointment_availability_available = True  # Always available
-sales_available = True  # Always available
-organization_available = os.getenv("MONGO_URI") is not None
-upload_available = os.getenv("MONGO_URI") is not None
-admin_available = os.getenv("MONGO_URI") is not None
-
-# Lifespan context manager for startup and shutdown events
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    # Startup
-    seed_default_admin()
-    yield
-    # Shutdown
-    # Note: Cache service handles its own connection cleanup
-
-# Create FastAPI app with lifespan
+# Create the FastAPI app
 app = FastAPI(
     title="AI Chatbot SaaS Platform",
-    description="A comprehensive AI-powered chatbot platform with multi-tenant support",
-    version="2.0.0",
-    lifespan=lifespan
+    description="Multi-tenant SaaS platform for AI-powered business chatbots",
+    version="1.0.0"
 )
 
 # Try to import routers, skip problematic ones
@@ -89,9 +49,15 @@ except Exception as e:
     print(f"Warning: FAQ router failed to import: {e}")
     faq_available = False
 
-# Use instant_reply.py (not instantReply.py)
 try:
-    from routes.instant_reply import router as instant_reply_router
+    from routes.unknown_questions import router as unknown_questions_router
+    unknown_questions_available = True
+except Exception as e:
+    print(f"Warning: Unknown Questions router failed to import: {e}")
+    unknown_questions_available = False
+
+try:
+    from routes.instantReply import router as instant_reply_router
     instant_reply_available = True
 except Exception as e:
     print(f"Warning: Instant Reply router failed to import: {e}")
@@ -134,15 +100,6 @@ except Exception as e:
 
 # Payment router should always work
 from routes.payment import router as payment_router
-
-# Dashboard router should always work
-from routes.dashboard import router as dashboard_router
-
-# Auth router should always work
-from routes.auth import router as auth_router
-
-# User router should always work
-from routes.user import router as user_router
 
 # Admin router
 try:
@@ -208,11 +165,11 @@ origins = [
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allow all origins
+    allow_origins=origins,
     allow_credentials=True,
-    allow_methods=["*"],  # Allow all methods
-    allow_headers=["*"],  # Allow all headers including WebSocket headers
-    expose_headers=["*"],  # Expose all headers
+    allow_methods=["*"],
+    allow_headers=["*"],
+    expose_headers=["*"],
     max_age=3600
 )
 
@@ -220,24 +177,23 @@ app.add_middleware(
 @app.middleware("http")
 async def add_security_headers(request: Request, call_next):
     response = await call_next(request)
-    # Allow any origin by reading the request's origin header
-    # This ensures the CORS middleware's settings are respected
     origin = request.headers.get("origin", "*")
-    if origin != "*":  # Only set if a specific origin was provided
-        response.headers["Access-Control-Allow-Origin"] = origin
+    response.headers["Access-Control-Allow-Origin"] = origin
     response.headers["Access-Control-Allow-Credentials"] = "true"
     response.headers["Cross-Origin-Opener-Policy"] = "unsafe-none"
     response.headers["Cross-Origin-Embedder-Policy"] = "unsafe-none"
-    
-    # Add WebSocket upgrade headers
-    if "upgrade" in request.headers and request.headers["upgrade"].lower() == "websocket":
-        response.headers["Connection"] = "Upgrade"
-        response.headers["Upgrade"] = "websocket"
-    
     return response
 
 # Move all other middleware after CORS
-# Note: Custom JSON middleware removed due to missing MongoJSONEncoder
+@app.middleware("http")
+async def custom_json_middleware(request: Request, call_next):
+    response = await call_next(request)
+    if isinstance(response, JSONResponse):
+        response.body = json.dumps(
+            response.body.decode(),
+            cls=MongoJSONEncoder
+        ).encode()
+    return response
 
 # Include available routers
 available_features = []
@@ -261,6 +217,10 @@ if chatbot_available:
 if faq_available:
     app.include_router(faq_router, prefix="/api/faq", tags=["FAQ Management"])
     available_features.append("FAQ Management System")
+
+if unknown_questions_available:
+    app.include_router(unknown_questions_router)
+    available_features.append("Unknown Questions Tracking")
 
 if instant_reply_available:
     app.include_router(instant_reply_router, prefix="/api/instant-reply", tags=["Instant Reply"])
@@ -302,31 +262,7 @@ if admin_available:
 app.include_router(auth_router, prefix="/auth", tags=["auth"])
 app.include_router(user_router, prefix="/user", tags=["User Profile"])
 
-# Include instant reply router
-if instant_reply_available:
-    app.include_router(instant_reply_router, prefix="/api/instant-reply", tags=["Instant Reply"])
-    available_features.append("Instant Reply Configuration")
-
-# Add video routes separately
-try:
-    from routes.video_routes import router as video_router
-    app.include_router(video_router, prefix="/api/video", tags=["Video Upload"])
-    print("Successfully included video router")
-except Exception as e:
-    print(f"Error including video router: {e}")
-
-# Add AI training routes
-try:
-    from routes.ai_training import router as ai_training_router
-    app.include_router(ai_training_router, prefix="/api/ai-training", tags=["AI Training & Improvement"])
-    print("Successfully included AI training router")
-    
-    # Async Training Routes
-    from routes.async_training import router as async_training_router
-    app.include_router(async_training_router, prefix="/api/training", tags=["Async Training"])
-    print("Successfully included async training router")
-except Exception as e:
-    print(f"Error including AI training router: {e}")
+app.include_router(instant_reply.router, prefix="/api/instant-reply", tags=["instant-reply"])
 
 @app.get("/")
 def read_root():
@@ -342,39 +278,11 @@ def health_check():
     """Health check endpoint for monitoring"""
     return {"status": "healthy"}
 
-def get_git_commit_hash():
-    try:
-        commit = subprocess.check_output(["git", "rev-parse", "HEAD"]).decode("utf-8").strip()
-        return commit
-    except Exception:
-        return "unknown"
-
-@app.get("/version")
-def version():
-    return {"commit": get_git_commit_hash()}
-
-@app.post("/webhook")
-async def github_webhook(req: Request):
-    # Optional: you can verify GitHub secret here
-    subprocess.Popen(["/var/www/chatbot_backend/deploy.sh"])
-    return {"message": "Deployment triggered"}
-
-# Add WebSocket endpoints to the FastAPI app BEFORE it gets wrapped
-@app.get("/healthz")
-async def healthz():
-    """Health check endpoint for WebSocket probe"""
-    return {"status": "ok"}
-
-@app.websocket("/ws")
-async def ws_endpoint(ws: WebSocket):
-    """WebSocket endpoint for testing WebSocket functionality"""
-    await ws.accept()
-    try:
-        while True:
-            msg = await ws.receive_text()
-            await ws.send_text(f"echo: {msg}")
-    except WebSocketDisconnect:
-        pass
+@app.on_event("startup")
+async def startup_event():
+    """Run on application startup"""
+    # Seed default admin user
+    seed_default_admin()
 
 # Create the final app instance
 if chatbot_available and 'socket_app' in locals():
@@ -382,9 +290,5 @@ if chatbot_available and 'socket_app' in locals():
     app = socket_app  # This ensures uvicorn uses the Socket.IO wrapped app
     print("Using Socket.IO wrapped application")
 else:
-    # Fallback to regular FastAPI app
+    # Fallback to regular FastAPI app - app is already defined above
     print("Using regular FastAPI application")
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)

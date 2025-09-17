@@ -3,7 +3,6 @@ from services.database import create_organization, get_organization_by_api_key, 
 from models.organization import OrganizationCreate, OrganizationUpdate
 from typing import Optional
 import json
-import pinecone
 
 router = APIRouter()
 
@@ -143,10 +142,11 @@ async def get_organization_usage(organization=Depends(get_organization_from_api_
         import traceback
         
         # Import directly from vectorstore module to avoid circular imports
+        from pinecone import Pinecone
         from services.database import db
         
         pinecone_api_key = os.getenv("PINECONE_API_KEY")
-        index_name = os.getenv("PINECONE_INDEX", "bayshoreai")
+        index_name = os.getenv("PINECONE_INDEX", "bayai")
         
         print(f"Getting usage stats for organization {org_id} with namespace {namespace}")
         print(f"Connecting to Pinecone index: {index_name}")
@@ -161,7 +161,7 @@ async def get_organization_usage(organization=Depends(get_organization_from_api_
         total_api_calls = total_conversations
         
         # Create a fresh Pinecone connection
-        pc = pinecone.Pinecone(api_key=pinecone_api_key)
+        pc = Pinecone(api_key=pinecone_api_key)
         
         # Make sure we have a valid index
         try:
@@ -171,12 +171,12 @@ async def get_organization_usage(organization=Depends(get_organization_from_api_
             
             if index_name not in index_names:
                 print(f"Warning: Index {index_name} not found. Available indexes: {index_names}")
-                # Use first available index or default to bayshoreai
+                # Use first available index or default to bayai
                 if index_names:
                     index_name = index_names[0]
                     print(f"Using first available index: {index_name}")
                 else:
-                    index_name = "bayshoreai"
+                    index_name = "bayai"
                     print(f"No indexes found, defaulting to: {index_name}")
             
             # Connect to the index
@@ -246,7 +246,7 @@ async def get_organization_usage(organization=Depends(get_organization_from_api_
                         from services.langchain.embeddings import initialize_embeddings
                         
                         # Initialize with correct dimension
-                        os.environ["PINECONE_DIMENSION"] = "1024"
+                        os.environ["PINECONE_DIMENSION"] = "1536"
                         embeddings = initialize_embeddings()
                         org_vectorstore = get_org_vectorstore(organization["api_key"])
                         

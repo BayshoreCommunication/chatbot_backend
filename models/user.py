@@ -24,4 +24,4 @@ class User(UserBase):
     updated_at: datetime = Field(default_factory=datetime.now)
 
     class Config:
-        from_attributes = True 
+        orm_mode = True 

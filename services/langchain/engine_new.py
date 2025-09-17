@@ -25,7 +25,6 @@ from services.language_detect import detect_language
 from services.notification import send_email_notification
 from services.database import get_organization_by_api_key
 from services.cache import cache, get_from_cache, set_cache, invalidate_chatbot_cache
-from services.unknown_questions_service import UnknownQuestionsService
 
 # Import our modules
 from services.langchain.embeddings import initialize_embeddings
@@ -463,8 +462,6 @@ def ask_bot(query: str, mode="faq", user_data=None, available_slots=None, sessio
     # STEP 4: Enhanced Knowledge Base Lookup with caching
     retrieved_context = ""
     personal_information = {}
-    knowledge_base_results = []
-    similarity_scores = []
     
     if analysis["needs_knowledge_lookup"] and org_vectorstore is not None:
         # Check for cached knowledge results
@@ -475,41 +472,14 @@ def ask_bot(query: str, mode="faq", user_data=None, available_slots=None, sessio
             print("📚 Using cached knowledge base results")
             retrieved_context = cached_knowledge.get("context", "")
             personal_information = cached_knowledge.get("personal_info", {})
-            knowledge_base_results = cached_knowledge.get("results", [])
-            similarity_scores = cached_knowledge.get("scores", [])
         else:
-            # Fresh knowledge base search with detailed results
-            try:
-                # Get detailed search results for unknown question detection
-                search_results = org_vectorstore.similarity_search_with_score(query, k=5)
-                
-                knowledge_base_results = []
-                similarity_scores = []
-                
-                for doc, score in search_results:
-                    knowledge_base_results.append({
-                        "content": doc.page_content,
-                        "metadata": doc.metadata,
-                        "similarity_score": float(score)
-                    })
-                    similarity_scores.append(float(score))
-                
-                # Use existing search function for context
-                retrieved_context, personal_information = search_knowledge_base(query, org_vectorstore, user_info)
-                
-                print(f"[DEBUG] Knowledge base search - Best similarity: {max(similarity_scores) if similarity_scores else 0}")
-                
-            except Exception as e:
-                print(f"[DEBUG] Error in detailed knowledge search: {str(e)}")
-                # Fallback to existing search
-                retrieved_context, personal_information = search_knowledge_base(query, org_vectorstore, user_info)
+            # Fresh knowledge base search
+            retrieved_context, personal_information = search_knowledge_base(query, org_vectorstore, user_info)
             
             # Cache knowledge results for 15 minutes
             knowledge_data = {
                 "context": retrieved_context,
-                "personal_info": personal_information,
-                "results": knowledge_base_results,
-                "scores": similarity_scores
+                "personal_info": personal_information
             }
             set_cache(knowledge_cache_key, knowledge_data, 15)
    
@@ -554,9 +524,6 @@ def ask_bot(query: str, mode="faq", user_data=None, available_slots=None, sessio
         language,
         organization
     )
-    
-    # Additional context-aware improvements
-    final_response = enhance_contextual_response(final_response, query, user_data, organization)
    
     # Determine final mode for response
     final_mode = analysis["appropriate_mode"]
@@ -564,57 +531,12 @@ def ask_bot(query: str, mode="faq", user_data=None, available_slots=None, sessio
     if has_booked_appointment and final_mode == "appointment":
         final_mode = "faq"
    
-    # STEP 7: Detect and store unknown questions
-    # Check if this question wasn't well-answered by training data
-    max_similarity = max(similarity_scores) if similarity_scores else 0.0
-    similarity_threshold = 0.7  # Questions with similarity < 0.7 are considered "unknown"
-    
-    # Only store if it's a real question (not info collection or appointments)
-    should_store_unknown = (
-        max_similarity < similarity_threshold and  # Low similarity to training data
-        not user_data.get("collecting_info") and  # Not collecting user info
-        final_mode != "appointment" and  # Not appointment-related
-        len(original_query.split()) > 2 and  # Substantial question
-        "?" in original_query or any(word in original_query.lower() for word in ["what", "how", "why", "when", "where", "do", "can", "should", "would"])  # Question-like
-    )
-    
-    if should_store_unknown and session_id and org_id:
-        try:
-            print(f"[DEBUG] Storing unknown question - Similarity: {max_similarity:.3f}, Question: '{original_query[:50]}...'")
-            
-            # Get visitor ID if available
-            visitor_id = user_data.get("visitor_id")
-            
-            # Prepare conversation context (last 3 messages)
-            conversation_context = user_data.get("conversation_history", [])[-3:] if user_data.get("conversation_history") else []
-            
-            # Store the unknown question
-            UnknownQuestionsService.save_unknown_question(
-                organization_id=org_id,
-                session_id=session_id,
-                question=original_query,
-                ai_response=final_response,
-                knowledge_base_results=knowledge_base_results,
-                similarity_scores=similarity_scores,
-                user_context={
-                    "name": user_data.get("name"),
-                    "email": user_data.get("email"),
-                    "mode": final_mode,
-                    "language": language
-                },
-                conversation_context=conversation_context,
-                visitor_id=visitor_id
-            )
-        except Exception as e:
-            print(f"[DEBUG] Error storing unknown question: {str(e)}")
-   
     response = {
         "answer": final_response,
         "mode": final_mode,
         "language": language,
         "user_data": user_data,
-        "cache_stats": cache_manager.get_cache_stats(),
-        "knowledge_similarity": max_similarity  # Add similarity score for debugging
+        "cache_stats": cache_manager.get_cache_stats()
     }
     
     # Cache the response if appropriate
@@ -683,34 +605,23 @@ def generate_enhanced_response(query: str, user_info: dict, conversation_summary
     """Generate enhanced response with better prompting and personalization"""
     
     # Build enhanced system prompt
-    # Get organization name from chat widget settings (preferred) or fallback to main name
-    if organization:
-        chat_settings = organization.get("chat_widget_settings", {})
-        org_name = chat_settings.get("name", organization.get("name", "our company"))
-        ai_behavior = chat_settings.get("ai_behavior", "")
-    else:
-        org_name = "our company"
-        ai_behavior = ""
-    
+    org_name = organization.get("name", "our company") if organization else "our company"
     user_name = user_info.get("name", "")
     
     system_prompt = f"""
-    You are a professional AI assistant for {org_name}, a law firm specializing in personal injury cases.
+    You are a professional AI assistant for {org_name}.
     
-    PERSONALITY & BEHAVIOR:
-    {ai_behavior if ai_behavior else "- Be warm, empathetic, and professional"}
-    - Helpful and knowledgeable about legal matters
+    PERSONALITY:
+    - Warm, helpful, and knowledgeable
     - Professional but approachable  
-    - Proactive in understanding client needs
-    - Direct and contextual (no generic responses)
-    - Show genuine interest in helping with their legal situation
+    - Proactive in offering solutions
+    - Empathetic to user concerns
     
     CURRENT CONTEXT:
     - User: {user_name if user_name != "Unknown" else "visitor"}
     - Time: {datetime.now().strftime('%A, %I:%M %p')}
     - Intent: {analysis.get('intent', 'general')}
     - Language: {language}
-    - Organization: {org_name}
     
     CONVERSATION HISTORY:
     {conversation_summary if conversation_summary else "This is the start of the conversation."}
@@ -722,17 +633,13 @@ def generate_enhanced_response(query: str, user_info: dict, conversation_summary
     {json.dumps(personal_information) if personal_information else "No personal information available."}
     
     RESPONSE GUIDELINES:
-    - AVOID generic responses like "Our lawyer can be reached at [phone] for further assistance"
-    - When user says "okay", "sure", or acknowledges something, ask follow-up questions about their legal situation
-    - Be contextual - if they just gave their name, acknowledge it warmly and ask about their case
-    - Provide specific, actionable legal guidance when possible
-    - Ask qualifying questions to understand their injury/accident better
-    - Reference previous conversation to show you're listening
-    - Use the knowledge base information to give accurate, specific responses
-    - Keep responses natural and conversational, not robotic
-    - Always try to move the conversation forward toward helping their legal needs
-    - If mentioning contact info, make it contextual: "You can also call us at [phone] if you'd prefer to speak directly with an attorney about your [specific situation]"
-    - DO NOT give generic phone number responses without context
+    - Address the user by name when appropriate
+    - Provide specific, actionable answers
+    - Reference previous conversation if relevant
+    - Use the knowledge base information to give accurate responses
+    - Keep responses natural and conversational
+    - End with a helpful next step or question when appropriate
+    - If you don't know something, say so and offer to find out
     """
     
     try:
@@ -757,7 +664,7 @@ def generate_enhanced_response(query: str, user_info: dict, conversation_summary
         return "I apologize, but I'm experiencing technical difficulties. Please try again in a moment."
 
 def improve_response_quality(response: str, user_info: dict, organization: dict = None) -> str:
-    """Post-process response for better quality and context"""
+    """Post-process response for better quality"""
     
     # Add personalization
     user_name = user_info.get("name")
@@ -770,110 +677,20 @@ def improve_response_quality(response: str, user_info: dict, organization: dict 
     # Ensure proper formatting
     response = response.strip()
     
-    # Improve generic phone number responses
-    if "can be reached at" in response.lower() and "further assistance" in response.lower():
-        # This is a generic phone response - make it more contextual
-        if organization:
-            chat_settings = organization.get("chat_widget_settings", {})
-            org_name = chat_settings.get("name", organization.get("name", "our office"))
-        else:
-            org_name = "our office"
-            
-        phone_match = re.search(r'\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}', response)
-        if phone_match:
-            phone_number = phone_match.group()
-            if user_name and user_name != "Unknown":
-                response = f"Great to meet you, {user_name}! I'd be happy to help you with your legal matter. You can call us directly at {phone_number} to speak with an attorney, or feel free to tell me more about your situation and I can provide some initial guidance."
-            else:
-                response = f"You can reach {org_name} at {phone_number} to speak directly with an attorney. What type of legal issue are you dealing with? I'd be happy to provide some initial information."
-    
-    # Handle short acknowledgments better
-    if response.lower().strip() in ["okay", "ok", "alright", "sure", "yes", "no problem"]:
-        if user_name and user_name != "Unknown":
-            response = f"Thanks {user_name}! What can I help you with regarding your legal matter? Are you dealing with an injury, accident, or other legal issue?"
-        else:
-            response = "What can I help you with today? Are you dealing with a personal injury, car accident, or another legal matter?"
-    
     # Add helpful endings based on content
     if "?" not in response and not response.endswith(("!", ".")):
         if "appointment" in response.lower():
-            response += ". Would you like to schedule a consultation?"
-        elif any(word in response.lower() for word in ["injury", "accident", "legal", "case"]):
-            response += ". What specific details can you share about your situation?"
+            response += ". Would you like to schedule an appointment?"
         elif any(word in response.lower() for word in ["service", "help", "assist"]):
-            response += ". What type of legal issue are you facing?"
+            response += ". How else can I help you today?"
         else:
-            response += ". How can I assist you with your legal needs?"
+            response += ". Is there anything else you'd like to know?"
     
-    # Add time-sensitive context for contact information
+    # Add time-sensitive context
     current_hour = datetime.now().hour
     if current_hour < 9 or current_hour > 17:  # Outside business hours
         if any(word in response.lower() for word in ["contact", "call", "reach"]):
-            response += "\n\n💡 Note: We're currently outside business hours (9 AM - 5 PM). You can call anytime to leave a message, or continue chatting here and we'll help you right away!"
-    
-    return response
-
-def enhance_contextual_response(response: str, query: str, user_data: dict, organization: dict = None) -> str:
-    """Enhance response based on conversation context and user behavior"""
-    
-    query_lower = query.lower().strip()
-    conversation_history = user_data.get("conversation_history", [])
-    user_name = user_data.get("name", "")
-    
-    # Handle acknowledgments and short responses
-    acknowledgments = ["okay", "ok", "alright", "sure", "yes", "thanks", "thank you", "got it"]
-    if query_lower in acknowledgments:
-        # Check what we were just talking about
-        if len(conversation_history) >= 2:
-            last_bot_message = ""
-            for msg in reversed(conversation_history):
-                if msg.get("role") == "assistant":
-                    last_bot_message = msg.get("content", "").lower()
-                    break
-            
-            if user_name:
-                if "name" in last_bot_message or "call you" in last_bot_message:
-                    # We just asked for their name, now ask about their case
-                    return f"Thanks {user_name}! What can I help you with regarding your legal matter? Are you dealing with a personal injury, car accident, or another type of case?"
-                elif "phone" in last_bot_message or "contact" in last_bot_message:
-                    # We just gave contact info, ask about their situation
-                    return f"Perfect {user_name}! While you're here, I'd love to learn more about your situation. What type of legal issue brought you to us today?"
-                else:
-                    # General follow-up
-                    return f"Great {user_name}! What specific legal matter can I help you with? Are you dealing with an injury, accident, or other legal concern?"
-            else:
-                return "What can I help you with today? Are you dealing with a personal injury, car accident, or another legal matter?"
-    
-    # Detect if response is too generic and improve it
-    generic_patterns = [
-        "can be reached at",
-        "for further assistance", 
-        "contact us at",
-        "call us at"
-    ]
-    
-    if any(pattern in response.lower() for pattern in generic_patterns):
-        # Extract phone number if present
-        phone_match = re.search(r'\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}', response)
-        phone_number = phone_match.group() if phone_match else ""
-        
-        if organization:
-            chat_settings = organization.get("chat_widget_settings", {})
-            org_name = chat_settings.get("name", organization.get("name", "our law firm"))
-        else:
-            org_name = "our law firm"
-        
-        if user_name:
-            return f"Great to meet you, {user_name}! I'd be happy to help you with your legal matter. You can call us at {phone_number} to speak directly with an attorney, or tell me more about your situation and I can provide some guidance right here. What type of legal issue are you dealing with?"
-        else:
-            return f"You can reach {org_name} at {phone_number} to speak with an attorney. What type of legal issue brought you here today? I'd be happy to provide some initial information about your situation."
-    
-    # If response is very short, add context
-    if len(response.split()) < 5 and not response.endswith("?"):
-        if user_name:
-            response += f" What else can I help you with regarding your legal matter, {user_name}?"
-        else:
-            response += " What type of legal issue are you dealing with?"
+            response += "\n\n💡 Please note: We're currently outside business hours (9 AM - 5 PM). We'll respond to your inquiry first thing in the morning!"
     
     return response
 
@@ -923,47 +740,6 @@ def reinitialize_vectorstore():
     print("🗑️ Cleared all vectorstore caches after reinitialization")
     
     return vectorstore
-
-def escalate_to_human(query, user_info):
-    """Escalate a conversation to a human operator"""
-    # Generate a comprehensive summary for the human operator
-    summary = f"""
-    ESCALATION REQUIRED: The AI could not handle the following query:
-    
-    QUERY: {query}
-    
-    USER INFO:
-    """
-    
-    # Add user info details
-    for key, value in user_info.items():
-        summary += f"- {key}: {value}\n"
-    
-    # Send notification to the appropriate team
-    try:
-        # Add organization details if available
-        org_id = user_info.get("organization_id", "Unknown")
-        org_name = user_info.get("organization_name", "Unknown")
-        
-        # Create a better subject line
-        subject = f"Chat Escalation: {org_name} - {user_info.get('name', 'Unknown Visitor')}"
-        
-        send_email_notification(
-            subject=subject,
-            message=summary,
-            email="support@example.com"  # Replace with actual support team email
-        )
-        
-        return {
-            "status": "success",
-            "message": "Your request has been escalated to our support team. Someone will contact you shortly."
-        }
-    except Exception as e:
-        print(f"Error in escalation: {str(e)}")
-        return {
-            "status": "error",
-            "message": "We couldn't escalate your request automatically. Please contact support directly at support@example.com."
-        }
 
 def get_cache_performance():
     """Get caching performance metrics"""

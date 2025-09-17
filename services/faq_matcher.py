@@ -10,29 +10,14 @@ def find_matching_faq(
     query: str,
     org_id: str,
     namespace: str = "",
-    similarity_threshold: float = 0.80
+    similarity_threshold: float = 0.85
 ) -> Optional[Dict[str, Any]]:
     """
-    Find the best matching FAQ for a given query using LangChain trained data (vector search only).
+    Find the best matching FAQ for a given query using semantic search.
     Returns the full FAQ document if a good match is found, otherwise None.
     """
     try:
-        # DISABLED: Hardcoded responses - use only LangChain trained data
-        # from hardcoded_faq_responses import get_hardcoded_response
-        # hardcoded_response = get_hardcoded_response(query)
-        
-        # if hardcoded_response:
-        #     # Return a formatted FAQ response
-        #     return {
-        #         "id": "hardcoded_faq",
-        #         "question": query,
-        #         "response": hardcoded_response["answer"],
-        #         "category": hardcoded_response["category"],
-        #         "similarity_score": 1.0,
-        #         "source": "hardcoded"
-        #     }
-        
-        # Use only vector search from LangChain trained data
+        # Search for similar questions using vector similarity
         similar_faqs = search_faq_embeddings(
             query=query,
             org_id=org_id,
