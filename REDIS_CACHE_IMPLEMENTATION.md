@@ -49,7 +49,7 @@ admin:org:{org_id}:usage    # Individual organization usage
 ```python
 class CacheService:
     def __init__(self):
-        # Connects to Redis on WSL Ubuntu (localhost:6379)
+        # Connects to Redis on WSL Ubuntu(localhost:6379)
         
     def set(key, value, ttl=300):
         # Store JSON-serialized data with TTL
