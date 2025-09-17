@@ -1,0 +1,61 @@
+name: ci-cd
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  test:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r app/requirements.txt
+      - name: Syntax check
+        run: python -m py_compile app/*.py
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Trust SSH host
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -H ${{ secrets.SSH_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Upload repo to server
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          source: "."
+          target: ${{ secrets.APP_DIR }}
+
+      - name: Build, restart, health check
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          script: |
+            set -e
+            cd ${{ secrets.APP_DIR }}
+            if docker compose version >/dev/null 2>&1; then DC="docker compose"; else DC="docker-compose"; fi
+            $DC pull || true
+            $DC build --no-cache web
+            $DC up -d
+            sleep 5
+            code=$(curl -s -o /dev/null -w "%{http_code}" http://${{ secrets.DOMAIN }}/health || echo 000)
+            if [ "$code" != "200" ]; then
+              echo "Health check failed ($code)"
+              $DC logs --no-color --tail=200 web
+              exit 1
+            fi
+            echo "Deploy OK"
