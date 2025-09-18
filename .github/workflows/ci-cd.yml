@@ -1,6 +1,7 @@
 name: CI/CD
 
 on:
+  workflow_dispatch: {}   # allows "Run workflow" button in Actions tab
   push:
     branches: [ "main" ]
 
@@ -14,25 +15,21 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-
       - name: Show repo tree (debug)
         run: |
           pwd
           ls -la
           find . -maxdepth 3 -type f -iname "requirements*.txt" -print || true
-
       - name: Install deps (root requirements.txt)
         run: |
           set -e
           python -m pip install --upgrade pip wheel setuptools
           test -f requirements.txt || (echo "requirements.txt not found at repo root" && exit 1)
           pip install -r requirements.txt
-
       - name: Compile quick check
         run: |
           set -e
@@ -53,8 +50,7 @@ jobs:
           set -e
           if [ -z "$SSH_KEY" ]; then echo "ERROR: SSH_KEY secret is empty"; exit 1; fi
           if ! echo "$SSH_KEY" | head -n1 | grep -q "BEGIN OPENSSH PRIVATE KEY"; then
-            echo "ERROR: SSH_KEY does not look like an OpenSSH private key."
-            echo "Recreate with: ssh-keygen -t ed25519 -f ~/.ssh/do_deploy_bayai -N \"\""
+            echo "ERROR: SSH_KEY is not an OpenSSH private key"
             exit 1
           fi
 
