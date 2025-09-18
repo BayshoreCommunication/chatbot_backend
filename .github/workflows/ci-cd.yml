@@ -46,43 +46,48 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Trust SSH host
+      - name: Validate SSH key secret
+        env:
+          SSH_KEY: ${{ secrets.SSH_KEY }}
         run: |
-          mkdir -p ~/.ssh
-          ssh-keyscan -H "$SSH_HOST" >> ~/.ssh/known_hosts
+          set -e
+          if [ -z "$SSH_KEY" ]; then echo "ERROR: SSH_KEY secret is empty"; exit 1; fi
+          if ! echo "$SSH_KEY" | head -n1 | grep -q "BEGIN OPENSSH PRIVATE KEY"; then
+            echo "ERROR: SSH_KEY does not look like an OpenSSH private key."
+            echo "Recreate with: ssh-keygen -t ed25519 -f ~/.ssh/do_deploy_bayai -N \"\""
+            exit 1
+          fi
+
+      - name: Prepare SSH key & known_hosts
         env:
           SSH_HOST: ${{ secrets.SSH_HOST }}
-
-      - name: SSH preflight (whoami)
-        uses: appleboy/ssh-action@v1.2.0
-        with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_KEY }}
-          script: whoami
-
-      # Write the private key to a file and run rsync manually (most reliable)
-      - name: Upload with rsync
-        env:
-          SSH_HOST: ${{ secrets.SSH_HOST }}
-          SSH_USER: ${{ secrets.SSH_USER }}
           SSH_KEY:  ${{ secrets.SSH_KEY }}
-          REMOTE_PATH: ${{ secrets.REMOTE_PATH }}
         run: |
           set -e
           echo "$SSH_KEY" > id_ed25519
           chmod 600 id_ed25519
+          mkdir -p ~/.ssh
+          ssh-keyscan -H "$SSH_HOST" >> ~/.ssh/known_hosts
+
+      - name: Upload with rsync
+        env:
+          SSH_HOST:   ${{ secrets.SSH_HOST }}
+          SSH_USER:   ${{ secrets.SSH_USER }}
+          REMOTE_PATH:${{ secrets.REMOTE_PATH }}
+        run: |
+          set -e
           rsync -avzr --delete \
             --exclude ".git/" \
             --exclude ".github/" \
             --exclude "venv/" \
-            -e "ssh -i id_ed25519 -o StrictHostKeyChecking=no" \
+            -e "ssh -i id_ed25519 -o StrictHostKeyChecking=yes" \
             ./ "$SSH_USER@$SSH_HOST:$REMOTE_PATH"
 
       - name: Run remote deploy script
-        uses: appleboy/ssh-action@v1.2.0
-        with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_KEY }}
-          script: bash /var/www/chatbot_backend/deploy.sh
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+        run: |
+          set -e
+          ssh -i id_ed25519 -o StrictHostKeyChecking=yes "$SSH_USER@$SSH_HOST" \
+            'bash /var/www/chatbot_backend/deploy.sh'
