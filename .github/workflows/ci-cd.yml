@@ -49,3 +49,4 @@ jobs:
           key: ${{ secrets.SSH_KEY }}
           script: |
             bash /var/www/chatbot_backend/deploy.sh
+

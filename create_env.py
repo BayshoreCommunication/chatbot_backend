@@ -2,7 +2,7 @@
 # NOTE: If you're experiencing "insufficient_quota" errors:
 # 1. Try creating a new OpenAI project in the OpenAI dashboard
 # 2. Generate a new API key in that project
-# 3. Replace the API key below with your new project's API key
+# 3. Replace the API key below with your new project's API  key
 
 with open('.env', 'w') as f:
     f.write('OPENAI_API_KEY=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\n')
