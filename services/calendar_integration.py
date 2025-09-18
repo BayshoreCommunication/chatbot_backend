@@ -8,7 +8,7 @@ import pymongo
 import logging
 import time
 
-#Get logger for calendar integration
+# Get logger for calendar integration
 logger = logging.getLogger('calendly')
 
 # Optional: Google Calendar API integration

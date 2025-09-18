@@ -2,27 +2,63 @@ name: CI/CD
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
-      - run: |
-          python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          if [ -f app/requirements.txt ]; then pip install -r app/requirements.txt; fi
-      - run: python -m py_compile $(git ls-files '*.py') || true
+          python-version: "3.12"
+
+      - name: Show repo tree (debug)
+        run: |
+          pwd
+          ls -la
+          find . -maxdepth 3 -type f -iname "requirements*.txt" -print || true
+          echo "Python version:"
+          python --version
+
+      - name: Install deps (auto-detect requirements file)
+        run: |
+          set -e
+          python -m pip install --upgrade pip wheel setuptools
+          REQ=""
+          for f in requirements.txt app/requirements.txt chatbot_backend/requirements.txt backend/requirements.txt src/requirements.txt; do
+            if [ -f "$f" ]; then REQ="$f"; break; fi
+          done
+          if [ -n "$REQ" ]; then
+            echo "Using requirements file: $REQ"
+            pip install -r "$REQ"
+          else
+            echo "No requirements*.txt found — skipping pip install"
+          fi
+
+      - name: Compile quick check
+        run: |
+          set -e
+          FILES=$(git ls-files '*.py' || true)
+          if [ -n "$FILES" ]; then
+            python -m py_compile $FILES
+          else
+            echo "No Python files to compile."
+          fi
 
   deploy:
     needs: test
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Trust SSH host
         run: |
@@ -31,22 +67,36 @@ jobs:
         env:
           SSH_HOST: ${{ secrets.SSH_HOST }}
 
-      - name: Sync code to server
-        uses: burnett01/rsync-deployments@6.0.0
-        with:
-          switches: -avzr --delete
-          path: ./
-          remote_path: ${{ secrets.REMOTE_PATH }}
-          remote_host: ${{ secrets.SSH_HOST }}
-          remote_user: ${{ secrets.SSH_USER }}
-          remote_key: ${{ secrets.SSH_KEY }}
-
-      - name: Run deploy script
+      - name: SSH preflight (whoami)
         uses: appleboy/ssh-action@v1.2.0
         with:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_KEY }}
-          script: |
-            bash /var/www/chatbot_backend/deploy.sh
+          script: whoami
 
+      # Use manual rsync to avoid key format issues
+      - name: Upload with rsync
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_KEY: ${{ secrets.SSH_KEY }}
+          REMOTE_PATH: ${{ secrets.REMOTE_PATH }}
+        run: |
+          set -e
+          echo "$SSH_KEY" > id_ed25519
+          chmod 600 id_ed25519
+          rsync -avzr --delete \
+            --exclude ".git/" \
+            --exclude ".github/" \
+            --exclude "venv/" \
+            -e "ssh -i id_ed25519 -o StrictHostKeyChecking=no" \
+            ./ "$SSH_USER@$SSH_HOST:$REMOTE_PATH"
+
+      - name: Run remote deploy script
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          script: bash /var/www/chatbot_backend/deploy.sh
