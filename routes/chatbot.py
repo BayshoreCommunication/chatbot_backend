@@ -333,10 +333,10 @@ async def ask_question(
             # Create personalized welcome message
             if ai_behavior:
                 # Use the AI behavior setting if available
-                welcome_msg = f"Hello! Welcome to {org_name}. {ai_behavior.split('.')[0]}. How can I help you today?"
+                welcome_msg = f"How may I assist you today?"
             else:
                 # Default professional welcome
-                welcome_msg = f"Hello! Welcome to {org_name}. Be warm, empathetic, and professional. How can I help you today?"
+                welcome_msg = f"How may I assist you today?"
             
             # Store welcome message
             add_conversation_message(
