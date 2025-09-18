@@ -2,7 +2,7 @@ name: CI/CD
 
 on:
   push:
-    branches: ["main"]
+    branches: [ "main" ]
 
 concurrency:
   group: deploy-${{ github.ref }}
@@ -18,40 +18,26 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.11"
 
       - name: Show repo tree (debug)
         run: |
           pwd
           ls -la
           find . -maxdepth 3 -type f -iname "requirements*.txt" -print || true
-          echo "Python version:"
-          python --version
 
-      - name: Install deps (auto-detect requirements file)
+      - name: Install deps (root requirements.txt)
         run: |
           set -e
           python -m pip install --upgrade pip wheel setuptools
-          REQ=""
-          for f in requirements.txt app/requirements.txt chatbot_backend/requirements.txt backend/requirements.txt src/requirements.txt; do
-            if [ -f "$f" ]; then REQ="$f"; break; fi
-          done
-          if [ -n "$REQ" ]; then
-            echo "Using requirements file: $REQ"
-            pip install -r "$REQ"
-          else
-            echo "No requirements*.txt found — skipping pip install"
-          fi
+          test -f requirements.txt || (echo "requirements.txt not found at repo root" && exit 1)
+          pip install -r requirements.txt
 
       - name: Compile quick check
         run: |
           set -e
           FILES=$(git ls-files '*.py' || true)
-          if [ -n "$FILES" ]; then
-            python -m py_compile $FILES
-          else
-            echo "No Python files to compile."
-          fi
+          if [ -n "$FILES" ]; then python -m py_compile $FILES; else echo "No .py files"; fi
 
   deploy:
     needs: test
@@ -75,12 +61,12 @@ jobs:
           key: ${{ secrets.SSH_KEY }}
           script: whoami
 
-      # Use manual rsync to avoid key format issues
+      # Write the private key to a file and run rsync manually (most reliable)
       - name: Upload with rsync
         env:
           SSH_HOST: ${{ secrets.SSH_HOST }}
           SSH_USER: ${{ secrets.SSH_USER }}
-          SSH_KEY: ${{ secrets.SSH_KEY }}
+          SSH_KEY:  ${{ secrets.SSH_KEY }}
           REMOTE_PATH: ${{ secrets.REMOTE_PATH }}
         run: |
           set -e
