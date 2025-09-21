@@ -3,19 +3,22 @@ FROM python:3.11-slim
 # Set working directory
 WORKDIR /app
 
-# Install only essential system dependencies
+# Install system dependencies needed for cryptography packages
 RUN apt-get update && apt-get install -y \
     --no-install-recommends \
     curl \
+    build-essential \
+    libffi-dev \
+    libssl-dev \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
 # Upgrade pip first
 RUN pip install --upgrade pip
 
-# Copy requirements and install Python dependencies (using pre-compiled wheels)
+# Copy requirements and install Python dependencies
 COPY requirements.txt .
-RUN pip install --no-cache-dir --only-binary=all -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy all essential application files
 COPY main.py .
