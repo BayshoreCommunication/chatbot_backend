@@ -87,7 +87,14 @@ jobs:
             }
 
             echo "✅ Docker is running"
-
+            
+            # Clean up disk space
+            echo "🧹 Cleaning up disk space..."
+            sudo docker system prune -af || true
+            sudo apt-get autoremove -y || true
+            sudo apt-get autoclean || true
+            df -h
+            
             # Add current user to docker group (if not already added)
             echo "👤 Adding user to docker group..."
             sudo usermod -aG docker $USER || true

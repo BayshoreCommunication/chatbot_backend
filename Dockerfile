@@ -3,23 +3,19 @@ FROM python:3.11-slim
 # Set working directory
 WORKDIR /app
 
-# Install system dependencies needed for Python packages
+# Install only essential system dependencies
 RUN apt-get update && apt-get install -y \
     --no-install-recommends \
-    --fix-missing \
     curl \
-    build-essential \
-    libffi-dev \
-    libssl-dev \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
 # Upgrade pip first
 RUN pip install --upgrade pip
 
-# Copy requirements and install Python dependencies
+# Copy requirements and install Python dependencies (using pre-compiled wheels)
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt || (echo "Failed to install requirements, trying with --break-system-packages" && pip install --no-cache-dir -r requirements.txt --break-system-packages)
+RUN pip install --no-cache-dir --only-binary=all -r requirements.txt
 
 # Copy application code
 COPY . .

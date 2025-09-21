@@ -8,11 +8,6 @@ jinja2
 email-validator
 pymongo
 redis==5.0.1
-python-jose[cryptography]==3.3.0
-passlib[bcrypt]==1.7.4
 PyJWT==2.10.1
-bcrypt==4.1.2
-cryptography
 beautifulsoup4
-pypdf
 psutil
