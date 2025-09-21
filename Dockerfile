@@ -17,8 +17,12 @@ RUN pip install --upgrade pip
 COPY requirements.txt .
 RUN pip install --no-cache-dir --only-binary=all -r requirements.txt
 
-# Copy application code
-COPY . .
+# Copy only essential application files (excluding venv, logs, etc.)
+COPY main.py .
+COPY models/ ./models/
+COPY routes/ ./routes/
+COPY services/ ./services/
+COPY utils/ ./utils/
 
 # Create non-root user
 RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
