@@ -104,20 +104,20 @@ jobs:
             echo "📁 Creating app directory..."
             echo "Target directory: ${{ secrets.APP_DIR }}"
 
-            # Try to create directory in /tmp first (usually has more space)
-            TEMP_DIR="/tmp/chatbot-app"
-            echo "Using temporary directory: $TEMP_DIR"
-
-            sudo mkdir -p $TEMP_DIR
-            sudo chown -R ${{ secrets.SSH_USER }}:${{ secrets.SSH_USER }} $TEMP_DIR
-            sudo chmod 755 $TEMP_DIR
-
-            echo "✅ Temporary directory created: $TEMP_DIR"
+            # Use permanent directory instead of /tmp
+            APP_DIR="/opt/chatbot-app"
+            echo "Using permanent directory: $APP_DIR"
+            
+            sudo mkdir -p $APP_DIR
+            sudo chown -R ${{ secrets.SSH_USER }}:${{ secrets.SSH_USER }} $APP_DIR
+            sudo chmod 755 $APP_DIR
+            
+            echo "✅ Permanent directory created: $APP_DIR"
             echo "Current user: $(whoami)"
             echo "Directory permissions:"
-            ls -la $TEMP_DIR
+            ls -la $APP_DIR
             echo "📊 Available space:"
-            df -h $TEMP_DIR
+            df -h $APP_DIR
 
       - name: Clone repo on server
         uses: appleboy/ssh-action@v1.2.0
@@ -129,18 +129,18 @@ jobs:
             echo "📥 Cloning repository directly on server..."
             echo "Repository: ${{ github.server_url }}/${{ github.repository }}.git"
 
-            # Use temporary directory
-            TEMP_DIR="/tmp/chatbot-app"
-            echo "Target directory: $TEMP_DIR"
-
+            # Use permanent directory
+            APP_DIR="/opt/chatbot-app"
+            echo "Target directory: $APP_DIR"
+            
             # Remove existing directory if it exists
-            sudo rm -rf $TEMP_DIR
-
+            sudo rm -rf $APP_DIR
+            
             # Clone the repository
-            git clone https://github.com/${{ github.repository }}.git $TEMP_DIR
-
+            git clone https://github.com/${{ github.repository }}.git $APP_DIR
+            
             # Set proper ownership
-            sudo chown -R ${{ secrets.SSH_USER }}:${{ secrets.SSH_USER }} $TEMP_DIR
+            sudo chown -R ${{ secrets.SSH_USER }}:${{ secrets.SSH_USER }} $APP_DIR
 
             echo "✅ Repository cloned successfully"
             echo "📊 Disk usage after clone:"
@@ -154,8 +154,8 @@ jobs:
           key: ${{ secrets.SSH_KEY }}
           script: |
             echo "🔍 Verifying repository clone..."
-            TEMP_DIR="/tmp/chatbot-app"
-            cd $TEMP_DIR
+            APP_DIR="/opt/chatbot-app"
+            cd $APP_DIR
             echo "Current directory: $(pwd)"
             echo "Git status:"
             git status
@@ -176,42 +176,43 @@ jobs:
             set -e
             echo "🚀 Starting deployment..."
 
-            # Ensure we have a working directory
-            TEMP_DIR="/tmp/chatbot-app"
-            echo "📁 Ensuring working directory exists: $TEMP_DIR"
-
-            # Create directory if it doesn't exist
-            if [ ! -d "$TEMP_DIR" ]; then
-              echo "Creating directory: $TEMP_DIR"
-              sudo mkdir -p $TEMP_DIR
-              sudo chown -R ${{ secrets.SSH_USER }}:${{ secrets.SSH_USER }} $TEMP_DIR
-            fi
-
+            # Use a more permanent directory instead of /tmp
+            APP_DIR="/opt/chatbot-app"
+            echo "📁 Using permanent directory: $APP_DIR"
+            
+            # Create directory with proper permissions
+            echo "Creating directory: $APP_DIR"
+            sudo mkdir -p $APP_DIR
+            sudo chown -R ${{ secrets.SSH_USER }}:${{ secrets.SSH_USER }} $APP_DIR
+            sudo chmod 755 $APP_DIR
+            
             # Change to directory and verify
-            cd $TEMP_DIR
+            cd $APP_DIR
             echo "✅ Current directory: $(pwd)"
             echo "📋 Directory contents:"
             ls -la
+            echo "📊 Directory permissions:"
+            ls -ld $APP_DIR
 
             # Check if we have the application files
             if [ ! -f "main.py" ] || [ ! -f "requirements.txt" ] || [ ! -f "Dockerfile" ] || [ ! -f "docker-compose.yml" ]; then
               echo "❌ Application files missing! Cloning repository..."
-              sudo rm -rf $TEMP_DIR/*
-              git clone https://github.com/${{ github.repository }}.git $TEMP_DIR
-              sudo chown -R ${{ secrets.SSH_USER }}:${{ secrets.SSH_USER }} $TEMP_DIR
+              sudo rm -rf $APP_DIR/*
+              git clone https://github.com/${{ github.repository }}.git $APP_DIR
+              sudo chown -R ${{ secrets.SSH_USER }}:${{ secrets.SSH_USER }} $APP_DIR
               echo "✅ Repository cloned"
               ls -la
             else
               echo "✅ Application files found"
             fi
-            
+
             # Double-check critical files exist
             echo "🔍 Verifying critical files..."
             echo "main.py exists: $([ -f "main.py" ] && echo "YES" || echo "NO")"
             echo "requirements.txt exists: $([ -f "requirements.txt" ] && echo "YES" || echo "NO")"
             echo "Dockerfile exists: $([ -f "Dockerfile" ] && echo "YES" || echo "NO")"
             echo "docker-compose.yml exists: $([ -f "docker-compose.yml" ] && echo "YES" || echo "NO")"
-            
+
             # Show file permissions
             echo "📋 File permissions:"
             ls -la main.py requirements.txt Dockerfile docker-compose.yml 2>/dev/null || echo "Some files missing"
@@ -262,13 +263,13 @@ jobs:
             echo "Directory contents:"
             ls -la
             echo "docker-compose.yml exists: $([ -f "docker-compose.yml" ] && echo "YES" || echo "NO")"
-            
+
             if [ ! -f "docker-compose.yml" ]; then
               echo "❌ docker-compose.yml missing! Re-cloning repository..."
-              sudo rm -rf $TEMP_DIR/*
-              git clone https://github.com/${{ github.repository }}.git $TEMP_DIR
-              sudo chown -R ${{ secrets.SSH_USER }}:${{ secrets.SSH_USER }} $TEMP_DIR
-              cd $TEMP_DIR
+              sudo rm -rf $APP_DIR/*
+              git clone https://github.com/${{ github.repository }}.git $APP_DIR
+              sudo chown -R ${{ secrets.SSH_USER }}:${{ secrets.SSH_USER }} $APP_DIR
+              cd $APP_DIR
               echo "✅ Repository re-cloned"
               ls -la
             fi
