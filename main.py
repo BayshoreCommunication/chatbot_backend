@@ -273,6 +273,11 @@ def read_root():
         "status": "Partial functionality - some AI features may be unavailable due to dependencies"
     }
 
+@app.get("/ping")
+def ping():
+    """Ping endpoint for health checks"""
+    return {"status": "pong", "message": "Service is running"}
+
 @app.get("/health")
 def health_check():
     """Health check endpoint for monitoring"""

@@ -17,8 +17,7 @@ RUN pip install --upgrade pip
 
 # Copy requirements and install Python dependencies
 COPY requirements.txt .
-RUN pip install --no-cache-dir --no-deps -r requirements.txt || \
-    pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy all essential application files
 COPY main.py .

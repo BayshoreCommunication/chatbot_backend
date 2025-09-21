@@ -220,6 +220,21 @@ def is_admin_user(email: str) -> bool:
         logger.error(f"Error checking admin status: {str(e)}")
         return False
 
+def get_current_user(user_id: str) -> Optional[Dict[str, Any]]:
+    """Get current user by ID"""
+    try:
+        logger.debug(f"Getting current user by ID: {user_id}")
+        user = users.find_one({"id": user_id})
+        if user:
+            logger.debug("Current user found in database")
+            return serialize_user(user)
+        else:
+            logger.debug("No current user found with this ID")
+            return None
+    except Exception as e:
+        logger.error(f"Error getting current user: {str(e)}")
+        return None
+
 def seed_default_admin():
     """Seed default admin user if it doesn't exist"""
     try:

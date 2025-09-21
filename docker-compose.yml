@@ -10,36 +10,23 @@ services:
       - "8000:8000"
     environment:
       - ENVIRONMENT=production
-      - MONGO_URI=mongodb://mongodb:27017/chatbot_db
+      - MONGO_URI=mongodb+srv://bayshoreai:vTHfhc7RHyxZmumm@cluster0.zkfn4s6.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       - REDIS_DB=0
+      - OPENAI_API_KEY=your_openai_api_key_here
+      - PINECONE_API_KEY=your_pinecone_api_key_here
+      - PINECONE_INDEX=bayai
+      - DIGITALOCEAN_SPACES_KEY=your_do_spaces_key_here
+      - DIGITALOCEAN_SPACES_SECRET=your_do_spaces_secret_here
+      - DIGITALOCEAN_SPACES_ENDPOINT=your_do_spaces_endpoint_here
     volumes:
       - ./uploads:/app/uploads
       - ./logs:/app/logs
     depends_on:
-      - mongodb
       - redis
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/ping"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
-
-  mongodb:
-    image: mongo:7.0
-    container_name: chatbot-mongodb
-    restart: unless-stopped
-    # No external ports - only accessible within Docker network
-    environment:
-      - MONGO_INITDB_ROOT_USERNAME=admin
-      - MONGO_INITDB_ROOT_PASSWORD=password123
-      - MONGO_INITDB_DATABASE=chatbot_db
-    volumes:
-      - mongodb_data:/data/db
-    healthcheck:
-      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -60,5 +47,4 @@ services:
       start_period: 40s
 
 volumes:
-  mongodb_data:
   redis_data:
