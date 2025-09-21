@@ -107,11 +107,11 @@ jobs:
             # Use permanent directory instead of /tmp
             APP_DIR="/opt/chatbot-app"
             echo "Using permanent directory: $APP_DIR"
-            
+
             sudo mkdir -p $APP_DIR
             sudo chown -R ${{ secrets.SSH_USER }}:${{ secrets.SSH_USER }} $APP_DIR
             sudo chmod 755 $APP_DIR
-            
+
             echo "✅ Permanent directory created: $APP_DIR"
             echo "Current user: $(whoami)"
             echo "Directory permissions:"
@@ -132,13 +132,13 @@ jobs:
             # Use permanent directory
             APP_DIR="/opt/chatbot-app"
             echo "Target directory: $APP_DIR"
-            
+
             # Remove existing directory if it exists
             sudo rm -rf $APP_DIR
-            
+
             # Clone the repository
             git clone https://github.com/${{ github.repository }}.git $APP_DIR
-            
+
             # Set proper ownership
             sudo chown -R ${{ secrets.SSH_USER }}:${{ secrets.SSH_USER }} $APP_DIR
 
@@ -179,13 +179,13 @@ jobs:
             # Use a more permanent directory instead of /tmp
             APP_DIR="/opt/chatbot-app"
             echo "📁 Using permanent directory: $APP_DIR"
-            
+
             # Create directory with proper permissions
             echo "Creating directory: $APP_DIR"
             sudo mkdir -p $APP_DIR
             sudo chown -R ${{ secrets.SSH_USER }}:${{ secrets.SSH_USER }} $APP_DIR
             sudo chmod 755 $APP_DIR
-            
+
             # Change to directory and verify
             cd $APP_DIR
             echo "✅ Current directory: $(pwd)"
@@ -274,9 +274,28 @@ jobs:
               ls -la
             fi
 
-            # Stop existing containers
+            # Stop existing containers and clean up ports
             echo "⏹️ Stopping existing containers..."
             $DC down || true
+            
+            # Kill any process using port 8000
+            echo "🔌 Checking for processes using port 8000..."
+            PORT_PID=$(sudo lsof -t -i:8000 2>/dev/null || echo "")
+            if [ ! -z "$PORT_PID" ]; then
+              echo "Found process $PORT_PID using port 8000, killing it..."
+              sudo kill -9 $PORT_PID || true
+              sleep 2
+            else
+              echo "Port 8000 is free"
+            fi
+            
+            # Remove any existing containers with the same name
+            echo "🗑️ Removing any existing chatbot-backend containers..."
+            sudo docker rm -f chatbot-backend 2>/dev/null || true
+            
+            # Clean up any orphaned networks
+            echo "🧹 Cleaning up orphaned networks..."
+            sudo docker network prune -f || true
 
             # Build new container
             echo "🏗️ Building new container..."
@@ -292,6 +311,13 @@ jobs:
             # Wait for service to be ready
             echo "⏳ Waiting for service to start..."
             sleep 10
+            
+            # Verify containers are running
+            echo "🔍 Checking container status..."
+            sudo docker ps -a
+            echo "🔌 Checking port 8000..."
+            sudo netstat -tlnp | grep :8000 || echo "Port 8000 not found in netstat"
+            sudo lsof -i:8000 || echo "No process found using port 8000"
 
             # Health check
             echo "🏥 Running health check..."
