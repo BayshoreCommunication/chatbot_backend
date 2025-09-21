@@ -70,16 +70,51 @@ jobs:
           key: ${{ secrets.SSH_KEY }}
           script: |
             set -e
+            echo "🚀 Starting deployment..."
             cd ${{ secrets.APP_DIR }}
-            if docker compose version >/dev/null 2>&1; then DC="docker compose"; else DC="docker-compose"; fi
-            $DC pull || true
-            $DC build --no-cache web
-            $DC up -d
-            sleep 5
-            code=$(curl -s -o /dev/null -w "%{http_code}" http://${{ secrets.DOMAIN }}/health || echo 000)
-            if [ "$code" != "200" ]; then
-              echo "Health check failed ($code)"
-              $DC logs --no-color --tail=200 web
-              exit 1
+            
+            # Check if docker compose is available
+            if docker compose version >/dev/null 2>&1; then 
+              DC="docker compose"
+            else 
+              DC="docker-compose"
             fi
-            echo "Deploy OK"
+            
+            echo "Using Docker Compose command: $DC"
+            
+            # Stop existing containers
+            echo "⏹️ Stopping existing containers..."
+            $DC down || true
+            
+            # Build new container
+            echo "🏗️ Building new container..."
+            $DC build --no-cache web
+            
+            # Start containers
+            echo "🚀 Starting containers..."
+            $DC up -d
+            
+            # Wait for service to be ready
+            echo "⏳ Waiting for service to start..."
+            sleep 10
+            
+            # Health check
+            echo "🏥 Running health check..."
+            for i in {1..30}; do
+              code=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/ping || echo 000)
+              echo "Health check attempt $i: HTTP $code"
+              if [ "$code" = "200" ]; then
+                echo "✅ Health check passed!"
+                break
+              fi
+              if [ $i -eq 30 ]; then
+                echo "❌ Health check failed after 30 attempts"
+                echo "Container logs:"
+                $DC logs --no-color --tail=50 web
+                exit 1
+              fi
+              sleep 5
+            done
+            
+            echo "🎉 Deployment completed successfully!"
+            echo "Your app is running at: http://${{ secrets.SSH_HOST }}:8000"
