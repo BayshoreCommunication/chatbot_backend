@@ -31,6 +31,12 @@ COPY services/ ./services/
 COPY utils/ ./utils/
 COPY scripts/ ./scripts/
 
+# Set environment variables for Docker (these will override .env file)
+ENV MONGO_URI=mongodb://mongodb:27017/chatbot_db
+ENV REDIS_HOST=redis
+ENV REDIS_PORT=6379
+ENV REDIS_DB=0
+
 # Create non-root user
 RUN adduser -D -u 1000 appuser && chown -R appuser:appuser /app
 USER appuser

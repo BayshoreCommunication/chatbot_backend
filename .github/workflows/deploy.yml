@@ -230,6 +230,10 @@ jobs:
             else
               echo "✅ Application files found"
             fi
+            
+            # Remove any .env file that might interfere with Docker environment variables
+            echo "🧹 Removing any .env file to ensure Docker environment variables are used..."
+            rm -f .env || true
 
             # Double-check critical files exist
             echo "🔍 Verifying critical files..."
