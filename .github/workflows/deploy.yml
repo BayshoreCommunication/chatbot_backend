@@ -60,37 +60,37 @@ jobs:
             echo "🚨 EMERGENCY DISK CLEANUP - Server is full!"
             echo "📊 Disk usage before cleanup:"
             df -h
-            
+
             echo "🧹 Cleaning up everything possible..."
-            
+
             # Stop all Docker containers and remove everything
             sudo docker stop $(sudo docker ps -aq) 2>/dev/null || true
             sudo docker rm $(sudo docker ps -aq) 2>/dev/null || true
             sudo docker rmi $(sudo docker images -q) 2>/dev/null || true
             sudo docker system prune -af --volumes 2>/dev/null || true
             sudo docker builder prune -af 2>/dev/null || true
-            
+
             # Clean package cache
             sudo apt-get autoremove -y 2>/dev/null || true
             sudo apt-get autoclean 2>/dev/null || true
             sudo apt-get clean 2>/dev/null || true
-            
+
             # Clean temporary files
             sudo rm -rf /tmp/* 2>/dev/null || true
             sudo rm -rf /var/tmp/* 2>/dev/null || true
             sudo rm -rf /var/log/*.log 2>/dev/null || true
             sudo rm -rf /var/log/*.gz 2>/dev/null || true
-            
+
             # Clean old kernels
             sudo apt-get autoremove --purge -y 2>/dev/null || true
-            
+
             # Clean home directory
             rm -rf ~/.cache/* 2>/dev/null || true
             rm -rf ~/.npm/* 2>/dev/null || true
-            
+
             echo "📊 Disk usage after cleanup:"
             df -h
-            
+
             echo "🔍 Finding largest directories:"
             sudo du -h --max-depth=1 / 2>/dev/null | sort -hr | head -10 || true
 
@@ -103,15 +103,15 @@ jobs:
           script: |
             echo "📁 Creating app directory..."
             echo "Target directory: ${{ secrets.APP_DIR }}"
-            
+
             # Try to create directory in /tmp first (usually has more space)
             TEMP_DIR="/tmp/chatbot-app"
             echo "Using temporary directory: $TEMP_DIR"
-            
+
             sudo mkdir -p $TEMP_DIR
             sudo chown -R ${{ secrets.SSH_USER }}:${{ secrets.SSH_USER }} $TEMP_DIR
             sudo chmod 755 $TEMP_DIR
-            
+
             echo "✅ Temporary directory created: $TEMP_DIR"
             echo "Current user: $(whoami)"
             echo "Directory permissions:"
@@ -128,20 +128,20 @@ jobs:
           script: |
             echo "📥 Cloning repository directly on server..."
             echo "Repository: ${{ github.server_url }}/${{ github.repository }}.git"
-            
+
             # Use temporary directory
             TEMP_DIR="/tmp/chatbot-app"
             echo "Target directory: $TEMP_DIR"
-            
+
             # Remove existing directory if it exists
             sudo rm -rf $TEMP_DIR
-            
+
             # Clone the repository
             git clone https://github.com/${{ github.repository }}.git $TEMP_DIR
-            
+
             # Set proper ownership
             sudo chown -R ${{ secrets.SSH_USER }}:${{ secrets.SSH_USER }} $TEMP_DIR
-            
+
             echo "✅ Repository cloned successfully"
             echo "📊 Disk usage after clone:"
             df -h
@@ -175,9 +175,36 @@ jobs:
           script: |
             set -e
             echo "🚀 Starting deployment..."
+            
+            # Ensure we have a working directory
             TEMP_DIR="/tmp/chatbot-app"
+            echo "📁 Ensuring working directory exists: $TEMP_DIR"
+            
+            # Create directory if it doesn't exist
+            if [ ! -d "$TEMP_DIR" ]; then
+              echo "Creating directory: $TEMP_DIR"
+              sudo mkdir -p $TEMP_DIR
+              sudo chown -R ${{ secrets.SSH_USER }}:${{ secrets.SSH_USER }} $TEMP_DIR
+            fi
+            
+            # Change to directory and verify
             cd $TEMP_DIR
-
+            echo "✅ Current directory: $(pwd)"
+            echo "📋 Directory contents:"
+            ls -la
+            
+            # Check if we have the application files
+            if [ ! -f "main.py" ] || [ ! -f "requirements.txt" ] || [ ! -f "Dockerfile" ]; then
+              echo "❌ Application files missing! Cloning repository..."
+              sudo rm -rf $TEMP_DIR/*
+              git clone https://github.com/${{ github.repository }}.git $TEMP_DIR
+              sudo chown -R ${{ secrets.SSH_USER }}:${{ secrets.SSH_USER }} $TEMP_DIR
+              echo "✅ Repository cloned"
+              ls -la
+            else
+              echo "✅ Application files found"
+            fi
+            
             # Start Docker service
             echo "🐳 Starting Docker service..."
             sudo systemctl start docker
@@ -224,6 +251,9 @@ jobs:
 
             # Build new container
             echo "🏗️ Building new container..."
+            echo "Current directory: $(pwd)"
+            echo "Docker Compose file:"
+            cat docker-compose.yml || echo "No docker-compose.yml found"
             $DC build --no-cache web
 
             # Start containers
