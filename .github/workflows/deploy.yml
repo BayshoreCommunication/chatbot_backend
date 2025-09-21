@@ -77,6 +77,14 @@ jobs:
             sudo rm -rf /var/lib/docker/overlay2/* 2>/dev/null || true
             sudo rm -rf /var/lib/docker/image/* 2>/dev/null || true
 
+            # Repair Docker filesystem if corrupted
+            echo "🔧 Repairing Docker filesystem..."
+            sudo systemctl stop docker 2>/dev/null || true
+            sudo rm -rf /var/lib/docker/overlay2 2>/dev/null || true
+            sudo mkdir -p /var/lib/docker/overlay2 2>/dev/null || true
+            sudo systemctl start docker 2>/dev/null || true
+            sleep 5
+
             # Clean package cache
             sudo apt-get autoremove -y 2>/dev/null || true
             sudo apt-get autoclean 2>/dev/null || true
@@ -341,7 +349,13 @@ jobs:
             echo "Current directory: $(pwd)"
             echo "Docker Compose file:"
             cat docker-compose.yml || echo "No docker-compose.yml found"
-            $DC build --no-cache web
+
+            # Reset Docker build cache to avoid corruption
+            echo "🔄 Resetting Docker build cache..."
+            sudo docker builder prune -af 2>/dev/null || true
+
+            # Build with no cache to avoid corrupted layers
+            $DC build --no-cache --pull web
 
             # Start containers
             echo "🚀 Starting containers..."

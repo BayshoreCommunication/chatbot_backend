@@ -10,8 +10,10 @@ services:
       - "8000:8000"
     environment:
       - ENVIRONMENT=production
-      - MONGODB_URL=mongodb://mongodb:27017/chatbot_db
-      - REDIS_URL=redis://redis:6379/0
+      - MONGO_URI=mongodb://mongodb:27017/chatbot_db
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_DB=0
     volumes:
       - ./uploads:/app/uploads
       - ./logs:/app/logs
@@ -26,7 +28,7 @@ services:
       start_period: 40s
 
   mongodb:
-    image: mongo:7.0-alpine
+    image: mongo:7.0
     container_name: chatbot-mongodb
     restart: unless-stopped
     # No external ports - only accessible within Docker network
