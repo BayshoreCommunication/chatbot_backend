@@ -1,4 +1,5 @@
-version: "3.8"
+# Docker Compose file for chatbot backend
+# Note: version is no longer required in newer Docker Compose versions
 
 services:
   web:
