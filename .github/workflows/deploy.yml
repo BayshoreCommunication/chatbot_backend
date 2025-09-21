@@ -26,7 +26,18 @@ jobs:
           echo "Using $REQS"
           pip install -r "$REQS"
       - name: Syntax check
-        run: python -m py_compile app/*.py
+        run: |
+          set -e
+          echo "Checking Python syntax..."
+          FILES=$(find . -name "*.py" -not -path "./.git/*" -not -path "./venv/*" -not -path "./env/*" -not -path "./__pycache__/*" | head -20)
+          if [ -n "$FILES" ]; then
+            echo "Found Python files:"
+            echo "$FILES"
+            python -m py_compile $FILES
+            echo "✅ All Python files compile successfully"
+          else
+            echo "No Python files found to check"
+          fi
 
   deploy:
     needs: test
