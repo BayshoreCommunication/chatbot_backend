@@ -29,8 +29,7 @@ services:
     image: mongo:7.0
     container_name: chatbot-mongodb
     restart: unless-stopped
-    ports:
-      - "27017:27017"
+    # No external ports - only accessible within Docker network
     environment:
       - MONGO_INITDB_ROOT_USERNAME=admin
       - MONGO_INITDB_ROOT_PASSWORD=password123
@@ -48,8 +47,7 @@ services:
     image: redis:7.2-alpine
     container_name: chatbot-redis
     restart: unless-stopped
-    ports:
-      - "6379:6379"
+    # No external ports - only accessible within Docker network
     volumes:
       - redis_data:/data
     healthcheck:
