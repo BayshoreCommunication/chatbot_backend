@@ -1,7 +1,7 @@
 name: ci-cd
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
 
 jobs:
   test:
@@ -11,10 +11,20 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Install deps
+      - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install -r app/requirements.txt
+          set -e
+          python -m pip install --upgrade pip wheel setuptools
+          REQS=""
+          for f in requirements.txt app/requirements.txt; do
+            if [ -f "$f" ]; then REQS="$f"; break; fi
+          done
+          if [ -z "$REQS" ]; then
+            echo "No requirements.txt found (checked: ./requirements.txt and ./app/requirements.txt)"
+            exit 1
+          fi
+          echo "Using $REQS"
+          pip install -r "$REQS"
       - name: Syntax check
         run: python -m py_compile app/*.py
 
