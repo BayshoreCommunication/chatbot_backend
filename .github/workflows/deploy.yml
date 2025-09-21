@@ -58,6 +58,9 @@ jobs:
           key: ${{ secrets.SSH_KEY }}
           source: "."
           target: ${{ secrets.APP_DIR }}
+          strip_components: 0
+          overwrite: true
+          debug: true
 
       - name: Build, restart, health check
         uses: appleboy/ssh-action@v1.2.0
