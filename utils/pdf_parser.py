@@ -20,7 +20,7 @@ def process_pdf_to_vectorstore(file_path):
     # Load PDF
     documents = load_pdf(file_path)
     
-    # Split into chunks
+    # Split into  chunks
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
     splits = text_splitter.split_documents(documents)
     
