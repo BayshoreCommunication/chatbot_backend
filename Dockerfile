@@ -5,16 +5,13 @@ WORKDIR /app
 
 # Install system dependencies needed for Python packages
 RUN apt-get update && apt-get install -y \
+    --no-install-recommends \
+    --fix-missing \
     curl \
-    gcc \
-    g++ \
+    build-essential \
     libffi-dev \
     libssl-dev \
-    libxml2-dev \
-    libxslt1-dev \
-    zlib1g-dev \
-    libjpeg-dev \
-    libpng-dev \
+    && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
 # Upgrade pip first
@@ -22,7 +19,7 @@ RUN pip install --upgrade pip
 
 # Copy requirements and install Python dependencies
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt || (echo "Failed to install requirements, trying with --break-system-packages" && pip install --no-cache-dir -r requirements.txt --break-system-packages)
 
 # Copy application code
 COPY . .
