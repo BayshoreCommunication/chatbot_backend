@@ -58,34 +58,55 @@ jobs:
           key: ${{ secrets.SSH_KEY }}
           script: |
             echo "📁 Creating app directory..."
+            echo "Target directory: ${{ secrets.APP_DIR }}"
             sudo mkdir -p ${{ secrets.APP_DIR }}
             sudo chown -R ${{ secrets.SSH_USER }}:${{ secrets.SSH_USER }} ${{ secrets.APP_DIR }}
+            sudo chmod 755 ${{ secrets.APP_DIR }}
             echo "✅ Directory created: ${{ secrets.APP_DIR }}"
+            ls -la $(dirname ${{ secrets.APP_DIR }})
+            echo "Current user: $(whoami)"
+            echo "Directory permissions:"
+            ls -la ${{ secrets.APP_DIR }}
 
-      - name: Upload repo to server
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_KEY }}
-          source: "."
-          target: ${{ secrets.APP_DIR }}
-          strip_components: 0
-          overwrite: true
-          debug: true
-          rm: true
-          timeout: 300s
-
-      - name: Verify upload
+      - name: Clone repo on server
         uses: appleboy/ssh-action@v1.2.0
         with:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_KEY }}
           script: |
-            echo "🔍 Verifying upload..."
-            ls -la ${{ secrets.APP_DIR }}
-            echo "📊 Disk usage after upload:"
+            echo "📥 Cloning repository directly on server..."
+            echo "Repository: ${{ github.server_url }}/${{ github.repository }}.git"
+            echo "Target directory: ${{ secrets.APP_DIR }}"
+            
+            # Remove existing directory if it exists
+            sudo rm -rf ${{ secrets.APP_DIR }}
+            
+            # Clone the repository
+            git clone https://github.com/${{ github.repository }}.git ${{ secrets.APP_DIR }}
+            
+            # Set proper ownership
+            sudo chown -R ${{ secrets.SSH_USER }}:${{ secrets.SSH_USER }} ${{ secrets.APP_DIR }}
+            
+            echo "✅ Repository cloned successfully"
+
+      - name: Verify clone and checkout latest
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          script: |
+            echo "🔍 Verifying repository clone..."
+            cd ${{ secrets.APP_DIR }}
+            echo "Current directory: $(pwd)"
+            echo "Git status:"
+            git status
+            echo "Latest commit:"
+            git log --oneline -1
+            echo "Files in directory:"
+            ls -la
+            echo "📊 Disk usage after clone:"
             df -h
 
       - name: Build, restart, health check
