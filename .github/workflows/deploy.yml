@@ -72,32 +72,32 @@ jobs:
             set -e
             echo "🚀 Starting deployment..."
             cd ${{ secrets.APP_DIR }}
-            
+
             # Check if docker compose is available
             if docker compose version >/dev/null 2>&1; then 
               DC="docker compose"
             else 
               DC="docker-compose"
             fi
-            
+
             echo "Using Docker Compose command: $DC"
-            
+
             # Stop existing containers
             echo "⏹️ Stopping existing containers..."
             $DC down || true
-            
+
             # Build new container
             echo "🏗️ Building new container..."
             $DC build --no-cache web
-            
+
             # Start containers
             echo "🚀 Starting containers..."
             $DC up -d
-            
+
             # Wait for service to be ready
             echo "⏳ Waiting for service to start..."
             sleep 10
-            
+
             # Health check
             echo "🏥 Running health check..."
             for i in {1..30}; do
@@ -115,6 +115,6 @@ jobs:
               fi
               sleep 5
             done
-            
+
             echo "🎉 Deployment completed successfully!"
             echo "Your app is running at: http://${{ secrets.SSH_HOST }}:8000"
