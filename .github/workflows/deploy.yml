@@ -72,12 +72,12 @@ jobs:
             set -e
             echo "🚀 Starting deployment..."
             cd ${{ secrets.APP_DIR }}
-            
+
             # Start Docker service
             echo "🐳 Starting Docker service..."
             sudo systemctl start docker
             sudo systemctl enable docker
-            
+
             # Wait for Docker to be ready
             echo "⏳ Waiting for Docker to be ready..."
             timeout 30 bash -c 'until docker info >/dev/null 2>&1; do sleep 1; done' || {
@@ -85,22 +85,22 @@ jobs:
               sudo systemctl status docker
               exit 1
             }
-            
+
             echo "✅ Docker is running"
-            
+
             # Add current user to docker group (if not already added)
             echo "👤 Adding user to docker group..."
             sudo usermod -aG docker $USER || true
-            
+
             # Check if docker compose is available
             if docker compose version >/dev/null 2>&1; then 
               DC="docker compose"
             else 
               DC="docker-compose"
             fi
-            
+
             echo "Using Docker Compose command: $DC"
-            
+
             # Stop existing containers
             echo "⏹️ Stopping existing containers..."
             $DC down || true
