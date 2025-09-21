@@ -498,7 +498,17 @@ async def ask_question(
 
     except Exception as e:
         print(f"Error processing chat message: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"Error type: {type(e).__name__}")
+        import traceback
+        print(f"Traceback: {traceback.format_exc()}")
+        
+        # Return a more detailed error response
+        return {
+            "answer": "I'm sorry, I'm experiencing technical difficulties. Please try again later.",
+            "error": str(e),
+            "error_type": type(e).__name__,
+            "mode": "error"
+        }
 
 @router.get("/history/{session_id}")
 async def get_chat_history(

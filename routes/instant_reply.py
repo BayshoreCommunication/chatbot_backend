@@ -4,6 +4,7 @@ from services.database import get_organization_by_api_key, db
 router = APIRouter()
 
 @router.get("/")
+@router.get("")
 async def get_instant_reply(x_api_key: str = Header(...)):
     """Get instant reply messages for an organization"""
     try:

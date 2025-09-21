@@ -158,6 +158,9 @@ origins = [
     "https://aibotwidget.bayshorecommunication.org",
     "https://aibotwidget.bayshorecommunication.org/chatbot-widget.min.js",
     "https://www.carterinjurylaw.com",
+    "http://www.carterinjurylaw.com",
+    "https://api.bayshorecommunication.org",
+    "http://api.bayshorecommunication.org",
     "http://localhost:5174",
     "http://localhost:8000",
     "*"  # Allow all origins as fallback
