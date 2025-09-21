@@ -175,26 +175,26 @@ jobs:
           script: |
             set -e
             echo "🚀 Starting deployment..."
-            
+
             # Ensure we have a working directory
             TEMP_DIR="/tmp/chatbot-app"
             echo "📁 Ensuring working directory exists: $TEMP_DIR"
-            
+
             # Create directory if it doesn't exist
             if [ ! -d "$TEMP_DIR" ]; then
               echo "Creating directory: $TEMP_DIR"
               sudo mkdir -p $TEMP_DIR
               sudo chown -R ${{ secrets.SSH_USER }}:${{ secrets.SSH_USER }} $TEMP_DIR
             fi
-            
+
             # Change to directory and verify
             cd $TEMP_DIR
             echo "✅ Current directory: $(pwd)"
             echo "📋 Directory contents:"
             ls -la
-            
+
             # Check if we have the application files
-            if [ ! -f "main.py" ] || [ ! -f "requirements.txt" ] || [ ! -f "Dockerfile" ]; then
+            if [ ! -f "main.py" ] || [ ! -f "requirements.txt" ] || [ ! -f "Dockerfile" ] || [ ! -f "docker-compose.yml" ]; then
               echo "❌ Application files missing! Cloning repository..."
               sudo rm -rf $TEMP_DIR/*
               git clone https://github.com/${{ github.repository }}.git $TEMP_DIR
@@ -205,6 +205,17 @@ jobs:
               echo "✅ Application files found"
             fi
             
+            # Double-check critical files exist
+            echo "🔍 Verifying critical files..."
+            echo "main.py exists: $([ -f "main.py" ] && echo "YES" || echo "NO")"
+            echo "requirements.txt exists: $([ -f "requirements.txt" ] && echo "YES" || echo "NO")"
+            echo "Dockerfile exists: $([ -f "Dockerfile" ] && echo "YES" || echo "NO")"
+            echo "docker-compose.yml exists: $([ -f "docker-compose.yml" ] && echo "YES" || echo "NO")"
+            
+            # Show file permissions
+            echo "📋 File permissions:"
+            ls -la main.py requirements.txt Dockerfile docker-compose.yml 2>/dev/null || echo "Some files missing"
+
             # Start Docker service
             echo "🐳 Starting Docker service..."
             sudo systemctl start docker
@@ -244,6 +255,23 @@ jobs:
             fi
 
             echo "Using Docker Compose command: $DC"
+
+            # Final verification before Docker commands
+            echo "🔍 Final verification before Docker commands..."
+            echo "Current directory: $(pwd)"
+            echo "Directory contents:"
+            ls -la
+            echo "docker-compose.yml exists: $([ -f "docker-compose.yml" ] && echo "YES" || echo "NO")"
+            
+            if [ ! -f "docker-compose.yml" ]; then
+              echo "❌ docker-compose.yml missing! Re-cloning repository..."
+              sudo rm -rf $TEMP_DIR/*
+              git clone https://github.com/${{ github.repository }}.git $TEMP_DIR
+              sudo chown -R ${{ secrets.SSH_USER }}:${{ secrets.SSH_USER }} $TEMP_DIR
+              cd $TEMP_DIR
+              echo "✅ Repository re-cloned"
+              ls -la
+            fi
 
             # Stop existing containers
             echo "⏹️ Stopping existing containers..."
