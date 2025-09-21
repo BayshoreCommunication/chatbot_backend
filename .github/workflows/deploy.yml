@@ -277,7 +277,7 @@ jobs:
             # Stop existing containers and clean up ports
             echo "⏹️ Stopping existing containers..."
             $DC down || true
-            
+
             # Kill any process using port 8000
             echo "🔌 Checking for processes using port 8000..."
             PORT_PID=$(sudo lsof -t -i:8000 2>/dev/null || echo "")
@@ -288,11 +288,11 @@ jobs:
             else
               echo "Port 8000 is free"
             fi
-            
+
             # Remove any existing containers with the same name
             echo "🗑️ Removing any existing chatbot-backend containers..."
             sudo docker rm -f chatbot-backend 2>/dev/null || true
-            
+
             # Clean up any orphaned networks
             echo "🧹 Cleaning up orphaned networks..."
             sudo docker network prune -f || true
@@ -311,7 +311,7 @@ jobs:
             # Wait for service to be ready
             echo "⏳ Waiting for service to start..."
             sleep 10
-            
+
             # Verify containers are running
             echo "🔍 Checking container status..."
             sudo docker ps -a
