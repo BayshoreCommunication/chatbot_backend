@@ -67,13 +67,22 @@ jobs:
             sudo docker stop $(sudo docker ps -aq) 2>/dev/null || true
             sudo docker rm $(sudo docker ps -aq) 2>/dev/null || true
             sudo docker rmi $(sudo docker images -q) 2>/dev/null || true
+            sudo docker volume rm $(sudo docker volume ls -q) 2>/dev/null || true
+            sudo docker network rm $(sudo docker network ls -q) 2>/dev/null || true
             sudo docker system prune -af --volumes 2>/dev/null || true
             sudo docker builder prune -af 2>/dev/null || true
+
+            # Clean Docker build cache and layers
+            sudo rm -rf /var/lib/docker/tmp/* 2>/dev/null || true
+            sudo rm -rf /var/lib/docker/overlay2/* 2>/dev/null || true
+            sudo rm -rf /var/lib/docker/image/* 2>/dev/null || true
 
             # Clean package cache
             sudo apt-get autoremove -y 2>/dev/null || true
             sudo apt-get autoclean 2>/dev/null || true
             sudo apt-get clean 2>/dev/null || true
+            sudo rm -rf /var/cache/apt/archives/* 2>/dev/null || true
+            sudo rm -rf /var/lib/apt/lists/* 2>/dev/null || true
 
             # Clean temporary files
             sudo rm -rf /tmp/* 2>/dev/null || true
@@ -84,9 +93,17 @@ jobs:
             # Clean old kernels
             sudo apt-get autoremove --purge -y 2>/dev/null || true
 
+            # Clean system logs
+            sudo journalctl --vacuum-time=1d 2>/dev/null || true
+            sudo find /var/log -name "*.log" -type f -mtime +7 -delete 2>/dev/null || true
+
             # Clean home directory
             rm -rf ~/.cache/* 2>/dev/null || true
             rm -rf ~/.npm/* 2>/dev/null || true
+
+            # Clean up any existing app directories
+            sudo rm -rf /opt/chatbot-app 2>/dev/null || true
+            sudo rm -rf /tmp/chatbot-app 2>/dev/null || true
 
             echo "📊 Disk usage after cleanup:"
             df -h
@@ -280,35 +297,35 @@ jobs:
 
             # Kill any processes using ports 8000, 27017, 6379
             echo "🔌 Checking for processes using ports 8000, 27017, 6379..."
-            
+
             # Kill port 8000
             PORT_PID=$(sudo lsof -t -i:8000 2>/dev/null || echo "")
             if [ ! -z "$PORT_PID" ]; then
               echo "Found process $PORT_PID using port 8000, killing it..."
               sudo kill -9 $PORT_PID || true
             fi
-            
+
             # Kill port 27017 (MongoDB)
             MONGODB_PID=$(sudo lsof -t -i:27017 2>/dev/null || echo "")
             if [ ! -z "$MONGODB_PID" ]; then
               echo "Found process $MONGODB_PID using port 27017, killing it..."
               sudo kill -9 $MONGODB_PID || true
             fi
-            
+
             # Kill port 6379 (Redis)
             REDIS_PID=$(sudo lsof -t -i:6379 2>/dev/null || echo "")
             if [ ! -z "$REDIS_PID" ]; then
               echo "Found process $REDIS_PID using port 6379, killing it..."
               sudo kill -9 $REDIS_PID || true
             fi
-            
+
             # Stop any existing Redis/MongoDB services
             echo "🛑 Stopping existing Redis and MongoDB services..."
             sudo systemctl stop redis-server 2>/dev/null || true
             sudo systemctl stop mongod 2>/dev/null || true
             sudo systemctl stop redis 2>/dev/null || true
             sudo systemctl stop mongodb 2>/dev/null || true
-            
+
             sleep 3
 
             # Remove any existing containers with the same name

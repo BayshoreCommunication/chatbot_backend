@@ -26,7 +26,7 @@ services:
       start_period: 40s
 
   mongodb:
-    image: mongo:7.0
+    image: mongo:7.0-alpine
     container_name: chatbot-mongodb
     restart: unless-stopped
     # No external ports - only accessible within Docker network

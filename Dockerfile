@@ -1,24 +1,24 @@
-FROM python:3.11-slim
+FROM python:3.11-alpine
 
 # Set working directory
 WORKDIR /app
 
-# Install system dependencies needed for cryptography packages
-RUN apt-get update && apt-get install -y \
-    --no-install-recommends \
+# Install minimal system dependencies
+RUN apk add --no-cache \
     curl \
-    build-essential \
+    gcc \
+    musl-dev \
     libffi-dev \
-    libssl-dev \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
+    openssl-dev \
+    && rm -rf /var/cache/apk/*
 
 # Upgrade pip first
 RUN pip install --upgrade pip
 
 # Copy requirements and install Python dependencies
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --no-deps -r requirements.txt || \
+    pip install --no-cache-dir -r requirements.txt
 
 # Copy all essential application files
 COPY main.py .
@@ -32,7 +32,7 @@ COPY utils/ ./utils/
 COPY scripts/ ./scripts/
 
 # Create non-root user
-RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
+RUN adduser -D -u 1000 appuser && chown -R appuser:appuser /app
 USER appuser
 
 # Expose port
