@@ -50,6 +50,18 @@ jobs:
           mkdir -p ~/.ssh
           ssh-keyscan -H ${{ secrets.SSH_HOST }} >> ~/.ssh/known_hosts
 
+      - name: Create app directory on server
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          script: |
+            echo "📁 Creating app directory..."
+            sudo mkdir -p ${{ secrets.APP_DIR }}
+            sudo chown -R ${{ secrets.SSH_USER }}:${{ secrets.SSH_USER }} ${{ secrets.APP_DIR }}
+            echo "✅ Directory created: ${{ secrets.APP_DIR }}"
+
       - name: Upload repo to server
         uses: appleboy/scp-action@v0.1.7
         with:
@@ -61,6 +73,20 @@ jobs:
           strip_components: 0
           overwrite: true
           debug: true
+          rm: true
+          timeout: 300s
+
+      - name: Verify upload
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          script: |
+            echo "🔍 Verifying upload..."
+            ls -la ${{ secrets.APP_DIR }}
+            echo "📊 Disk usage after upload:"
+            df -h
 
       - name: Build, restart, health check
         uses: appleboy/ssh-action@v1.2.0
