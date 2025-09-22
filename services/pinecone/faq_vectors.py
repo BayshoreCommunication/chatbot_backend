@@ -8,7 +8,7 @@ from bson import ObjectId
 # Initialize FAQ vectors collection for metadata
 faq_vectors = db.faq_vectors
 
-# Global Pinecone client
+# Global Pineconeclient
 pc = None
 
 def init_pinecone():
