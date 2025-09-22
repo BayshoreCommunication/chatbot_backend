@@ -307,8 +307,31 @@ jobs:
             echo "⏹️ Stopping existing containers..."
             $DC down || true
 
-            # Kill any processes using ports 8000, 27017, 6379
-            echo "🔌 Checking for processes using ports 8000, 27017, 6379..."
+            # First, stop any system web servers that might be using port 80/443
+            echo "🛑 Stopping system web servers..."
+            sudo systemctl stop apache2 2>/dev/null || true
+            sudo systemctl stop nginx 2>/dev/null || true
+            sudo systemctl stop caddy 2>/dev/null || true
+            sudo systemctl stop httpd 2>/dev/null || true
+
+            # Kill any processes using ports 80, 443, 8000, 27017, 6379
+            echo "🔌 Checking for processes using ports 80, 443, 8000, 27017, 6379..."
+
+            # Kill port 80 (HTTP)
+            PORT_80_PID=$(sudo lsof -t -i:80 2>/dev/null || echo "")
+            if [ ! -z "$PORT_80_PID" ]; then
+              echo "Found process $PORT_80_PID using port 80, killing it..."
+              sudo kill -9 $PORT_80_PID || true
+              sleep 2
+            fi
+
+            # Kill port 443 (HTTPS)
+            PORT_443_PID=$(sudo lsof -t -i:443 2>/dev/null || echo "")
+            if [ ! -z "$PORT_443_PID" ]; then
+              echo "Found process $PORT_443_PID using port 443, killing it..."
+              sudo kill -9 $PORT_443_PID || true
+              sleep 2
+            fi
 
             # Kill port 8000
             PORT_PID=$(sudo lsof -t -i:8000 2>/dev/null || echo "")
@@ -347,6 +370,19 @@ jobs:
             # Clean up any orphaned networks
             echo "🧹 Cleaning up orphaned networks..."
             sudo docker network prune -f || true
+
+            # Final port check before starting new containers
+            echo "🔍 Final port availability check..."
+            if sudo netstat -tlnp | grep -q ":80 "; then
+              echo "⚠️  Port 80 still in use, forcing cleanup..."
+              sudo fuser -k 80/tcp 2>/dev/null || true
+              sleep 3
+            fi
+            if sudo netstat -tlnp | grep -q ":443 "; then
+              echo "⚠️  Port 443 still in use, forcing cleanup..."
+              sudo fuser -k 443/tcp 2>/dev/null || true
+              sleep 3
+            fi
 
             # Build new container
             echo "🏗️ Building new container..."
