@@ -29,7 +29,7 @@ def send_email_notification(subject, body, recipient=None):
         msg['From'] = EMAIL_USER
         
         # If recipient is provided, send to that recipient
-        # Otherwise, send to the business owner
+        #Otherwise, send to the business owner
         msg['To'] = recipient if recipient else EMAIL_USER
         msg['Subject'] = subject
         
