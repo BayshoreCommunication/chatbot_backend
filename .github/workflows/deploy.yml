@@ -420,6 +420,17 @@ jobs:
             export STRIPE_SECRET_KEY="${{ secrets.STRIPE_SECRET_KEY }}"
             export STRIPE_WEBHOOK_SECRET="${{ secrets.STRIPE_WEBHOOK_SECRET }}"
 
+            # Debug: Check if critical environment variables are set
+            echo "🔍 Verifying environment variables..."
+            echo "MONGO_URI length: ${#MONGO_URI}"
+            echo "OPENAI_API_KEY length: ${#OPENAI_API_KEY}"
+            echo "PINECONE_API_KEY length: ${#PINECONE_API_KEY}"
+
+            if [ -z "$MONGO_URI" ]; then
+              echo "❌ MONGO_URI is empty! Check GitHub Secrets."
+              exit 1
+            fi
+
             # Build with no cache to avoid corrupted layers
             $DC build --no-cache --pull web
 
