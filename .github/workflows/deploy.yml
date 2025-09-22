@@ -463,17 +463,16 @@ jobs:
             echo "🚀 Starting containers..."
             $DC up -d
 
-            # Wait for MongoDB and Redis to be ready
-            echo "⏳ Waiting for MongoDB and Redis to start..."
-            sleep 15
-
-            # Check if MongoDB is ready
-            echo "🔍 Checking MongoDB status..."
-            sudo docker exec chatbot-mongodb mongosh --eval "db.adminCommand('ping')" || echo "MongoDB not ready yet"
+            # Wait for Redis to be ready (MongoDB is external via Atlas)
+            echo "⏳ Waiting for Redis to start..."
+            sleep 10
 
             # Check if Redis is ready
             echo "🔍 Checking Redis status..."
             sudo docker exec chatbot-redis redis-cli ping || echo "Redis not ready yet"
+
+            # Note: MongoDB connection is external via MongoDB Atlas
+            echo "📡 Using external MongoDB Atlas connection"
 
             # Wait for web service to be ready
             echo "⏳ Waiting for web service to start..."
