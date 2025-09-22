@@ -9,8 +9,7 @@ services:
     ports:
       - "8000:8000"
     env_file:
-      - ./.env
-    # other keys...
+      - .env
     environment:
       - ENVIRONMENT=production
       - REDIS_HOST=redis
