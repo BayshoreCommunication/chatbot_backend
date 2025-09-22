@@ -3,7 +3,7 @@ from services.pinecone.faq_vectors import search_faq_embeddings
 from services.database import db
 from bson import ObjectId
 
-# Initialize  collections
+# Initialize   collections
 faq_collection = db.faqs
 
 def find_matching_faq(
@@ -78,3 +78,6 @@ def get_suggested_faqs(
     except Exception as e:
         print(f"Error getting suggested FAQs: {str(e)}")
         return [] 
+
+
+
