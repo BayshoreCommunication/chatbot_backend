@@ -8,21 +8,39 @@ services:
     restart: unless-stopped
     ports:
       - "8000:8000"
+    env_file:
+      - .env
     environment:
       - ENVIRONMENT=production
-      - MONGO_URI=mongodb+srv://bayshoreai:vTHfhc7RHyxZmumm@cluster0.zkfn4s6.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       - REDIS_DB=0
-      - OPENAI_API_KEY=your_openai_api_key_here
-      - PINECONE_API_KEY=your_pinecone_api_key_here
-      - PINECONE_INDEX=bayai
-      - DIGITALOCEAN_SPACES_KEY=your_do_spaces_key_here
-      - DIGITALOCEAN_SPACES_SECRET=your_do_spaces_secret_here
-      - DIGITALOCEAN_SPACES_ENDPOINT=your_do_spaces_endpoint_here
+      - MONGO_URI=${MONGO_URI}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - PINECONE_API_KEY=${PINECONE_API_KEY}
+      - PINECONE_ENV=${PINECONE_ENV}
+      - PINECONE_INDEX=${PINECONE_INDEX}
+      - DO_SPACES_BUCKET=${DO_SPACES_BUCKET}
+      - DO_SPACES_REGION=${DO_SPACES_REGION}
+      - DO_SPACES_KEY=${DO_SPACES_KEY}
+      - DO_SPACES_SECRET=${DO_SPACES_SECRET}
+      - DO_FOLDER_NAME=${DO_FOLDER_NAME}
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY}
+      - JWT_ALGORITHM=${JWT_ALGORITHM}
+      - JWT_ACCESS_TOKEN_EXPIRE_MINUTES=${JWT_ACCESS_TOKEN_EXPIRE_MINUTES}
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
+      - CLIENT_ID=${CLIENT_ID}
+      - CLIENT_SECRE=${CLIENT_SECRE}
+      - WEBHOOK_SIGNING_KEY=${WEBHOOK_SIGNING_KEY}
+      - CALENDLY_API_KEY=${CALENDLY_API_KEY}
+      - PUBLISHABLE_KEY=${PUBLISHABLE_KEY}
+      - STRIPE_SECRET_KEY=${STRIPE_SECRET_KEY}
+      - STRIPE_WEBHOOK_SECRET=${STRIPE_WEBHOOK_SECRET}
     volumes:
-      - ./uploads:/app/uploads
-      - ./logs:/app/logs
+      - ./uploads:/opt/chatbot-app/uploads
+      - ./logs:/opt/chatbot-app/logs
     depends_on:
       - redis
     healthcheck:
