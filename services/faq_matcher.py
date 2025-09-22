@@ -3,7 +3,7 @@ from services.pinecone.faq_vectors import search_faq_embeddings
 from services.database import db
 from bson import ObjectId
 
-# Initialize collections
+# Initialize  collections
 faq_collection = db.faqs
 
 def find_matching_faq(
