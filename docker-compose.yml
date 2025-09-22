@@ -9,22 +9,12 @@ services:
     ports:
       - "8000:8000"
     env_file:
-      - .env
+      - ./.env
     environment:
-      - ENVIRONMENT=production
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-      - REDIS_DB=0
-      - MONGO_URI=${MONGO_URI}
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - PINECONE_API_KEY=${PINECONE_API_KEY}
-      - PINECONE_ENV=${PINECONE_ENV}
-      - PINECONE_INDEX=${PINECONE_INDEX}
-      - DO_SPACES_BUCKET=${DO_SPACES_BUCKET}
-      - DO_SPACES_REGION=${DO_SPACES_REGION}
-      - DO_SPACES_KEY=${DO_SPACES_KEY}
-      - DO_SPACES_SECRET=${DO_SPACES_SECRET}
-      - DO_FOLDER_NAME=${DO_FOLDER_NAME}
+      ENVIRONMENT: production
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_DB: "0"
     volumes:
       - ./uploads:/opt/chatbot-app/uploads
       - ./logs:/opt/chatbot-app/logs
@@ -36,6 +26,19 @@ services:
       timeout: 10s
       retries: 3
       start_period: 40s
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - web
 
   redis:
     image: redis:7.2-alpine
@@ -50,6 +53,10 @@ services:
       timeout: 10s
       retries: 3
       start_period: 40s
+    # Optional: persistence + password
+    # command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD}"]
 
 volumes:
   redis_data:
+  caddy_data:
+  caddy_config:
