@@ -303,6 +303,31 @@ jobs:
               ls -la
             fi
 
+            # Set basic environment variables for docker-compose down
+            export MONGO_URI="temp"
+            export OPENAI_API_KEY="temp"
+            export PINECONE_API_KEY="temp"
+            export PINECONE_ENV="temp"
+            export PINECONE_INDEX="temp"
+            export DO_SPACES_BUCKET="temp"
+            export DO_SPACES_REGION="temp"
+            export DO_SPACES_KEY="temp"
+            export DO_SPACES_SECRET="temp"
+            export DO_FOLDER_NAME="temp"
+            export GOOGLE_CLIENT_ID="temp"
+            export GOOGLE_CLIENT_SECRET="temp"
+            export JWT_SECRET_KEY="temp"
+            export JWT_ALGORITHM="temp"
+            export JWT_ACCESS_TOKEN_EXPIRE_MINUTES="temp"
+            export REDIS_PASSWORD="temp"
+            export CLIENT_ID="temp"
+            export CLIENT_SECRE="temp"
+            export WEBHOOK_SIGNING_KEY="temp"
+            export CALENDLY_API_KEY="temp"
+            export PUBLISHABLE_KEY="temp"
+            export STRIPE_SECRET_KEY="temp"
+            export STRIPE_WEBHOOK_SECRET="temp"
+
             # Stop existing containers and clean up ports
             echo "⏹️ Stopping existing containers..."
             $DC down || true

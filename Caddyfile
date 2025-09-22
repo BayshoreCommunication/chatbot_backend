@@ -2,24 +2,36 @@
 # Domain: api.bayshorecommunication.org
 
 api.bayshorecommunication.org {
-    # Reverse proxy to the chatbot backend
-    reverse_proxy web:8000
+    # Reverse proxy to the chatbot backend with WebSocket support
+    reverse_proxy web:8000 {
+        # Enable WebSocket support for Socket.IO
+        header_up Upgrade {http.request.header.Upgrade}
+        header_up Connection {http.request.header.Connection}
+        header_up X-Forwarded-Proto {http.request.scheme}
+        header_up X-Forwarded-Host {http.request.host}
+        header_up X-Real-IP {http.request.remote}
+        
+        # Handle WebSocket upgrade requests
+        @websocket {
+            header Connection *Upgrade*
+            header Upgrade websocket
+        }
+    }
     
-    # Enable gzip compression
+    # Enable gzip compression (but not for WebSocket connections)
     encode gzip
     
     # Security headers
     header {
         # HSTS
         Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
-        # Cors headers for API access
+        # CORS headers for API access - more permissive for Socket.IO
         Access-Control-Allow-Origin "*"
-        Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS"
-        Access-Control-Allow-Headers "Content-Type, Authorization"
+        Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS, PATCH"
+        Access-Control-Allow-Headers "Content-Type, Authorization, X-Requested-With, X-Socket-ID"
+        Access-Control-Allow-Credentials "false"
         # Security headers
-        X-Frame-Options "DENY"
         X-Content-Type-Options "nosniff"
-        X-XSS-Protection "1; mode=block"
         Referrer-Policy "strict-origin-when-cross-origin"
     }
     
