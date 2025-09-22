@@ -358,6 +358,32 @@ jobs:
             echo "🔄 Resetting Docker build cache..."
             sudo docker builder prune -af 2>/dev/null || true
 
+            # Set environment variables from GitHub Secrets
+            echo "🔧 Setting environment variables from secrets..."
+            export MONGO_URI="${{ secrets.MONGO_URI }}"
+            export OPENAI_API_KEY="${{ secrets.OPENAI_API_KEY }}"
+            export PINECONE_API_KEY="${{ secrets.PINECONE_API_KEY }}"
+            export PINECONE_ENV="${{ secrets.PINECONE_ENV }}"
+            export PINECONE_INDEX="${{ secrets.PINECONE_INDEX }}"
+            export DO_SPACES_BUCKET="${{ secrets.DO_SPACES_BUCKET }}"
+            export DO_SPACES_REGION="${{ secrets.DO_SPACES_REGION }}"
+            export DO_SPACES_KEY="${{ secrets.DO_SPACES_KEY }}"
+            export DO_SPACES_SECRET="${{ secrets.DO_SPACES_SECRET }}"
+            export DO_FOLDER_NAME="${{ secrets.DO_FOLDER_NAME }}"
+            export GOOGLE_CLIENT_ID="${{ secrets.GOOGLE_CLIENT_ID }}"
+            export GOOGLE_CLIENT_SECRET="${{ secrets.GOOGLE_CLIENT_SECRET }}"
+            export JWT_SECRET_KEY="${{ secrets.JWT_SECRET_KEY }}"
+            export JWT_ALGORITHM="${{ secrets.JWT_ALGORITHM }}"
+            export JWT_ACCESS_TOKEN_EXPIRE_MINUTES="${{ secrets.JWT_ACCESS_TOKEN_EXPIRE_MINUTES }}"
+            export REDIS_PASSWORD="${{ secrets.REDIS_PASSWORD }}"
+            export CLIENT_ID="${{ secrets.CLIENT_ID }}"
+            export CLIENT_SECRE="${{ secrets.CLIENT_SECRE }}"
+            export WEBHOOK_SIGNING_KEY="${{ secrets.WEBHOOK_SIGNING_KEY }}"
+            export CALENDLY_API_KEY="${{ secrets.CALENDLY_API_KEY }}"
+            export PUBLISHABLE_KEY="${{ secrets.PUBLISHABLE_KEY }}"
+            export STRIPE_SECRET_KEY="${{ secrets.STRIPE_SECRET_KEY }}"
+            export STRIPE_WEBHOOK_SECRET="${{ secrets.STRIPE_WEBHOOK_SECRET }}"
+
             # Build with no cache to avoid corrupted layers
             $DC build --no-cache --pull web
 
