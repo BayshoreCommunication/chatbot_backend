@@ -1,7 +1,7 @@
-# Caddyfile for chatbot backend
-# Replace yourdomain.com with your actual domain
+# Caddyfile for chatbot backend API
+# Domain: api.bayshorecommunication.org
 
-yourdomain.com {
+api.bayshorecommunication.org {
     # Reverse proxy to the chatbot backend
     reverse_proxy web:8000
     
@@ -12,24 +12,24 @@ yourdomain.com {
     header {
         # HSTS
         Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
-        # Prevent clickjacking
+        # Cors headers for API access
+        Access-Control-Allow-Origin "*"
+        Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS"
+        Access-Control-Allow-Headers "Content-Type, Authorization"
+        # Security headers
         X-Frame-Options "DENY"
-        # Prevent MIME sniffing
         X-Content-Type-Options "nosniff"
-        # XSS protection
         X-XSS-Protection "1; mode=block"
-        # Referrer policy
         Referrer-Policy "strict-origin-when-cross-origin"
     }
     
+    # Handle CORS preflight requests
+    @cors_preflight method OPTIONS
+    respond @cors_preflight 204
+    
     # Logging
     log {
-        output file /var/log/caddy/access.log
+        output stdout
         format json
     }
-}
-
-# Optional: redirect www to non-www
-www.yourdomain.com {
-    redir https://yourdomain.com{uri} permanent
 }
