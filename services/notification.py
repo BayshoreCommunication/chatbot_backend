@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 from typing import Optional, List
 
 # Hardcoded email credentials
-# Replace these with your actual email credentials if  needed
+# Replace these with your actual email credentials if needed
 EMAIL_USER = "admin@example.com"
 EMAIL_PASSWORD = "your_password"
 SMTP_SERVER = "smtp.gmail.com"
