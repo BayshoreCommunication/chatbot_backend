@@ -1,6 +1,15 @@
 # Caddyfile for chatbot backend API
 # Domain: api.bayshorecommunication.org
 
+# Global options (set your contact email for ACME)
+
+{
+    email arsahak.bayshore@gmail.com
+    acme_ca https://acme.zerossl.com/v2/DV90
+    acme_eab kid kIPvTKUk44EnYgDKjW2eGg
+    hmac ADlIGIvyUU2LvA4oVcNi8DbDR6uHGcG7aJhOLs8IsG2DDkaYsiP54Es8Z0sr4bx1AkNqGD_0lSOhOZ0uLGZN0w
+}
+
 api.bayshorecommunication.org {
     # Reverse proxy to the chatbot backend with WebSocket support
     reverse_proxy web:8000 {
@@ -10,12 +19,16 @@ api.bayshorecommunication.org {
         header_up X-Forwarded-Proto {http.request.scheme}
         header_up X-Forwarded-Host {http.request.host}
         header_up X-Real-IP {http.request.remote}
+        header_up X-Forwarded-For {http.request.remote}
         
         # Handle WebSocket upgrade requests
         @websocket {
             header Connection *Upgrade*
             header Upgrade websocket
         }
+
+        # Increase upstream timeout for external API calls
+        timeout 60s
     }
     
     # Enable gzip compression (but not for WebSocket connections)
