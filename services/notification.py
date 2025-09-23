@@ -19,7 +19,7 @@ def send_email_notification(subject, body, recipient=None):
     Otherwise, send to the business owner
     """
     try:
-        # If email credentials are not all set, just log the message
+        #If email credentials are not all set, just log the message
         if not all([EMAIL_USER, EMAIL_PASSWORD, SMTP_SERVER, SMTP_PORT]):
             print(f"Email notification would be sent: {subject}\n{body}")
             return {"status": "logged", "message": "Email credentials not set, notification logged"}
