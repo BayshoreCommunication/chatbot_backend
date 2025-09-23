@@ -3,6 +3,9 @@
 
 # Global options (set your contact email for ACME)
 
+
+
+
 {
     email arsahak.bayshore@gmail.com
     acme_ca https://acme.zerossl.com/v2/DV90
