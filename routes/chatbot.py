@@ -494,6 +494,45 @@ async def ask_question(
             'organization_id': org_id
         }, room=org_api_key)
 
+        # Check if lead capture is enabled and we have collected both name and email
+        chat_settings = organization.get("chat_widget_settings", {})
+        lead_capture_enabled = chat_settings.get("leadCapture", False)
+        
+        if lead_capture_enabled:
+            # Check if we have collected both name and email in user_data
+            user_name = response.get("user_data", {}).get("name")
+            user_email = response.get("user_data", {}).get("email")
+            user_phone = response.get("user_data", {}).get("phone")
+            
+            if user_name and user_email:
+                print(f"[DEBUG] Lead capture enabled and both name ({user_name}) and email ({user_email}) collected")
+                
+                try:
+                    # Import the create_lead function
+                    from services.database import create_lead
+                    
+                    # Extract inquiry from conversation history
+                    conversation_history = response.get("user_data", {}).get("conversation_history", [])
+                    user_messages = [msg["content"] for msg in conversation_history if msg.get("role") == "user"]
+                    inquiry = " | ".join(user_messages[:3]) if user_messages else "General inquiry"
+                    
+                    # Create lead in MongoDB
+                    created_lead = create_lead(
+                        organization_id=org_id,
+                        session_id=request.session_id,
+                        name=user_name,
+                        email=user_email,
+                        phone=user_phone,
+                        inquiry=inquiry,
+                        source="chatbot"
+                    )
+                    
+                    print(f"[DEBUG] Lead created successfully: {created_lead['lead_id']}")
+                    
+                except Exception as e:
+                    print(f"[ERROR] Failed to create lead: {str(e)}")
+                    # Don't fail the main chat flow if lead creation fails
+
         return response
 
     except Exception as e:

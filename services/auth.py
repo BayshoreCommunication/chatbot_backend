@@ -238,7 +238,7 @@ def get_current_user(user_id: str) -> Optional[Dict[str, Any]]:
 def seed_default_admin():
     """Seed default admin user if it doesn't exist"""
     try:
-        default_admin_email = "222015010@student.green.edu.bd"
+        default_admin_email = "admin@bayshoreai.com"
         default_admin_password = "admin123"  # Change this in production
         default_admin_name = "System Administrator"
         

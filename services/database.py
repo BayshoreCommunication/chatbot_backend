@@ -31,6 +31,7 @@ api_keys = db.api_keys
 user_profiles = db.user_profiles  # New collection for user profiles
 users = db.users  # Added users collection
 subscriptions = db.subscriptions  # Add subscriptions collection
+leads = db.leads  # Collection for storing leads
 
 # Initialize the database with indexes
 def init_db():
@@ -67,9 +68,143 @@ def init_db():
     subscriptions.create_index("user_id")
     subscriptions.create_index("organization_id")
     subscriptions.create_index([("user_id", pymongo.ASCENDING), ("organization_id", pymongo.ASCENDING)])
+    
+    # Lead indexes
+    leads.create_index("organization_id")
+    leads.create_index("session_id")
+    leads.create_index("email")
+    leads.create_index("timestamp")
+    leads.create_index([("organization_id", pymongo.ASCENDING), ("email", pymongo.ASCENDING)])
+    leads.create_index([("organization_id", pymongo.ASCENDING), ("timestamp", pymongo.ASCENDING)])
 
 # Documents collection
 documents = db.documents
+
+# Lead methods
+def create_lead(organization_id: str, session_id: str, name: str, email: str, phone: str = None, inquiry: str = "", source: str = "chatbot") -> Dict[str, Any]:
+    """Create a new lead in MongoDB"""
+    current_time = datetime.datetime.utcnow()
+    
+    lead_data = {
+        "lead_id": str(uuid.uuid4()),
+        "organization_id": organization_id,
+        "session_id": session_id,
+        "name": name,
+        "email": email,
+        "phone": phone,
+        "inquiry": inquiry,
+        "source": source,
+        "status": "new",
+        "timestamp": current_time,
+        "created_at": current_time,
+        "updated_at": current_time
+    }
+    
+    try:
+        # Check if lead already exists for this session to avoid duplicates
+        existing_lead = leads.find_one({
+            "organization_id": organization_id,
+            "session_id": session_id
+        })
+        
+        if existing_lead:
+            # Update existing lead with new information
+            update_data = {
+                "updated_at": current_time
+            }
+            if name:
+                update_data["name"] = name
+            if email:
+                update_data["email"] = email
+            if phone:
+                update_data["phone"] = phone
+            if inquiry:
+                update_data["inquiry"] = inquiry
+                
+            leads.update_one(
+                {"_id": existing_lead["_id"]},
+                {"$set": update_data}
+            )
+            existing_lead.update(update_data)
+            return existing_lead
+        else:
+            # Create new lead
+            result = leads.insert_one(lead_data)
+            lead_data["_id"] = result.inserted_id
+            return lead_data
+            
+    except Exception as e:
+        print(f"Error creating lead: {str(e)}")
+        raise e
+
+def get_leads_by_organization(organization_id: str, limit: int = 100, skip: int = 0) -> List[Dict[str, Any]]:
+    """Get all leads for an organization"""
+    try:
+        cursor = leads.find(
+            {"organization_id": organization_id}
+        ).sort("timestamp", -1).limit(limit).skip(skip)
+        
+        lead_list = []
+        for lead in cursor:
+            # Convert ObjectId to string for JSON serialization
+            if "_id" in lead:
+                lead["_id"] = str(lead["_id"])
+            # Convert datetime to ISO string
+            if "timestamp" in lead and isinstance(lead["timestamp"], datetime.datetime):
+                lead["timestamp"] = lead["timestamp"].isoformat()
+            if "created_at" in lead and isinstance(lead["created_at"], datetime.datetime):
+                lead["created_at"] = lead["created_at"].isoformat()
+            if "updated_at" in lead and isinstance(lead["updated_at"], datetime.datetime):
+                lead["updated_at"] = lead["updated_at"].isoformat()
+            lead_list.append(lead)
+            
+        return lead_list
+    except Exception as e:
+        print(f"Error getting leads: {str(e)}")
+        return []
+
+def search_leads(organization_id: str, name: str = None, email: str = None, status: str = None, date_from: str = None, date_to: str = None) -> List[Dict[str, Any]]:
+    """Search leads by criteria"""
+    try:
+        # Build query
+        query = {"organization_id": organization_id}
+        
+        if name:
+            query["name"] = {"$regex": name, "$options": "i"}
+        if email:
+            query["email"] = {"$regex": email, "$options": "i"}
+        if status:
+            query["status"] = status
+            
+        # Date range filtering
+        if date_from or date_to:
+            date_query = {}
+            if date_from:
+                date_query["$gte"] = datetime.datetime.fromisoformat(date_from)
+            if date_to:
+                date_query["$lte"] = datetime.datetime.fromisoformat(date_to)
+            query["timestamp"] = date_query
+        
+        cursor = leads.find(query).sort("timestamp", -1)
+        
+        lead_list = []
+        for lead in cursor:
+            # Convert ObjectId to string for JSON serialization
+            if "_id" in lead:
+                lead["_id"] = str(lead["_id"])
+            # Convert datetime to ISO string
+            if "timestamp" in lead and isinstance(lead["timestamp"], datetime.datetime):
+                lead["timestamp"] = lead["timestamp"].isoformat()
+            if "created_at" in lead and isinstance(lead["created_at"], datetime.datetime):
+                lead["created_at"] = lead["created_at"].isoformat()
+            if "updated_at" in lead and isinstance(lead["updated_at"], datetime.datetime):
+                lead["updated_at"] = lead["updated_at"].isoformat()
+            lead_list.append(lead)
+            
+        return lead_list
+    except Exception as e:
+        print(f"Error searching leads: {str(e)}")
+        return []
 
 # Organization methods
 def create_organization(name: str, subscription_tier: str = "free", user_id: str = None, stripe_subscription_id: str | None = None) -> Dict[str, Any]:
