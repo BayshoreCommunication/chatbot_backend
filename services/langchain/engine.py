@@ -478,31 +478,66 @@ def ask_bot(query: str, mode="faq", user_data=None, available_slots=None, sessio
             knowledge_base_results = cached_knowledge.get("results", [])
             similarity_scores = cached_knowledge.get("scores", [])
         else:
-            # Fresh knowledge base search with detailed results
+            # Fresh knowledge base search: prefer MMR, with fallback to similarity + score
             try:
-                # Get detailed search results for unknown question detection
-                search_results = org_vectorstore.similarity_search_with_score(query, k=5)
-                
+                documents = []
+                mmr_supported = hasattr(org_vectorstore, "max_marginal_relevance_search")
+                if mmr_supported:
+                    print("[DEBUG] Using MMR retrieval (k=12, fetch_k=30, lambda=0.5)")
+                    try:
+                        documents = org_vectorstore.max_marginal_relevance_search(
+                            query,
+                            k=12,
+                            fetch_k=30,
+                            lambda_mult=0.5
+                        )
+                    except Exception as e:
+                        print(f"[DEBUG] MMR retrieval failed, falling back to similarity_with_score: {str(e)}")
+                if not documents:
+                    print("[DEBUG] Using similarity_search_with_score (k=8)")
+                    search_results = org_vectorstore.similarity_search_with_score(query, k=8)
+                    # Normalize shape to list[Document]
+                    documents = [doc for doc, _ in search_results]
+                    similarity_scores = [float(score) for _, score in search_results]
+                else:
+                    # If MMR used, compute approximate scores via a small follow-up scoring pass
+                    try:
+                        sr = org_vectorstore.similarity_search_with_score(query, k=min(8, len(documents)))
+                        # Build a map from content hash to score to approximate
+                        score_map = {hash(d.page_content): float(s) for d, s in sr}
+                        similarity_scores = [score_map.get(hash(d.page_content), 0.0) for d in documents[:8]]
+                    except Exception:
+                        similarity_scores = []
+
+                # Simple context compression: keep top N docs and trim long pages
+                def _compress(text: str, limit: int = 1200) -> str:
+                    # Limit context length per doc (characters as heuristic)
+                    if not text:
+                        return ""
+                    text = text.strip()
+                    return text if len(text) <= limit else text[:limit] + "..."
+
                 knowledge_base_results = []
-                similarity_scores = []
-                
-                for doc, score in search_results:
+                for d in documents[:12]:
                     knowledge_base_results.append({
-                        "content": doc.page_content,
-                        "metadata": doc.metadata,
-                        "similarity_score": float(score)
+                        "content": _compress(getattr(d, "page_content", "")),
+                        "metadata": getattr(d, "metadata", {}),
+                        "similarity_score": None
                     })
-                    similarity_scores.append(float(score))
-                
-                # Use existing search function for context
+
+                # Use existing search function for final context building
                 retrieved_context, personal_information = search_knowledge_base(query, org_vectorstore, user_info)
+                # Compress final context to a safe size
+                retrieved_context = _compress(retrieved_context, limit=3500)
                 
                 print(f"[DEBUG] Knowledge base search - Best similarity: {max(similarity_scores) if similarity_scores else 0}")
                 
             except Exception as e:
-                print(f"[DEBUG] Error in detailed knowledge search: {str(e)}")
+                print(f"[DEBUG] Error in MMR/knowledge search: {str(e)}")
                 # Fallback to existing search
                 retrieved_context, personal_information = search_knowledge_base(query, org_vectorstore, user_info)
+                knowledge_base_results = []
+                similarity_scores = []
             
             # Cache knowledge results for 15 minutes
             knowledge_data = {
@@ -567,7 +602,14 @@ def ask_bot(query: str, mode="faq", user_data=None, available_slots=None, sessio
     # STEP 7: Detect and store unknown questions
     # Check if this question wasn't well-answered by training data
     max_similarity = max(similarity_scores) if similarity_scores else 0.0
-    similarity_threshold = 0.7  # Questions with similarity < 0.7 are considered "unknown"
+    # Adaptive threshold: use percentile-like heuristic from observed scores
+    if similarity_scores and len(similarity_scores) >= 4:
+        sorted_scores = sorted(similarity_scores, reverse=True)
+        # Use 3rd-best score (P25-ish for small k) minus a small margin
+        base = sorted_scores[min(2, len(sorted_scores)-1)]
+        similarity_threshold = max(0.55, min(0.85, base - 0.05))
+    else:
+        similarity_threshold = 0.7
     
     # Only store if it's a real question (not info collection or appointments)
     should_store_unknown = (
@@ -721,18 +763,15 @@ def generate_enhanced_response(query: str, user_info: dict, conversation_summary
     PERSONAL INFORMATION:
     {json.dumps(personal_information) if personal_information else "No personal information available."}
     
-    RESPONSE GUIDELINES:
-    - AVOID generic responses like "Our lawyer can be reached at [phone] for further assistance"
-    - When user says "okay", "sure", or acknowledges something, ask follow-up questions about their legal situation
-    - Be contextual - if they just gave their name, acknowledge it warmly and ask about their case
-    - Provide specific, actionable legal guidance when possible
-    - Ask qualifying questions to understand their injury/accident better
-    - Reference previous conversation to show you're listening
-    - Use the knowledge base information to give accurate, specific responses
-    - Keep responses natural and conversational, not robotic
-    - Always try to move the conversation forward toward helping their legal needs
-    - If mentioning contact info, make it contextual: "You can also call us at [phone] if you'd prefer to speak directly with an attorney about your [specific situation]"
-    - DO NOT give generic phone number responses without context
+    RESPONSE GUARDRAILS (STRICT):
+    - Answer ONLY using the KNOWLEDGE BASE CONTEXT above. If the answer is not found there, ask one short clarifying question or say you don't know.
+    - Include 1–2 specific facts from the context; avoid generic advice.
+    - If confidence is low, propose next steps (clarify, surface related FAQs, or offer to connect to a human).
+    
+    OUTPUT STYLE:
+    - Be concise and helpful.
+    - If possible, end with one helpful follow-up question.
+    - If you cite, use short source titles (no raw URLs).
     """
     
     try:
