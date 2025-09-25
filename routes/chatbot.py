@@ -276,6 +276,10 @@ async def ask_question(
         if user_profile and "profile_data" in user_profile:
             request.user_data.update(user_profile["profile_data"])
             request.user_data["returning_user"] = True
+            
+            # Ensure appointment_context is loaded from profile
+            if "appointment_context" in user_profile["profile_data"]:
+                request.user_data["appointment_context"] = user_profile["profile_data"]["appointment_context"]
 
         # Store the current user message ONCE at the beginning
         add_conversation_message(
@@ -453,6 +457,10 @@ async def ask_question(
         if user_context and request.user_data.get("returning_user"):
             enhanced_query = f"{user_context}The user, who you already know, asks: {request.question}"
 
+        # Add organization_id to user_data for appointment persistence
+        request.user_data["organization_id"] = org_id
+        request.user_data["session_id"] = request.session_id
+        
         # Don't add the enhanced query to conversation history - use original question
         response = ask_bot(
             query=enhanced_query,
@@ -493,6 +501,40 @@ async def ask_question(
             },
             'organization_id': org_id
         }, room=org_api_key)
+        
+        # CRITICAL: Save appointment_context and email to user profile if they exist
+        # This ensures state persists between requests
+        if "appointment_context" in response.get("user_data", {}) or "email" in response.get("user_data", {}):
+            try:
+                from services.database import save_user_profile
+                
+                # Prepare profile data to save
+                profile_data_to_save = {}
+                
+                # Save email if present
+                if "email" in response["user_data"] and response["user_data"]["email"]:
+                    profile_data_to_save["email"] = response["user_data"]["email"]
+                
+                # Save appointment_context if present
+                if "appointment_context" in response["user_data"] and response["user_data"]["appointment_context"]:
+                    profile_data_to_save["appointment_context"] = response["user_data"]["appointment_context"]
+                
+                # Save name if present
+                if "name" in response["user_data"] and response["user_data"]["name"]:
+                    profile_data_to_save["name"] = response["user_data"]["name"]
+                
+                # Save phone if present
+                if "phone" in response["user_data"] and response["user_data"]["phone"]:
+                    profile_data_to_save["phone"] = response["user_data"]["phone"]
+                
+                # Only save if we have data to persist
+                if profile_data_to_save:
+                    print(f"[DEBUG] Saving user profile data: {profile_data_to_save}")
+                    save_user_profile(org_id, request.session_id, profile_data_to_save)
+                    
+            except Exception as e:
+                print(f"[ERROR] Failed to save user profile: {str(e)}")
+                # Don't fail the main flow if profile saving fails
 
         # Check if lead capture is enabled and we have collected both name and email
         chat_settings = organization.get("chat_widget_settings", {})

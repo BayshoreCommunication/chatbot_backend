@@ -475,6 +475,19 @@ def handle_booking(query, user_data, available_slots, language, api_key=None):
         user_data["email"] = new_email
         user_data["appointment_context"]["email_provided"] = True
         
+        # CRITICAL: Immediately persist email to database to prevent loss between requests
+        try:
+            from services.database import save_user_profile
+            org_id = user_data.get("organization_id")
+            session_id = user_data.get("session_id")
+            if org_id and session_id:
+                save_user_profile(org_id, session_id, {"email": new_email})
+                print(f"[DEBUG] Email {new_email} immediately saved to database")
+            else:
+                print(f"[ERROR] Missing org_id or session_id for email persistence")
+        except Exception as e:
+            print(f"[ERROR] Failed to immediately save email: {str(e)}")
+        
         # Check if we have a pending booking
         if user_data["appointment_context"].get("pending_booking"):
             pending = user_data["appointment_context"]["pending_booking"]
@@ -489,9 +502,22 @@ def handle_booking(query, user_data, available_slots, language, api_key=None):
                 
                 confirmation = f"Perfect! Here is the direct link to book your appointment for {date} at {time}:\n\n[Book Now]({booking_url})\n\nThis link will take you to Calendly to confirm your details."
                 
-                # Clear appointment context
+                # Clear appointment context and persist the cleanup
                 user_data["appointment_context"] = {}
                 user_data["api_call_count"] = 0
+                
+                # CRITICAL: Persist the cleared appointment context
+                try:
+                    from services.database import save_user_profile
+                    org_id = user_data.get("organization_id")
+                    session_id = user_data.get("session_id")
+                    if org_id and session_id:
+                        save_user_profile(org_id, session_id, {"appointment_context": {}})
+                        print(f"[DEBUG] Cleared appointment_context saved to database")
+                    else:
+                        print(f"[ERROR] Missing org_id or session_id for appointment context cleanup")
+                except Exception as e:
+                    print(f"[ERROR] Failed to save cleared appointment_context: {str(e)}")
                 
                 return {
                     "answer": confirmation,
@@ -505,6 +531,18 @@ def handle_booking(query, user_data, available_slots, language, api_key=None):
                 
                 user_data["appointment_context"] = {}
                 
+                # Persist the cleared appointment context
+                try:
+                    from services.database import save_user_profile
+                    org_id = user_data.get("organization_id")
+                    session_id = user_data.get("session_id")
+                    if org_id and session_id:
+                        save_user_profile(org_id, session_id, {"appointment_context": {}})
+                    else:
+                        print(f"[ERROR] Missing org_id or session_id for appointment context cleanup")
+                except Exception as e:
+                    print(f"[ERROR] Failed to save cleared appointment_context: {str(e)}")
+                
                 return {
                     "answer": error_response,
                     "mode": "appointment",
@@ -513,7 +551,8 @@ def handle_booking(query, user_data, available_slots, language, api_key=None):
                     "available_slots": available_slots
                 }
         else:
-            # Email provided but no pending booking
+            # Email provided but no pending booking - this should not happen with proper state persistence
+            print(f"[WARNING] Email provided but no pending_booking found. This indicates state loss.")
             response = f"Thanks for providing your email! Please let me know which date and time you'd like to book from the available slots:\n\n{available_slots}"
             
             return {
@@ -543,6 +582,19 @@ def handle_booking(query, user_data, available_slots, language, api_key=None):
                 "time": time
             }
             
+            # CRITICAL: Immediately persist the pending booking to database
+            try:
+                from services.database import save_user_profile
+                org_id = user_data.get("organization_id")
+                session_id = user_data.get("session_id")
+                if org_id and session_id:
+                    save_user_profile(org_id, session_id, {"appointment_context": user_data["appointment_context"]})
+                    print(f"[DEBUG] Pending booking for {date} at {time} immediately saved to database")
+                else:
+                    print(f"[ERROR] Missing org_id or session_id for pending booking persistence")
+            except Exception as e:
+                print(f"[ERROR] Failed to immediately save pending booking: {str(e)}")
+            
             email_request = f"Great! I found the slot for {date} at {time}.\n\nTo complete your booking, I'll need your email address. Please provide your email so I can send you the direct booking link."
             
             return {
@@ -562,9 +614,22 @@ def handle_booking(query, user_data, available_slots, language, api_key=None):
                 
                 confirmation = f"Perfect! Here is the direct link to book your appointment for {date} at {time}:\n\n[Book Now]({booking_url})\n\nThis link will take you to Calendly to confirm your details."
                 
-                # Clear appointment context
+                # Clear appointment context and persist the cleanup
                 user_data["appointment_context"] = {}
                 user_data["api_call_count"] = 0
+                
+                # CRITICAL: Persist the cleared appointment context
+                try:
+                    from services.database import save_user_profile
+                    org_id = user_data.get("organization_id")
+                    session_id = user_data.get("session_id")
+                    if org_id and session_id:
+                        save_user_profile(org_id, session_id, {"appointment_context": {}})
+                        print(f"[DEBUG] Cleared appointment_context saved to database after successful booking")
+                    else:
+                        print(f"[ERROR] Missing org_id or session_id for appointment context cleanup")
+                except Exception as e:
+                    print(f"[ERROR] Failed to save cleared appointment_context: {str(e)}")
                 
                 return {
                     "answer": confirmation,
