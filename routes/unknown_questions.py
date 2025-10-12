@@ -4,7 +4,7 @@ Unknown Questions API Routes
 API endpoints for managing unknown questions in the dashboard
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Header
 from typing import List, Optional
 from datetime import datetime, timedelta
 
@@ -15,10 +15,20 @@ from models.unknown_questions import (
     UnknownQuestionFilters
 )
 from services.unknown_questions_service import UnknownQuestionsService
-from services.auth import get_current_user
-from services.database import get_organization_by_user_id
+from services.database import get_organization_by_api_key
 
 router = APIRouter(prefix="/api/unknown-questions", tags=["Unknown Questions"])
+
+async def get_organization_from_api_key(api_key: Optional[str] = Header(None, alias="X-API-Key")):
+    """Get organization from API key"""
+    if not api_key:
+        raise HTTPException(status_code=401, detail="API key required")
+    
+    organization = get_organization_by_api_key(api_key)
+    if not organization:
+        raise HTTPException(status_code=401, detail="Invalid API key")
+    
+    return organization
 
 @router.get("/", response_model=dict)
 async def get_unknown_questions(
@@ -32,17 +42,12 @@ async def get_unknown_questions(
     date_to: Optional[datetime] = Query(None, description="Filter to date"),
     min_frequency: Optional[int] = Query(None, ge=1, description="Minimum frequency count"),
     search: Optional[str] = Query(None, description="Search in questions and answers"),
-    current_user: dict = Depends(get_current_user)
+    organization=Depends(get_organization_from_api_key)
 ):
     """Get unknown questions for the user's organization"""
     
     try:
-        # Get user's organization
-        organization = get_organization_by_user_id(current_user["id"])
-        if not organization:
-            raise HTTPException(status_code=404, detail="Organization not found")
-        
-        org_id = organization["id"]
+        org_id = str(organization["_id"])
         
         # Build filters
         filters = UnknownQuestionFilters(
@@ -71,17 +76,12 @@ async def get_unknown_questions(
 @router.get("/stats", response_model=dict)
 async def get_unknown_questions_stats(
     days: int = Query(30, ge=1, le=365, description="Number of days for statistics"),
-    current_user: dict = Depends(get_current_user)
+    organization=Depends(get_organization_from_api_key)
 ):
     """Get statistics for unknown questions"""
     
     try:
-        # Get user's organization
-        organization = get_organization_by_user_id(current_user["id"])
-        if not organization:
-            raise HTTPException(status_code=404, detail="Organization not found")
-        
-        org_id = organization["id"]
+        org_id = str(organization["_id"])
         
         # Get stats
         stats = UnknownQuestionsService.get_unknown_question_stats(org_id, days)
@@ -98,13 +98,13 @@ async def get_unknown_questions_stats(
 async def update_unknown_question(
     question_id: str,
     update_data: UnknownQuestionUpdate,
-    current_user: dict = Depends(get_current_user)
+    organization=Depends(get_organization_from_api_key)
 ):
     """Update an unknown question"""
     
     try:
         # Add reviewer information
-        update_data.reviewed_by = current_user["id"]
+        update_data.reviewed_by = str(organization["_id"])
         
         # Update question
         success = UnknownQuestionsService.update_unknown_question(question_id, update_data)
@@ -125,7 +125,7 @@ async def update_unknown_question(
 @router.delete("/{question_id}", response_model=dict)
 async def delete_unknown_question(
     question_id: str,
-    current_user: dict = Depends(get_current_user)
+    organization=Depends(get_organization_from_api_key)
 ):
     """Delete an unknown question"""
     
@@ -149,7 +149,7 @@ async def delete_unknown_question(
 async def add_question_to_training(
     question_id: str,
     improved_answer: Optional[str] = None,
-    current_user: dict = Depends(get_current_user)
+    organization=Depends(get_organization_from_api_key)
 ):
     """Add an unknown question and its answer to the training data"""
     
@@ -163,9 +163,8 @@ async def add_question_to_training(
         
         question = questions_result["questions"][0]
         
-        # Get user's organization to verify access
-        organization = get_organization_by_user_id(current_user["id"])
-        if not organization or organization["id"] != question["organization_id"]:
+        # Verify access to this organization's question
+        if str(organization["_id"]) != question["organization_id"]:
             raise HTTPException(status_code=403, detail="Access denied")
         
         # Use improved answer if provided, otherwise use AI response
@@ -177,7 +176,7 @@ async def add_question_to_training(
         # Update the question status
         update_data = UnknownQuestionUpdate(
             status="added_to_training",
-            reviewed_by=current_user["id"],
+            reviewed_by=str(organization["_id"]),
             improved_answer=improved_answer
         )
         
@@ -205,7 +204,7 @@ async def add_question_to_training(
 
 @router.get("/categories", response_model=dict)
 async def get_question_categories(
-    current_user: dict = Depends(get_current_user)
+    organization=Depends(get_organization_from_api_key)
 ):
     """Get available question categories"""
     
@@ -229,17 +228,12 @@ async def export_unknown_questions(
     category: Optional[str] = Query(None),
     date_from: Optional[datetime] = Query(None),
     date_to: Optional[datetime] = Query(None),
-    current_user: dict = Depends(get_current_user)
+    organization=Depends(get_organization_from_api_key)
 ):
     """Export unknown questions for analysis"""
     
     try:
-        # Get user's organization
-        organization = get_organization_by_user_id(current_user["id"])
-        if not organization:
-            raise HTTPException(status_code=404, detail="Organization not found")
-        
-        org_id = organization["id"]
+        org_id = str(organization["_id"])
         
         # Build filters
         filters = UnknownQuestionFilters(
@@ -274,7 +268,7 @@ async def export_unknown_questions(
 async def bulk_action_unknown_questions(
     question_ids: List[str],
     action: str = Query(..., description="Action: review, ignore, delete, add_to_training"),
-    current_user: dict = Depends(get_current_user)
+    organization=Depends(get_organization_from_api_key)
 ):
     """Perform bulk actions on multiple unknown questions"""
     
@@ -290,7 +284,7 @@ async def bulk_action_unknown_questions(
                 if action == "review":
                     update_data = UnknownQuestionUpdate(
                         status="reviewed",
-                        reviewed_by=current_user["id"],
+                        reviewed_by=str(organization["_id"]),
                         needs_human_review=False
                     )
                     UnknownQuestionsService.update_unknown_question(question_id, update_data)
@@ -298,7 +292,7 @@ async def bulk_action_unknown_questions(
                 elif action == "ignore":
                     update_data = UnknownQuestionUpdate(
                         status="ignored",
-                        reviewed_by=current_user["id"],
+                        reviewed_by=str(organization["_id"]),
                         needs_human_review=False
                     )
                     UnknownQuestionsService.update_unknown_question(question_id, update_data)
@@ -309,7 +303,7 @@ async def bulk_action_unknown_questions(
                 elif action == "add_to_training":
                     update_data = UnknownQuestionUpdate(
                         status="added_to_training",
-                        reviewed_by=current_user["id"]
+                        reviewed_by=str(organization["_id"])
                     )
                     UnknownQuestionsService.update_unknown_question(question_id, update_data)
                     

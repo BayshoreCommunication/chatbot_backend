@@ -338,7 +338,7 @@ def ask_bot(query: str, mode="faq", user_data=None, available_slots=None, sessio
     if api_key:
         organization = get_organization_by_api_key(api_key)
         if organization:
-            org_id = organization.get("id", "default")
+            org_id = str(organization["_id"])
             print(f"Using organization: {organization['name']} (ID: {org_id})")
             
             # Get leadCapture setting from organization's chat widget settings
@@ -706,7 +706,7 @@ def add_document(file_path=None, url=None, text=None, api_key=None):
     if result.get("status") == "success" and api_key:
         organization = get_organization_by_api_key(api_key)
         if organization:
-            org_id = organization.get("id")
+            org_id = str(organization["_id"])
             invalidate_chatbot_cache(org_id)
             print(f"🗑️ Invalidated cache for organization {org_id} after document upload")
     
@@ -720,7 +720,7 @@ def remove_document(filename=None, url=None, api_key=None):
     if api_key:
         organization = get_organization_by_api_key(api_key)
         if organization:
-            org_id = organization.get("id")
+            org_id = str(organization["_id"])
             invalidate_chatbot_cache(org_id)
             print(f"🗑️ Invalidated cache for organization {org_id} after document removal")
     
