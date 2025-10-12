@@ -27,7 +27,7 @@ async def set_instant_reply(
         
         # Check if an instant reply already exists for this org
         existing_reply = db.instant_reply.find_one({
-            "organization_id": org["id"], 
+            "organization_id": str(org["_id"]), 
             "type": "instant_reply"
         })
         
@@ -57,7 +57,7 @@ async def set_instant_reply(
         
         # Create new instant reply
         new_reply = {
-            "organization_id": org["id"],
+            "organization_id": str(org["_id"]),
             "type": "instant_reply",
             "messages": messages_data,
             "isActive": data.isActive,
@@ -78,7 +78,7 @@ async def get_instant_reply(x_api_key: str = Header(...)):
             raise HTTPException(status_code=401, detail="Invalid API key")
             
         reply = db.instant_reply.find_one({
-            "organization_id": org["id"],
+            "organization_id": str(org["_id"]),
             "type": "instant_reply"
         })
         
@@ -118,7 +118,7 @@ async def delete_instant_reply(x_api_key: str = Header(...)):
             
         # Find and delete the instant reply document
         result = db.instant_reply.delete_one({
-            "organization_id": org["id"],
+            "organization_id": str(org["_id"]),
             "type": "instant_reply"
         })
             
