@@ -93,10 +93,10 @@ def create_lead(organization_id: str, session_id: str, name: str, email: str, ph
         "lead_id": str(uuid.uuid4()),
         "organization_id": organization_id,
         "session_id": session_id,
-        "name": name or "",
-        "email": email or "",
-        "phone": phone,
-        "inquiry": inquiry,
+        "name": name if name else None,
+        "email": email if email else None,
+        "phone": phone if phone else None,
+        "inquiry": inquiry if inquiry else "",
         "source": source,
         "status": "new",
         "timestamp": current_time,
@@ -117,6 +117,9 @@ def create_lead(organization_id: str, session_id: str, name: str, email: str, ph
             existing_query["session_id"] = session_id
 
         existing_lead = leads.find_one(existing_query)
+        # If not found by visitor/session, try match by email within org
+        if not existing_lead and email:
+            existing_lead = leads.find_one({"organization_id": organization_id, "email": email})
         
         if existing_lead:
             # Update existing lead with new information
@@ -129,10 +132,13 @@ def create_lead(organization_id: str, session_id: str, name: str, email: str, ph
                 update_data["email"] = email
             if phone:
                 update_data["phone"] = phone
-            if inquiry:
+            if inquiry is not None:
                 update_data["inquiry"] = inquiry
             if not existing_lead.get("status"):
                 update_data["status"] = "new"
+            # Attach visitor_id if now available and missing on the lead
+            if visitor_id and not existing_lead.get("visitor_id"):
+                update_data["visitor_id"] = visitor_id
                 
             leads.update_one(
                 {"_id": existing_lead["_id"]},

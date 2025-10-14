@@ -541,38 +541,30 @@ async def ask_question(
         lead_capture_enabled = chat_settings.get("leadCapture", False)
         
         if lead_capture_enabled:
-            # Check if we have collected both name and email in user_data
+            # Create or update lead when any of name/email/phone is present
             user_name = response.get("user_data", {}).get("name")
             user_email = response.get("user_data", {}).get("email")
             user_phone = response.get("user_data", {}).get("phone")
             
-            if user_name and user_email:
-                print(f"[DEBUG] Lead capture enabled and both name ({user_name}) and email ({user_email}) collected")
-                
+            if user_name or user_email or user_phone:
                 try:
-                    # Import the create_lead function
                     from services.database import create_lead
-                    
                     # Extract inquiry from conversation history
                     conversation_history = response.get("user_data", {}).get("conversation_history", [])
                     user_messages = [msg["content"] for msg in conversation_history if msg.get("role") == "user"]
                     inquiry = " | ".join(user_messages[:3]) if user_messages else "General inquiry"
-                    
-                    # Create lead in MongoDB
                     created_lead = create_lead(
                         organization_id=org_id,
                         session_id=request.session_id,
                         name=user_name,
                         email=user_email,
                         phone=user_phone,
-                        inquiry=inquiry,
+                        inquiry=inquiry if inquiry else "",
                         source="chatbot"
                     )
-                    
-                    print(f"[DEBUG] Lead created successfully: {created_lead['lead_id']}")
-                    
+                    print(f"[DEBUG] Lead upserted successfully: {created_lead.get('lead_id')}")
                 except Exception as e:
-                    print(f"[ERROR] Failed to create lead: {str(e)}")
+                    print(f"[ERROR] Failed to upsert lead: {str(e)}")
                     # Don't fail the main chat flow if lead creation fails
 
         return response
