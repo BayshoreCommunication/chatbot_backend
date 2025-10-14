@@ -74,6 +74,7 @@ def init_db():
     leads.create_index("session_id")
     leads.create_index("email")
     leads.create_index("timestamp")
+    leads.create_index("visitor_id")
     leads.create_index([("organization_id", pymongo.ASCENDING), ("email", pymongo.ASCENDING)])
     leads.create_index([("organization_id", pymongo.ASCENDING), ("timestamp", pymongo.ASCENDING)])
 
@@ -82,15 +83,18 @@ documents = db.documents
 
 # Lead methods
 def create_lead(organization_id: str, session_id: str, name: str, email: str, phone: str = None, inquiry: str = "", source: str = "chatbot") -> Dict[str, Any]:
-    """Create a new lead in MongoDB"""
+    """Create or update a lead in MongoDB.
+    - Accepts partial info (email or phone). Name may be empty and updated later.
+    - Upserts by (organization_id + visitor_id) when available, else by (organization_id + session_id).
+    """
     current_time = datetime.datetime.utcnow()
     
     lead_data = {
         "lead_id": str(uuid.uuid4()),
         "organization_id": organization_id,
         "session_id": session_id,
-        "name": name,
-        "email": email,
+        "name": name or "",
+        "email": email or "",
         "phone": phone,
         "inquiry": inquiry,
         "source": source,
@@ -101,11 +105,18 @@ def create_lead(organization_id: str, session_id: str, name: str, email: str, ph
     }
     
     try:
-        # Check if lead already exists for this session to avoid duplicates
-        existing_lead = leads.find_one({
-            "organization_id": organization_id,
-            "session_id": session_id
-        })
+        # Prefer linking by visitor_id when available
+        visitor = visitors.find_one({"organization_id": organization_id, "session_id": session_id})
+        visitor_id = visitor.get("id") if visitor else None
+
+        # Check if lead already exists for this session/visitor to avoid duplicates
+        existing_query = {"organization_id": organization_id}
+        if visitor_id:
+            existing_query["visitor_id"] = visitor_id
+        else:
+            existing_query["session_id"] = session_id
+
+        existing_lead = leads.find_one(existing_query)
         
         if existing_lead:
             # Update existing lead with new information
@@ -120,6 +131,8 @@ def create_lead(organization_id: str, session_id: str, name: str, email: str, ph
                 update_data["phone"] = phone
             if inquiry:
                 update_data["inquiry"] = inquiry
+            if not existing_lead.get("status"):
+                update_data["status"] = "new"
                 
             leads.update_one(
                 {"_id": existing_lead["_id"]},
@@ -129,6 +142,12 @@ def create_lead(organization_id: str, session_id: str, name: str, email: str, ph
             return existing_lead
         else:
             # Create new lead
+            if visitor_id:
+                lead_data["visitor_id"] = visitor_id
+            # Ensure at least one contact field exists
+            if not lead_data.get("email") and not lead_data.get("phone"):
+                # Without any contact, store as minimal lead with session linkage
+                lead_data["status"] = "prospect"
             result = leads.insert_one(lead_data)
             lead_data["_id"] = result.inserted_id
             return lead_data
@@ -446,6 +465,12 @@ def delete_organization_document(organization_id: str, document_id: str) -> bool
 # User profile methods
 def save_user_profile(organization_id: str, session_id: str, profile_data: Dict[str, Any]) -> Dict[str, Any]:
     """Save or update user profile data"""
+    # Resolve visitor for linkage
+    visitor_for_link = visitors.find_one({
+        "organization_id": organization_id,
+        "session_id": session_id
+    })
+
     # Check if profile exists
     existing_profile = user_profiles.find_one({
         "organization_id": organization_id,
@@ -455,6 +480,7 @@ def save_user_profile(organization_id: str, session_id: str, profile_data: Dict[
     profile = {
         "organization_id": organization_id,
         "session_id": session_id,
+        "visitor_id": visitor_for_link.get("id") if visitor_for_link else None,
         "updated_at": datetime.datetime.utcnow(),  # Use Python's datetime module
         "profile_data": profile_data
     }

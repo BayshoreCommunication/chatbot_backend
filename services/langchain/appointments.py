@@ -572,83 +572,47 @@ def handle_booking(query, user_data, available_slots, language, api_key=None):
         print(f"[BOOKING] Confidence: {slot_info.get('confidence', 'unknown')}")
         print(f"[BOOKING] Reasoning: {slot_info.get('reasoning', 'No reasoning provided')}")
         
-        # Check if user has valid email
-        user_email = get_user_email(user_data)
-        
-        if not user_email:
-            # Store the selected slot and ask for email
-            user_data["appointment_context"]["pending_booking"] = {
-                "date": date,
-                "time": time
-            }
-            
-            # CRITICAL: Immediately persist the pending booking to database
+        # Provide direct Calendly booking link regardless of email (Calendly will collect details)
+        slot_details = find_slot_by_datetime(date, time, available_slots, api_key)
+        if slot_details and slot_details.get("scheduling_url"):
+            booking_url = slot_details["scheduling_url"]
+
+            confirmation = f"Perfect! Here is the direct link to book your appointment for {date} at {time}:\n\n[Book Now]({booking_url})\n\nThis link will take you to Calendly to confirm your details."
+
+            # Clear appointment context and persist the cleanup
+            user_data["appointment_context"] = {}
+            user_data["api_call_count"] = 0
+
             try:
                 from services.database import save_user_profile
                 org_id = user_data.get("organization_id")
                 session_id = user_data.get("session_id")
                 if org_id and session_id:
-                    save_user_profile(org_id, session_id, {"appointment_context": user_data["appointment_context"]})
-                    print(f"[DEBUG] Pending booking for {date} at {time} immediately saved to database")
+                    save_user_profile(org_id, session_id, {"appointment_context": {}})
+                    print(f"[DEBUG] Cleared appointment_context saved to database after successful booking link provided")
                 else:
-                    print(f"[ERROR] Missing org_id or session_id for pending booking persistence")
+                    print(f"[ERROR] Missing org_id or session_id for appointment context cleanup")
             except Exception as e:
-                print(f"[ERROR] Failed to immediately save pending booking: {str(e)}")
-            
-            email_request = f"Great! I found the slot for {date} at {time}.\n\nTo complete your booking, I'll need your email address. Please provide your email so I can send you the direct booking link."
-            
+                print(f"[ERROR] Failed to save cleared appointment_context: {str(e)}")
+
             return {
-                "answer": email_request,
+                "answer": confirmation,
+                "mode": "faq",
+                "language": language,
+                "user_data": user_data,
+                "appointment_confirmed": True
+            }
+        else:
+            print(f"[BOOKING] Could not find slot details or scheduling URL for {date} at {time}")
+            error_response = f"Sorry, the slot for {date} at {time} may be unavailable. Please choose a different time from the available slots."
+
+            return {
+                "answer": error_response,
                 "mode": "appointment",
                 "language": language,
                 "user_data": user_data,
-                "email_required": True
+                "available_slots": available_slots
             }
-        else:
-            # User has email, provide direct booking link
-            print(f"[BOOKING] User has email: {user_email}, providing direct booking link")
-            slot_details = find_slot_by_datetime(date, time, available_slots, api_key)
-            
-            if slot_details and slot_details.get("scheduling_url"):
-                booking_url = slot_details["scheduling_url"]
-                
-                confirmation = f"Perfect! Here is the direct link to book your appointment for {date} at {time}:\n\n[Book Now]({booking_url})\n\nThis link will take you to Calendly to confirm your details."
-                
-                # Clear appointment context and persist the cleanup
-                user_data["appointment_context"] = {}
-                user_data["api_call_count"] = 0
-                
-                # CRITICAL: Persist the cleared appointment context
-                try:
-                    from services.database import save_user_profile
-                    org_id = user_data.get("organization_id")
-                    session_id = user_data.get("session_id")
-                    if org_id and session_id:
-                        save_user_profile(org_id, session_id, {"appointment_context": {}})
-                        print(f"[DEBUG] Cleared appointment_context saved to database after successful booking")
-                    else:
-                        print(f"[ERROR] Missing org_id or session_id for appointment context cleanup")
-                except Exception as e:
-                    print(f"[ERROR] Failed to save cleared appointment_context: {str(e)}")
-                
-                return {
-                    "answer": confirmation,
-                    "mode": "faq",
-                    "language": language,
-                    "user_data": user_data,
-                    "appointment_confirmed": True
-                }
-            else:
-                print(f"[BOOKING] Could not find slot details or scheduling URL for {date} at {time}")
-                error_response = f"Sorry, the slot for {date} at {time} is no longer available. Please choose a different time from the available slots."
-                
-                return {
-                    "answer": error_response,
-                    "mode": "appointment",
-                    "language": language,
-                    "user_data": user_data,
-                    "available_slots": available_slots
-                }
     
     # Check if user seems to be making a selection but we couldn't parse it
     selection_keywords = ["confirm", "book", "schedule", "want", "choose", "select", "pick", "take"]

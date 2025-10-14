@@ -1536,4 +1536,3 @@ async def get_video_settings(
     except Exception as e:
         print(f"Error getting video settings: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
-

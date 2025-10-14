@@ -369,6 +369,108 @@ def ask_bot(query: str, mode="faq", user_data=None, available_slots=None, sessio
     # Detect language
     language = detect_language(original_query)
    
+    # Passive identity extraction: detect name/email/phone from user's message
+    try:
+        captured_any = False
+        profile_updates = {}
+        text = original_query.strip()
+        lower = text.lower()
+        
+        # Email detection
+        import re
+        email_match = re.search(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}", text)
+        if email_match:
+            email_val = email_match.group(0)
+            if not user_data.get("email") or user_data.get("email") != email_val:
+                user_data["email"] = email_val
+                profile_updates["email"] = email_val
+                captured_any = True
+                print(f"[IDENTITY] Captured email: {email_val}")
+        
+        # Phone detection (liberal)
+        phone_match = re.search(r"(\+?\d[\d\s().-]{7,})", text)
+        def _clean_phone(p):
+            digits = re.sub(r"\D", "", p)
+            return digits if len(digits) >= 7 else None
+        if phone_match:
+            cleaned = _clean_phone(phone_match.group(1))
+            if cleaned and (not user_data.get("phone") or user_data.get("phone") != cleaned):
+                user_data["phone"] = cleaned
+                profile_updates["phone"] = cleaned
+                captured_any = True
+                print(f"[IDENTITY] Captured phone: {cleaned}")
+        
+        # Name detection via explicit cues
+        name_cues = [
+            r"\bmy name is\s+([A-Za-z][A-Za-z\-']+(?:\s+[A-Za-z][A-Za-z\-']+){0,2})\b",
+            r"\bi am\s+([A-Za-z][A-Za-z\-']+(?:\s+[A-Za-z][A-Za-z\-']+){0,2})\b",
+            r"\bi'm\s+([A-Za-z][A-Za-z\-']+(?:\s+[A-Za-z][A-Za-z\-']+){0,2})\b",
+            r"\bthis is\s+([A-Za-z][A-Za-z\-']+(?:\s+[A-Za-z][A-Za-z\-']+){0,2})\b",
+            r"\bcall me\s+([A-Za-z][A-Za-z\-']+(?:\s+[A-Za-z][A-Za-z\-']+){0,2})\b",
+            r"\bname is\s+([A-Za-z][A-Za-z\-']+(?:\s+[A-Za-z][A-Za-z\-']+){0,2})\b",
+        ]
+        detected_name = None
+        for pat in name_cues:
+            m = re.search(pat, lower, flags=re.IGNORECASE)
+            if m:
+                candidate = m.group(1).strip()
+                if candidate:
+                    # Title-case the name
+                    detected_name = " ".join([w.capitalize() for w in candidate.split()])
+                    break
+        
+        # Fallback: pure name message (1-2 words, alphabetic, not a question, not an email/phone)
+        if not detected_name:
+            if ("@" not in text and not re.search(r"\d", text) and "?" not in text and 1 <= len(text.split()) <= 2):
+                if text.replace(" ", "").isalpha():
+                    detected_name = " ".join([w.capitalize() for w in text.split()])
+        
+        if detected_name:
+            if not user_data.get("name") or user_data.get("name") != detected_name:
+                user_data["name"] = detected_name
+                profile_updates["name"] = detected_name
+                captured_any = True
+                print(f"[IDENTITY] Captured name: {detected_name}")
+        
+        # Persist profile updates immediately
+        if captured_any and session_id and api_key:
+            try:
+                from services.database import save_user_profile
+                organization = get_organization_by_api_key(api_key)
+                if organization:
+                    org_id_for_save = organization["id"] if "id" in organization else str(organization.get("_id"))
+                    if profile_updates:
+                        save_user_profile(org_id_for_save, session_id, profile_updates)
+                        print(f"[IDENTITY] Saved profile: {profile_updates}")
+            except Exception as e:
+                print(f"[IDENTITY] Failed to save profile: {str(e)}")
+        
+        # Create/update lead when we have sufficient contact info (email or phone)
+        # Name is optional and will be updated later when available
+        if lead_capture_enabled and session_id and api_key and (user_data.get("email") or user_data.get("phone")):
+            try:
+                from services.database import create_lead
+                organization = get_organization_by_api_key(api_key)
+                if organization:
+                    org_id_for_lead = organization["id"] if "id" in organization else str(organization.get("_id"))
+                    inquiry_msgs = [m.get("content", "") for m in user_data.get("conversation_history", []) if m.get("role") == "user"]
+                    inquiry_text = " | ".join(inquiry_msgs[-3:]) if inquiry_msgs else "General inquiry"
+                    created = create_lead(
+                        organization_id=org_id_for_lead,
+                        session_id=session_id,
+                        name=user_data.get("name") or "",
+                        email=user_data.get("email") or "",
+                        phone=user_data.get("phone"),
+                        inquiry=inquiry_text,
+                        source="chatbot"
+                    )
+                    if created:
+                        print(f"[LEAD] Created/Updated lead: {created.get('lead_id')}")
+            except Exception as e:
+                print(f"[LEAD] Failed to create/update lead: {str(e)}")
+    except Exception as e:
+        print(f"[IDENTITY] Extraction error: {str(e)}")
+
     # Record conversation history if not present in user_data
     if "conversation_history" not in user_data:
         user_data["conversation_history"] = []
@@ -401,6 +503,62 @@ def ask_bot(query: str, mode="faq", user_data=None, available_slots=None, sessio
     
     # STEP 1: Analyze the query to determine intent and appropriate mode
     analysis = analyze_query(query, user_info, mode, needs_info, has_vector_data, conversation_summary)
+   
+    # QUICK FIX: If the last assistant message asked for name/email, treat this
+    # user message as the answer and extract it immediately (prevents double-asking)
+    try:
+        last_assistant_text = None
+        convo = user_data.get("conversation_history", [])
+        for msg in reversed(convo):
+            if msg.get("role") == "assistant":
+                last_assistant_text = str(msg.get("content", "")).lower()
+                break
+        
+        name_prompt_markers = [
+            "what should i call you",
+            "what's your name",
+            "what is your name",
+            "may i have your name",
+            "could you tell me your name",
+            "can i get your name"
+        ]
+        email_prompt_markers = [
+            "email address",
+            "what's your email",
+            "what is your email",
+            "share your email",
+            "provide your email",
+            "your email so i can"
+        ]
+        
+        # Handle pending name reply
+        if last_assistant_text and any(m in last_assistant_text for m in name_prompt_markers) and not user_data.get("name"):
+            # Simple inline name detection: 1-2 alphabetic words
+            candidate = original_query.strip()
+            words = candidate.split()
+            is_simple_name = 1 <= len(words) <= 2 and candidate.replace(" ", "").isalpha() and "?" not in candidate
+            if is_simple_name:
+                detected_name = candidate.title()
+                user_data["name"] = detected_name
+                # Respond and advance to email politely without re-asking name
+                followup = f"Nice to meet you, {detected_name}! Could you please share your email address so I can better assist you?"
+                user_data["conversation_history"].append({"role": "assistant", "content": followup})
+                return {
+                    "answer": followup,
+                    "mode": analysis["appropriate_mode"],
+                    "language": language,
+                    "user_data": user_data,
+                    "collecting_info": "email"
+                }
+            else:
+                # Fall back to the dedicated handler for robust extraction
+                return handle_name_collection(original_query, user_data, analysis["appropriate_mode"], language)
+        
+        # Handle pending email reply
+        if last_assistant_text and any(m in last_assistant_text for m in email_prompt_markers) and not user_data.get("email"):
+            return handle_email_collection(original_query, user_data, analysis["appropriate_mode"], language)
+    except Exception as e:
+        print(f"[DEBUG] Inline pending-info handler error: {str(e)}")
    
     # STEP 2: Smart Information Collection - only if leadCapture is enabled and timing is right
     if lead_capture_enabled and should_collect_info_now(user_data, lead_capture_enabled):
@@ -578,7 +736,20 @@ def ask_bot(query: str, mode="faq", user_data=None, available_slots=None, sessio
         
         return response
    
-    # STEP 6: Generate the final response with quality improvements
+    # STEP 6: Strict KB enforcement for FAQ/general answers
+    kb_intents = ["faq", "general", "identity"]
+    if analysis.get("appropriate_mode") in kb_intents:
+        # If we determined a KB lookup was needed but context is empty, do not fabricate
+        if analysis.get("needs_knowledge_lookup") and not retrieved_context:
+            fallback = {
+                "answer": "I don't have that in the training data yet. Would you like me to connect you with a team member or try a related question?",
+                "mode": "faq",
+                "language": language,
+                "user_data": user_data
+            }
+            return fallback
+
+    # Otherwise, generate the final response
     final_response = generate_enhanced_response(
         query, 
         user_info, 
