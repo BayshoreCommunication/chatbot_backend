@@ -287,6 +287,19 @@ def health_check():
     """Health check endpoint for monitoring"""
     return {"status": "healthy"}
 
+@app.options("/{full_path:path}")
+async def options_handler(request: Request):
+    """Global OPTIONS handler for CORS preflight requests"""
+    return JSONResponse(
+        content={},
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS, PATCH",
+            "Access-Control-Allow-Headers": "*",
+            "Access-Control-Max-Age": "3600"
+        }
+    )
+
 @app.on_event("startup")
 async def startup_event():
     """Run on application startup"""

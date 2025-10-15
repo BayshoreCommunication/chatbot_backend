@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Request, HTTPException, Depends
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import Optional, List, Dict
 import json
@@ -45,6 +46,18 @@ async def check_admin_auth(request: Request):
         raise HTTPException(status_code=401, detail="Unauthorized")
     return True
 
+@router.options("/leads-list-byorg")
+async def options_leads_list_byorg():
+    """Handle OPTIONS request for leads-list-byorg endpoint"""
+    return JSONResponse(
+        content={},
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, OPTIONS",
+            "Access-Control-Allow-Headers": "X-API-Key, Content-Type, Accept, Authorization"
+        }
+    )
+
 @router.get("/leads-list-byorg")
 async def leads_list_byorg(
     request: Request,
@@ -75,6 +88,18 @@ async def leads_list_byorg(
     except Exception as e:
         print(f"Error listing organization leads: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to list organization leads")
+
+@router.options("/leads-list-all")
+async def options_leads_list_all():
+    """Handle OPTIONS request for leads-list-all endpoint"""
+    return JSONResponse(
+        content={},
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, OPTIONS",
+            "Access-Control-Allow-Headers": "Authorization, Content-Type, Accept, X-API-Key"
+        }
+    )
 
 @router.get("/leads-list-all")
 async def leads_list_all(organization_id: Optional[str] = None, group_by_org: Optional[bool] = False, _=Depends(check_admin_auth)):
@@ -111,6 +136,18 @@ async def leads_list_all(organization_id: Optional[str] = None, group_by_org: Op
     except Exception as e:
         print(f"Error listing admin leads: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to list leads")
+
+@router.options("/search")
+async def options_search_leads():
+    """Handle OPTIONS request for search endpoint"""
+    return JSONResponse(
+        content={},
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "POST, OPTIONS",
+            "Access-Control-Allow-Headers": "Authorization, Content-Type, Accept, X-API-Key"
+        }
+    )
 
 @router.post("/search")
 async def search_leads_endpoint(params: LeadSearchParams, organization_id: Optional[str] = None, _=Depends(check_admin_auth)):
