@@ -14,7 +14,7 @@ from bson import ObjectId
 import json
 from pathlib import Path
 import traceback
-from routes import instant_reply
+# removed unused direct module import; router is imported below
 from services.auth import seed_default_admin
 
 class MongoJSONEncoder(json.JSONEncoder):
@@ -57,7 +57,7 @@ except Exception as e:
     unknown_questions_available = False
 
 try:
-    from routes.instantReply import router as instant_reply_router
+    from routes.instant_reply import router as instant_reply_router
     instant_reply_available = True
 except Exception as e:
     print(f"Warning: Instant Reply router failed to import: {e}")
