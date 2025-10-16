@@ -1,5 +1,4 @@
-from fastapi import APIRouter, Request, HTTPException, Depends
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, Request, HTTPException, Depends, Header
 from pydantic import BaseModel
 from typing import Optional, List, Dict
 import json
@@ -14,6 +13,15 @@ from services.database import get_organization_by_api_key
 load_dotenv()
 
 router = APIRouter()
+
+async def get_organization_from_api_key(api_key: Optional[str] = Header(None, alias="X-API-Key")):
+    """Resolve organization using X-API-Key header (same pattern as unknown_questions routes)."""
+    if not api_key:
+        raise HTTPException(status_code=401, detail="API key required")
+    organization = get_organization_by_api_key(api_key)
+    if not organization:
+        raise HTTPException(status_code=401, detail="Invalid API key")
+    return organization
 
 class Lead(BaseModel):
     name: str
@@ -46,39 +54,18 @@ async def check_admin_auth(request: Request):
         raise HTTPException(status_code=401, detail="Unauthorized")
     return True
 
-@router.options("/leads-list-byorg")
-async def options_leads_list_byorg():
-    """Handle OPTIONS request for leads-list-byorg endpoint"""
-    return JSONResponse(
-        content={},
-        headers={
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "GET, OPTIONS",
-            "Access-Control-Allow-Headers": "X-API-Key, Content-Type, Accept, Authorization"
-        }
-    )
-
 @router.get("/leads-list-byorg")
 async def leads_list_byorg(
-    request: Request,
     organization_id: Optional[str] = None,
     limit: int = 100,
     skip: int = 0,
+    organization=Depends(get_organization_from_api_key)
 ):
     """List leads for a single organization (user dashboard).
     Organization is resolved by explicit organization_id or by X-API-Key header.
     """
     try:
-        org_id = organization_id
-        if not org_id:
-            # Try resolve via API Key header
-            api_key = request.headers.get("X-API-Key")
-            if not api_key:
-                raise HTTPException(status_code=400, detail="Provide organization_id or X-API-Key")
-            org = get_organization_by_api_key(api_key)
-            if not org:
-                raise HTTPException(status_code=401, detail="Invalid API key")
-            org_id = org["id"] if "id" in org else str(org.get("_id"))
+        org_id = organization_id or (organization["id"] if "id" in organization else str(organization.get("_id")))
         
         # Paginated/sorted list by organization
         leads_list = get_leads_by_organization(org_id, limit=limit, skip=skip)
@@ -88,18 +75,6 @@ async def leads_list_byorg(
     except Exception as e:
         print(f"Error listing organization leads: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to list organization leads")
-
-@router.options("/leads-list-all")
-async def options_leads_list_all():
-    """Handle OPTIONS request for leads-list-all endpoint"""
-    return JSONResponse(
-        content={},
-        headers={
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "GET, OPTIONS",
-            "Access-Control-Allow-Headers": "Authorization, Content-Type, Accept, X-API-Key"
-        }
-    )
 
 @router.get("/leads-list-all")
 async def leads_list_all(organization_id: Optional[str] = None, group_by_org: Optional[bool] = False, _=Depends(check_admin_auth)):
@@ -136,18 +111,6 @@ async def leads_list_all(organization_id: Optional[str] = None, group_by_org: Op
     except Exception as e:
         print(f"Error listing admin leads: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to list leads")
-
-@router.options("/search")
-async def options_search_leads():
-    """Handle OPTIONS request for search endpoint"""
-    return JSONResponse(
-        content={},
-        headers={
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "POST, OPTIONS",
-            "Access-Control-Allow-Headers": "Authorization, Content-Type, Accept, X-API-Key"
-        }
-    )
 
 @router.post("/search")
 async def search_leads_endpoint(params: LeadSearchParams, organization_id: Optional[str] = None, _=Depends(check_admin_auth)):
