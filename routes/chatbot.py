@@ -52,10 +52,20 @@ sio = None
 def init_socketio(app: FastAPI):
     global sio
     sio = socketio.AsyncServer(
-        cors_allowed_origins="*",
+        cors_allowed_origins=[
+            "http://localhost:3000",
+            "http://localhost:5173", 
+            "http://localhost:4173",
+            "https://aibotwidget.bayshorecommunication.org",
+            "https://dashboard.bayshorecommunication.org",
+            "https://api.bayshorecommunication.org",
+            "*"  # Allow all origins for development
+        ],
         async_mode='asgi',
-        logger=False,  # Disable verbose socket.io logging
-        engineio_logger=False  # Disable verbose engine.io logging
+        logger=True,  # Enable logging for debugging
+        engineio_logger=True,  # Enable engine.io logging for debugging
+        ping_timeout=60,
+        ping_interval=25
     )
     
     @sio.event
@@ -90,6 +100,12 @@ def init_socketio(app: FastAPI):
             }, room=sid)
         else:
             logger.warning(f"Client {sid} connected without API key")
+            # Still allow connection but don't join any room
+            await sio.emit('connection_confirmed', {
+                'status': 'connected',
+                'room': None,
+                'message': 'Socket.IO connection established (no API key)'
+            }, room=sid)
 
     @sio.event
     async def disconnect(sid):
