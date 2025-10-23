@@ -17,7 +17,8 @@ try:
     from services.database import (
         get_organization_by_api_key, create_or_update_visitor, add_conversation_message, 
         get_visitor, get_conversation_history, save_user_profile, get_user_profile, db,
-        set_agent_mode, set_bot_mode, is_chat_in_agent_mode
+        set_agent_mode, set_bot_mode, is_chat_in_agent_mode, create_user, get_user_by_email,
+        get_user_by_id, update_user, create_lead, get_leads_by_organization
     )
     from bson import ObjectId
     from services.faq_matcher import find_matching_faq, get_suggested_faqs
@@ -724,6 +725,40 @@ async def get_chat_history(
         
         print(f"[DEBUG] Using organization ID: {org_id}")
         print(f"[DEBUG] Looking for visitor with org_id: {org_id}, session_id: {session_id}")
+        
+        # Ensure required database functions are available
+        try:
+            get_conversation_history  # type: ignore  # noqa: F401
+        except NameError:
+            try:
+                from services.database import get_conversation_history  # type: ignore
+            except Exception as _e:
+                raise RuntimeError(f"database helper unavailable: get_conversation_history ({str(_e)})")
+        
+        try:
+            get_visitor  # type: ignore  # noqa: F401
+        except NameError:
+            try:
+                from services.database import get_visitor  # type: ignore
+            except Exception as _e:
+                raise RuntimeError(f"database helper unavailable: get_visitor ({str(_e)})")
+        
+        try:
+            get_user_profile  # type: ignore  # noqa: F401
+        except NameError:
+            try:
+                from services.database import get_user_profile  # type: ignore
+            except Exception as _e:
+                raise RuntimeError(f"database helper unavailable: get_user_profile ({str(_e)})")
+        
+        try:
+            get_suggested_faqs  # type: ignore  # noqa: F401
+        except NameError:
+            try:
+                from services.faq_matcher import get_suggested_faqs  # type: ignore
+            except Exception:
+                def get_suggested_faqs(org_id):  # type: ignore
+                    return []
         
         # Get fresh conversation data from MongoDB
         previous_conversations = get_conversation_history(organization_id=org_id, session_id=session_id)
