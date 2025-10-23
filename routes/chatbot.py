@@ -1248,10 +1248,17 @@ async def save_chat_widget_settings(
 ):
     try:
         print("\n=== Starting save_chat_widget_settings ===")
-        print(f"Organization ID: {organization.get('_id')}")
+        
+        # Safely get organization ID
+        org_id = organization.get("id") or organization.get("_id")
+        if not org_id:
+            print("[ERROR] Organization ID is missing")
+            raise HTTPException(status_code=500, detail="Organization ID is missing")
+        
+        print(f"Organization ID: {org_id}")
         
         # Validate organization ID
-        if not organization.get("_id"):
+        if not org_id:
             print("[ERROR] Organization ID is missing")
             raise HTTPException(status_code=500, detail="Organization ID is missing")
             
@@ -1273,7 +1280,7 @@ async def save_chat_widget_settings(
         print(f"\n[DEBUG] Update operation: {update_data}")
         
         result = db.organizations.update_one(
-            {"_id": organization["_id"]},
+            {"_id": ObjectId(org_id)},
             update_data
         )
         
@@ -1284,7 +1291,7 @@ async def save_chat_widget_settings(
             raise HTTPException(status_code=404, detail="Organization not found")
             
         # Verify the update by retrieving the updated document
-        updated_org = db.organizations.find_one({"_id": organization["_id"]})
+        updated_org = db.organizations.find_one({"_id": ObjectId(org_id)})
         print(f"\n[DEBUG] Updated organization document: {updated_org}")
         print(f"\n[DEBUG] Updated chat_widget_settings: {updated_org.get('chat_widget_settings')}")
         print("\n=== Completed save_chat_widget_settings ===\n")
@@ -1619,7 +1626,15 @@ async def get_chat_widget_settings(
     organization=Depends(get_organization_from_api_key)
 ):
     try:
-        print(f"[DEBUG] Starting get_chat_widget_settings for org_id: {organization.get('_id')}")
+        print(f"[DEBUG] Starting get_chat_widget_settings")
+        
+        # Safely get organization ID
+        org_id = organization.get("id") or organization.get("_id")
+        if not org_id:
+            print("[ERROR] Organization ID is missing")
+            raise HTTPException(status_code=500, detail="Organization ID is missing")
+        
+        print(f"[DEBUG] Organization ID: {org_id}")
         print(f"[DEBUG] Organization data: {organization}")
         
         # Get organization from MongoDB directly
@@ -1636,7 +1651,7 @@ async def get_chat_widget_settings(
             print(f"[ERROR] Database ping failed: {str(ping_error)}")
             raise HTTPException(status_code=500, detail=f"Database connection failed: {str(ping_error)}")
         
-        org = db.organizations.find_one({"_id": organization["_id"]})
+        org = db.organizations.find_one({"_id": ObjectId(org_id)})
         print(f"[DEBUG] Retrieved org: {org}")
         print(f"[DEBUG] Retrieved chat_widget_settings: {org.get('chat_widget_settings') if org else None}")
         
@@ -1665,7 +1680,7 @@ async def get_chat_widget_settings(
                 print("[DEBUG] Updating organization with default settings")
                 try:
                     update_result = db.organizations.update_one(
-                        {"_id": organization["_id"]},
+                        {"_id": ObjectId(org_id)},
                         {"$set": {"chat_widget_settings": default_settings}}
                     )
                     print(f"[DEBUG] Update result: {update_result.modified_count} documents modified")
@@ -1720,6 +1735,45 @@ async def upload_video(
 ):
     """Upload a video for the chat widget"""
     try:
+        # Ensure required imports are available
+        try:
+            from bson import ObjectId  # type: ignore
+        except ImportError:
+            try:
+                from pymongo import ObjectId  # type: ignore
+            except ImportError:
+                raise RuntimeError("ObjectId import unavailable")
+        
+        try:
+            import boto3  # type: ignore
+        except ImportError:
+            raise RuntimeError("boto3 import unavailable")
+        
+        try:
+            import uuid  # type: ignore
+        except ImportError:
+            raise RuntimeError("uuid import unavailable")
+        
+        try:
+            from pathlib import Path  # type: ignore
+        except ImportError:
+            raise RuntimeError("pathlib import unavailable")
+        
+        try:
+            import shutil  # type: ignore
+        except ImportError:
+            raise RuntimeError("shutil import unavailable")
+        
+        # Ensure database is available
+        try:
+            from services.database import db  # type: ignore
+            if not db:
+                raise RuntimeError("database object is None")
+        except ImportError:
+            raise RuntimeError("database import unavailable")
+        except Exception as e:
+            raise RuntimeError(f"database import error: {str(e)}")
+        
         # Validate file type
         if not file.content_type.startswith('video/'):
             raise HTTPException(status_code=400, detail="Only video files are allowed")
@@ -1792,7 +1846,7 @@ async def upload_video(
         print(f"[DEBUG] Video filename: {unique_filename}")
         
         update_result = db.organizations.update_one(
-            {"_id": organization["_id"]},
+            {"_id": ObjectId(org_id)},
             {
                 "$set": {
                     "chat_widget_settings.intro_video.enabled": True,
@@ -1808,7 +1862,7 @@ async def upload_video(
         print(f"[DEBUG] Update result: {update_result.modified_count} documents modified")
         
         # Verify the update
-        updated_org = db.organizations.find_one({"_id": organization["_id"]})
+        updated_org = db.organizations.find_one({"_id": ObjectId(org_id)})
         print(f"[DEBUG] After update - intro_video: {updated_org.get('chat_widget_settings', {}).get('intro_video')}")
         
         return {
@@ -1842,6 +1896,35 @@ async def delete_video(
 ):
     """Delete the current video"""
     try:
+        # Ensure required imports are available
+        try:
+            from bson import ObjectId  # type: ignore
+        except ImportError:
+            try:
+                from pymongo import ObjectId  # type: ignore
+            except ImportError:
+                raise RuntimeError("ObjectId import unavailable")
+        
+        try:
+            import boto3  # type: ignore
+        except ImportError:
+            raise RuntimeError("boto3 import unavailable")
+        
+        try:
+            from pathlib import Path  # type: ignore
+        except ImportError:
+            raise RuntimeError("pathlib import unavailable")
+        
+        # Ensure database is available
+        try:
+            from services.database import db  # type: ignore
+            if not db:
+                raise RuntimeError("database object is None")
+        except ImportError:
+            raise RuntimeError("database import unavailable")
+        except Exception as e:
+            raise RuntimeError(f"database import error: {str(e)}")
+        
         # Safely get organization ID
         org_id = organization.get("id") or organization.get("_id")
         if not org_id:
@@ -1894,7 +1977,7 @@ async def delete_video(
                 
                 # Update organization settings - reset intro_video to default state
                 db.organizations.update_one(
-                    {"_id": organization["_id"]},
+                    {"_id": ObjectId(org_id)},
                     {
                         "$set": {
                             "chat_widget_settings.intro_video": {
@@ -1926,6 +2009,26 @@ async def update_video_settings(
 ):
     """Update video settings"""
     try:
+        # Ensure required imports are available
+        try:
+            from bson import ObjectId  # type: ignore
+        except ImportError:
+            try:
+                from pymongo import ObjectId  # type: ignore
+            except ImportError:
+                raise RuntimeError("ObjectId import unavailable")
+        
+        # Ensure database is available
+        try:
+            from services.database import db  # type: ignore
+        except ImportError:
+            raise RuntimeError("database import unavailable")
+        
+        # Safely get organization ID
+        org_id = organization.get("id") or organization.get("_id")
+        if not org_id:
+            raise HTTPException(status_code=500, detail="Organization ID not found")
+        
         data = await request.json()
         enabled = data.get("enabled", False)
         autoplay = data.get("autoplay", True)
@@ -1942,7 +2045,7 @@ async def update_video_settings(
             update_data["chat_widget_settings.intro_video.show_on_first_visit"] = data.get("show_on_first_visit", True)
         
         db.organizations.update_one(
-            {"_id": organization["_id"]},
+            {"_id": ObjectId(org_id)},
             {"$set": update_data}
         )
         
@@ -1966,7 +2069,27 @@ async def get_video_settings(
 ):
     """Get current video settings"""
     try:
-        org = db.organizations.find_one({"_id": organization["_id"]})
+        # Ensure required imports are available
+        try:
+            from bson import ObjectId  # type: ignore
+        except ImportError:
+            try:
+                from pymongo import ObjectId  # type: ignore
+            except ImportError:
+                raise RuntimeError("ObjectId import unavailable")
+        
+        # Ensure database is available
+        try:
+            from services.database import db  # type: ignore
+        except ImportError:
+            raise RuntimeError("database import unavailable")
+        
+        # Safely get organization ID
+        org_id = organization.get("id") or organization.get("_id")
+        if not org_id:
+            raise HTTPException(status_code=500, detail="Organization ID not found")
+        
+        org = db.organizations.find_one({"_id": ObjectId(org_id)})
         
         if org and "chat_widget_settings" in org and "intro_video" in org["chat_widget_settings"]:
             intro_video = org["chat_widget_settings"]["intro_video"]
