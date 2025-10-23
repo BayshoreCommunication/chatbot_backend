@@ -59,7 +59,7 @@ async def register(user: UserCreate):
     user_data = create_user({
         "email": user.email,
         "password": user.password,
-        "name": user.name,
+        "name": user.organization_name,
     })
     
     # Create access token
@@ -182,7 +182,7 @@ async def google_auth(user: UserGoogle):
         # Create new user
         user_data = create_user({
             "email": user.email,
-            "name": user.name,
+            "name": user.organization_name,
             "google_id": user.google_id,
         })
     

@@ -14,7 +14,7 @@ from bson import ObjectId
 import json
 from pathlib import Path
 import traceback
-from routes import instant_reply
+# removed unused direct module import; router is imported below
 from services.auth import seed_default_admin
 
 class MongoJSONEncoder(json.JSONEncoder):
@@ -57,7 +57,7 @@ except Exception as e:
     unknown_questions_available = False
 
 try:
-    from routes.instantReply import router as instant_reply_router
+    from routes.instant_reply import router as instant_reply_router
     instant_reply_available = True
 except Exception as e:
     print(f"Warning: Instant Reply router failed to import: {e}")
@@ -140,54 +140,39 @@ uploads_dir.mkdir(parents=True, exist_ok=True)
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
 # Configure CORS with more specific settings
-origins = [
-    "http://localhost:5173",  # Vite dev server
-    "http://127.0.0.1:5173",
-    "http://localhost:3000",
-    "http://localhost:3001",
-    "http://127.0.0.1:3000",
-    "https://checkout.stripe.com",
-    "https://js.stripe.com",
-    "https://hooks.stripe.com",
-    "https://accounts.google.com",
-    "https://ai-user-dashboard.vercel.app",
-    "https://aibotwizard.vercel.app",
-    "https://chatbot.bayshorecommunication.com",
-    "http://chatbot.bayshorecommunication.com",
-    "https://chatbot-user-dashboard.vercel.app",
-    "https://aibotwidget.bayshorecommunication.org",
-    "https://aibotwidget.bayshorecommunication.org/chatbot-widget.min.js",
-    "https://www.carterinjurylaw.com",
-    "http://www.carterinjurylaw.com",
-    "https://api.bayshorecommunication.org",
-    "http://api.bayshorecommunication.org",
-    "http://localhost:5174",
-    "http://localhost:8000",
-    "*"  # Allow all origins as fallback
-]
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # Allow all origins
     allow_credentials=False,  # Set to False when using "*" for origins
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
-    allow_headers=["*"],
+    allow_headers=[
+        "Accept",
+        "Accept-Language",
+        "Content-Language",
+        "Content-Type",
+        "Authorization",
+        "X-API-Key",  # Explicitly allow API key header
+        "X-Requested-With",
+        "Origin",
+        "Access-Control-Request-Method",
+        "Access-Control-Request-Headers",
+    ],
     expose_headers=["*"],
     max_age=3600
 )
 
-# Add security headers middleware
-@app.middleware("http")
-async def add_security_headers(request: Request, call_next):
-    response = await call_next(request)
-    # More permissive CORS headers
-    response.headers["Access-Control-Allow-Origin"] = "*"
-    response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS, PATCH"
-    response.headers["Access-Control-Allow-Headers"] = "*"
-    response.headers["Access-Control-Max-Age"] = "3600"
-    response.headers["Cross-Origin-Opener-Policy"] = "unsafe-none"
-    response.headers["Cross-Origin-Embedder-Policy"] = "unsafe-none"
-    return response
+# Remove duplicate security headers middleware to avoid conflicts
+# @app.middleware("http")
+# async def add_security_headers(request: Request, call_next):
+#     response = await call_next(request)
+#     # More permissive CORS headers
+#     response.headers["Access-Control-Allow-Origin"] = "*"
+#     response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS, PATCH"
+#     response.headers["Access-Control-Allow-Headers"] = "*"
+#     response.headers["Access-Control-Max-Age"] = "3600"
+#     response.headers["Cross-Origin-Opener-Policy"] = "unsafe-none"
+#     response.headers["Cross-Origin-Embedder-Policy"] = "unsafe-none"
+#     return response
 
 # Move all other middleware after CORS
 @app.middleware("http")
@@ -232,7 +217,8 @@ if instant_reply_available:
     available_features.append("Instant Reply Configuration")
 
 if lead_available:
-    app.include_router(lead_router, prefix="/lead", tags=["Lead Management"])
+    # Mount lead routes under /api to align with other API endpoints
+    app.include_router(lead_router, prefix="/api", tags=["Lead Management"])
     available_features.append("Lead Capture Mode")
 
 if appointment_available:
@@ -285,6 +271,19 @@ def ping():
 def health_check():
     """Health check endpoint for monitoring"""
     return {"status": "healthy"}
+
+@app.options("/{full_path:path}")
+async def options_handler(request: Request):
+    """Global OPTIONS handler for CORS preflight requests"""
+    return JSONResponse(
+        content={},
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS, PATCH",
+            "Access-Control-Allow-Headers": "*",
+            "Access-Control-Max-Age": "3600"
+        }
+    )
 
 @app.on_event("startup")
 async def startup_event():

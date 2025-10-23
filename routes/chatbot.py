@@ -141,9 +141,10 @@ class ChatWidgetSettings(BaseModel):
     selectedColor: str
     leadCapture: bool
     botBehavior: str
-    ai_behavior: str
+    ai_behavior: Optional[str] = ""
     avatarUrl: Optional[str] = None
     is_bot_connected: Optional[bool] = False
+    auto_open: Optional[bool] = False
 
 class ChatRequest(BaseModel):
     question: str
@@ -166,14 +167,71 @@ class UploadHistoryResponse(BaseModel):
 
 async def get_organization_from_api_key(api_key: Optional[str] = Header(None, alias="X-API-Key")):
     """Dependency to get organization from API key"""
-    if not api_key:
-        raise HTTPException(status_code=401, detail="API key is required")
-    
-    organization = get_organization_by_api_key(api_key)
-    if not organization:
-        raise HTTPException(status_code=401, detail="Invalid API key")
-    
-    return organization
+    try:
+        print(f"[DEBUG] ===== AUTHENTICATION DEBUG START =====")
+        print(f"[DEBUG] Raw API key received: {api_key}")
+        print(f"[DEBUG] API key length: {len(api_key) if api_key else 0}")
+        print(f"[DEBUG] API key first 10 chars: {api_key[:10] if api_key else 'None'}...")
+        print(f"[DEBUG] API key last 10 chars: ...{api_key[-10:] if api_key and len(api_key) > 10 else api_key}")
+        
+        if not api_key:
+            print("[ERROR] No API key provided")
+            raise HTTPException(status_code=401, detail="API key is required")
+        
+        print(f"[DEBUG] Looking up organization with API key: {api_key[:10]}...")
+        
+        # Test database connection first
+        try:
+            from services.database import db, client
+            client.admin.command('ping')
+            print("[DEBUG] Database ping successful in get_organization_from_api_key")
+        except Exception as ping_error:
+            print(f"[ERROR] Database ping failed in get_organization_from_api_key: {str(ping_error)}")
+            raise HTTPException(status_code=500, detail=f"Database connection failed: {str(ping_error)}")
+        
+        # Check if organizations collection exists
+        try:
+            org_count = db.organizations.count_documents({})
+            print(f"[DEBUG] Total organizations in database: {org_count}")
+        except Exception as count_error:
+            print(f"[ERROR] Failed to count organizations: {str(count_error)}")
+        
+        # Try to find organization
+        try:
+            from services.database import get_organization_by_api_key
+            organization = get_organization_by_api_key(api_key)
+            print(f"[DEBUG] Organization lookup result: {organization}")
+        except Exception as lookup_error:
+            print(f"[ERROR] Organization lookup failed: {str(lookup_error)}")
+            raise HTTPException(status_code=500, detail=f"Organization lookup failed: {str(lookup_error)}")
+        
+        if not organization:
+            print(f"[ERROR] Invalid API key: {api_key[:10]}...")
+            print(f"[DEBUG] Searching for similar API keys...")
+            
+            # Try to find any organizations with similar API keys for debugging
+            try:
+                similar_orgs = list(db.organizations.find({}, {"api_key": 1, "name": 1}).limit(5))
+                print(f"[DEBUG] Sample organizations in database: {similar_orgs}")
+            except Exception as similar_error:
+                print(f"[ERROR] Failed to get sample organizations: {str(similar_error)}")
+            
+            raise HTTPException(status_code=401, detail="Invalid API key")
+        
+        print(f"[DEBUG] Organization found: {organization.get('_id')}")
+        print(f"[DEBUG] Organization name: {organization.get('name', 'No name')}")
+        print(f"[DEBUG] ===== AUTHENTICATION DEBUG END =====")
+        return organization
+        
+    except HTTPException:
+        print("[DEBUG] Re-raising HTTP exception from get_organization_from_api_key")
+        raise
+    except Exception as e:
+        print(f"[ERROR] Exception in get_organization_from_api_key: {str(e)}")
+        print(f"[ERROR] Exception type: {type(e).__name__}")
+        import traceback
+        print(f"[ERROR] Traceback: {traceback.format_exc()}")
+        raise HTTPException(status_code=401, detail="Authentication failed")
 
 @router.post("/ask")
 async def ask_question(
@@ -188,6 +246,51 @@ async def ask_question(
     try:
         print(f"[DEBUG] Processing message: {request.question}")
         print(f"[DEBUG] Session ID: {request.session_id}")
+
+        # Ensure critical database helpers are available even if optional imports failed at module load
+        try:
+            create_or_update_visitor  # type: ignore  # noqa: F401
+        except NameError:
+            try:
+                from services.database import create_or_update_visitor  # type: ignore
+            except Exception as _e:
+                raise RuntimeError(f"database helper unavailable: create_or_update_visitor ({str(_e)})")
+
+        try:
+            add_conversation_message  # type: ignore  # noqa: F401
+        except NameError:
+            try:
+                from services.database import add_conversation_message  # type: ignore
+            except Exception as _e:
+                raise RuntimeError(f"database helper unavailable: add_conversation_message ({str(_e)})")
+
+        try:
+            get_conversation_history  # type: ignore  # noqa: F401
+        except NameError:
+            try:
+                from services.database import get_conversation_history  # type: ignore
+            except Exception as _e:
+                raise RuntimeError(f"database helper unavailable: get_conversation_history ({str(_e)})")
+
+        try:
+            get_user_profile  # type: ignore  # noqa: F401
+        except NameError:
+            try:
+                from services.database import get_user_profile  # type: ignore
+            except Exception as _e:
+                raise RuntimeError(f"database helper unavailable: get_user_profile ({str(_e)})")
+
+        # Ensure is_chat_in_agent_mode is available even if optional imports failed at module load
+        try:
+            # Prefer already-imported symbol; if not, import locally
+            is_chat_in_agent_mode  # type: ignore  # noqa: F401
+        except NameError:
+            try:
+                from services.database import is_chat_in_agent_mode  # type: ignore
+            except Exception:
+                # Fallback: if the helper is unavailable on this environment, default to bot mode
+                def is_chat_in_agent_mode(organization_id, session_id):  # type: ignore
+                    return False
 
         # FIRST: Check if this chat is in agent mode
         if is_chat_in_agent_mode(org_id, request.session_id):
@@ -382,8 +485,26 @@ async def ask_question(
 
         print("[DEBUG] Processing regular message with smart engine")
         
+        # Ensure FAQ helpers are available at runtime
+        try:
+            find_matching_faq  # type: ignore  # noqa: F401
+        except NameError:
+            try:
+                from services.faq_matcher import find_matching_faq  # type: ignore
+            except Exception:
+                def find_matching_faq(query, org_id, namespace):  # type: ignore
+                    return None
+
+        try:
+            get_suggested_faqs  # type: ignore  # noqa: F401
+        except NameError:
+            try:
+                from services.faq_matcher import get_suggested_faqs  # type: ignore
+            except Exception:
+                def get_suggested_faqs(org_id):  # type: ignore
+                    return []
+
         # Skip the old lead collection logic - let smart engine handle it
-        # Try to find matching FAQ first
         # Try to find matching FAQ first (with caching)
         matching_faq = find_matching_faq(
             query=request.question,
@@ -541,38 +662,30 @@ async def ask_question(
         lead_capture_enabled = chat_settings.get("leadCapture", False)
         
         if lead_capture_enabled:
-            # Check if we have collected both name and email in user_data
+            # Create or update lead when any of name/email/phone is present
             user_name = response.get("user_data", {}).get("name")
             user_email = response.get("user_data", {}).get("email")
             user_phone = response.get("user_data", {}).get("phone")
             
-            if user_name and user_email:
-                print(f"[DEBUG] Lead capture enabled and both name ({user_name}) and email ({user_email}) collected")
-                
+            if user_name or user_email or user_phone:
                 try:
-                    # Import the create_lead function
                     from services.database import create_lead
-                    
                     # Extract inquiry from conversation history
                     conversation_history = response.get("user_data", {}).get("conversation_history", [])
                     user_messages = [msg["content"] for msg in conversation_history if msg.get("role") == "user"]
                     inquiry = " | ".join(user_messages[:3]) if user_messages else "General inquiry"
-                    
-                    # Create lead in MongoDB
                     created_lead = create_lead(
                         organization_id=org_id,
                         session_id=request.session_id,
                         name=user_name,
                         email=user_email,
                         phone=user_phone,
-                        inquiry=inquiry,
+                        inquiry=inquiry if inquiry else "",
                         source="chatbot"
                     )
-                    
-                    print(f"[DEBUG] Lead created successfully: {created_lead['lead_id']}")
-                    
+                    print(f"[DEBUG] Lead upserted successfully: {created_lead.get('lead_id')}")
                 except Exception as e:
-                    print(f"[ERROR] Failed to create lead: {str(e)}")
+                    print(f"[ERROR] Failed to upsert lead: {str(e)}")
                     # Don't fail the main chat flow if lead creation fails
 
         return response
@@ -601,7 +714,15 @@ async def get_chat_history(
     
     # Get fresh conversation data from MongoDB
     previous_conversations = get_conversation_history(organization_id =org_id, session_id=session_id)
-    print(f"[DEBUG] previous_conversations: {previous_conversations} organization: {org_id}")
+    # Guard against None or unexpected types from storage layer
+    if not isinstance(previous_conversations, list):
+        previous_conversations = previous_conversations or []
+        try:
+            # Try to coerce iterable-like objects to list
+            previous_conversations = list(previous_conversations)
+        except Exception:
+            previous_conversations = []
+    print(f"[DEBUG] previous_conversations len: {len(previous_conversations)} organization: {org_id}")
     
     # Get visitor information
     visitor = get_visitor(org_id, session_id)
@@ -616,18 +737,25 @@ async def get_chat_history(
     # Get user profile
     user_profile = get_user_profile(org_id, session_id)
     profile_data = {}
-    
-    if user_profile and "profile_data" in user_profile:
-        profile_data = user_profile["profile_data"]
+    if isinstance(user_profile, dict):
+        pd = user_profile.get("profile_data", {})
+        if isinstance(pd, dict):
+            profile_data = pd
     
     # Format conversation history
     formatted_history = []
     for msg in previous_conversations:
-        if "role" in msg and "content" in msg:
-            formatted_history.append({
-                "role": msg.get("role"),
-                "content": msg.get("content")
-            })
+        try:
+            role = msg.get("role") if isinstance(msg, dict) else None
+            content = msg.get("content") if isinstance(msg, dict) else None
+            if role and content:
+                formatted_history.append({
+                    "role": role,
+                    "content": content
+                })
+        except Exception:
+            # Skip malformed entries
+            continue
     
     # Get current mode
     current_mode = "agent" if is_agent_mode else "faq"
@@ -644,9 +772,22 @@ async def get_chat_history(
             break
     
     # Get suggested FAQs
-    suggested_faqs = get_suggested_faqs(org_id)
+    try:
+        suggested_faqs = get_suggested_faqs(org_id) or []
+    except Exception:
+        suggested_faqs = []
     
     # Build response
+    # Safely serialize agent_takeover_at which may be datetime or string
+    agent_takeover_at_str = None
+    if agent_takeover_at:
+        try:
+            # datetime-like
+            agent_takeover_at_str = agent_takeover_at.isoformat()
+        except AttributeError:
+            # already a string or other type; coerce to str
+            agent_takeover_at_str = str(agent_takeover_at)
+
     response = {
         "answer": last_answer,
         "mode": current_mode,
@@ -659,7 +800,7 @@ async def get_chat_history(
         "suggested_faqs": suggested_faqs,
         "agent_mode": is_agent_mode,
         "agent_id": agent_id,
-        "agent_takeover_at": agent_takeover_at.isoformat() if agent_takeover_at else None
+        "agent_takeover_at": agent_takeover_at_str
     }
     
     return response
@@ -1210,20 +1351,130 @@ async def send_agent_message(
         print(f"Error sending agent message: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@router.get("/debug-api-key")
+async def debug_api_key(api_key: Optional[str] = Header(None, alias="X-API-Key")):
+    """Debug endpoint to test API key without authentication dependency"""
+    try:
+        print(f"[DEBUG] Debug API key endpoint called")
+        print(f"[DEBUG] API key received: {api_key}")
+        
+        if not api_key:
+            return {
+                "status": "error",
+                "message": "No API key provided",
+                "received_key": None
+            }
+        
+        # Test database connection
+        try:
+            from services.database import db, client
+            client.admin.command('ping')
+            print("[DEBUG] Database ping successful")
+        except Exception as ping_error:
+            return {
+                "status": "error",
+                "message": f"Database connection failed: {str(ping_error)}",
+                "received_key": api_key[:10] + "..."
+            }
+        
+        # Try to find organization
+        try:
+            from services.database import get_organization_by_api_key
+            organization = get_organization_by_api_key(api_key)
+            if organization:
+                return {
+                    "status": "success",
+                    "message": "API key is valid",
+                    "received_key": api_key[:10] + "...",
+                    "organization_id": str(organization.get('_id')),
+                    "organization_name": organization.get('name', 'No name')
+                }
+            else:
+                return {
+                    "status": "error",
+                    "message": "API key not found in database",
+                    "received_key": api_key[:10] + "..."
+                }
+        except Exception as lookup_error:
+            return {
+                "status": "error",
+                "message": f"Organization lookup failed: {str(lookup_error)}",
+                "received_key": api_key[:10] + "..."
+            }
+            
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": f"Debug endpoint error: {str(e)}",
+            "received_key": api_key[:10] + "..." if api_key else None
+        }
+
+@router.get("/test")
+async def test_endpoint():
+    """Simple test endpoint to check if server is responding"""
+    return {
+        "status": "success",
+        "message": "Chatbot router is working",
+        "timestamp": datetime.now().isoformat()
+    }
+
+@router.get("/health")
+async def health_check():
+    """Health check endpoint for database connectivity"""
+    try:
+        from services.database import db, client
+        # Test database connection
+        client.admin.command('ping')
+        return {"status": "healthy", "database": "connected"}
+    except Exception as e:
+        print(f"[ERROR] Database health check failed: {str(e)}")
+        return {"status": "unhealthy", "database": "disconnected", "error": str(e)}
+
+@router.options("/settings")
+async def options_settings():
+    """Handle OPTIONS request for settings endpoint"""
+    from fastapi.responses import JSONResponse
+    return JSONResponse(
+        content={},
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, OPTIONS",
+            "Access-Control-Allow-Headers": "X-API-Key, Content-Type, Authorization",
+            "Access-Control-Max-Age": "3600"
+        }
+    )
+
 @router.get("/settings")
 async def get_chat_widget_settings(
     organization=Depends(get_organization_from_api_key)
 ):
     try:
-        # Get organization from MongoDB
+        print(f"[DEBUG] Starting get_chat_widget_settings for org_id: {organization.get('_id')}")
+        print(f"[DEBUG] Organization data: {organization}")
+        
+        # Get organization from MongoDB directly
+        from services.database import db
+        print(f"[DEBUG] Database object: {db}")
+        print(f"[DEBUG] Database name: {db.name}")
+        
+        # Test database connection first
+        try:
+            from services.database import client
+            client.admin.command('ping')
+            print("[DEBUG] Database ping successful")
+        except Exception as ping_error:
+            print(f"[ERROR] Database ping failed: {str(ping_error)}")
+            raise HTTPException(status_code=500, detail=f"Database connection failed: {str(ping_error)}")
+        
         org = db.organizations.find_one({"_id": organization["_id"]})
-        print(f"[DEBUG] Retrieved org: {org}")  # Debug log
-        print(f"[DEBUG] Retrieved chat_widget_settings: {org.get('chat_widget_settings') if org else None}")  # Debug log
+        print(f"[DEBUG] Retrieved org: {org}")
+        print(f"[DEBUG] Retrieved chat_widget_settings: {org.get('chat_widget_settings') if org else None}")
         
         if not org or "chat_widget_settings" not in org:
+            print("[DEBUG] No settings found, creating default settings")
             default_settings = {
                 "name": "Bay AI",
-                "selectedColor": "black",
+                "selectedColor": "#4f46e5",  # Changed to hex color
                 "leadCapture": True,
                 "botBehavior": "2",
                 "avatarUrl": None,
@@ -1241,24 +1492,52 @@ async def get_chat_widget_settings(
             
             # If no settings exist, save the default settings
             if org:
-                db.organizations.update_one(
-                    {"_id": organization["_id"]},
-                    {"$set": {"chat_widget_settings": default_settings}}
-                )
+                print("[DEBUG] Updating organization with default settings")
+                try:
+                    update_result = db.organizations.update_one(
+                        {"_id": organization["_id"]},
+                        {"$set": {"chat_widget_settings": default_settings}}
+                    )
+                    print(f"[DEBUG] Update result: {update_result.modified_count} documents modified")
+                except Exception as update_error:
+                    print(f"[ERROR] Failed to update organization: {str(update_error)}")
+                    # Continue with default settings even if update fails
             
-            return {
+            print("[DEBUG] Returning default settings")
+            response_data = {
                 "status": "success",
                 "settings": default_settings
             }
             
-        return {
-            "status": "success",
-            "settings": org["chat_widget_settings"]
-        }
+        else:
+            print("[DEBUG] Returning existing settings")
+            response_data = {
+                "status": "success",
+                "settings": org["chat_widget_settings"]
+            }
         
+        print(f"[DEBUG] Final response data: {response_data}")
+        
+        # Return response with CORS headers
+        from fastapi.responses import JSONResponse
+        response = JSONResponse(content=response_data)
+        response.headers["Access-Control-Allow-Origin"] = "*"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS, PATCH"
+        response.headers["Access-Control-Allow-Headers"] = "X-API-Key, Content-Type, Authorization"
+        
+        print("[DEBUG] Response created successfully")
+        return response
+        
+    except HTTPException:
+        # Re-raise HTTP exceptions (like 401 for invalid API key)
+        print("[DEBUG] Re-raising HTTP exception")
+        raise
     except Exception as e:
         print(f"[ERROR] Exception in get_chat_widget_settings: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"[ERROR] Exception type: {type(e).__name__}")
+        import traceback
+        print(f"[ERROR] Traceback: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
 # Add new router for chatbot widget settings
@@ -1475,18 +1754,20 @@ async def update_video_settings(
         enabled = data.get("enabled", False)
         autoplay = data.get("autoplay", True)
         duration = data.get("duration", 10)
-        show_on_first_visit = data.get("show_on_first_visit", True)
+        
+        update_data = {
+            "chat_widget_settings.intro_video.enabled": enabled,
+            "chat_widget_settings.intro_video.autoplay": autoplay,
+            "chat_widget_settings.intro_video.duration": duration,
+        }
+        
+        # Only update show_on_first_visit if provided (for backwards compatibility)
+        if "show_on_first_visit" in data:
+            update_data["chat_widget_settings.intro_video.show_on_first_visit"] = data.get("show_on_first_visit", True)
         
         db.organizations.update_one(
             {"_id": organization["_id"]},
-            {
-                "$set": {
-                    "chat_widget_settings.intro_video.enabled": enabled,
-                    "chat_widget_settings.intro_video.autoplay": autoplay,
-                    "chat_widget_settings.intro_video.duration": duration,
-                    "chat_widget_settings.intro_video.show_on_first_visit": show_on_first_visit
-                }
-            }
+            {"$set": update_data}
         )
         
         return {
@@ -1496,7 +1777,6 @@ async def update_video_settings(
                 "enabled": enabled,
                 "autoplay": autoplay,
                 "duration": duration,
-                "show_on_first_visit": show_on_first_visit
             }
         }
         

@@ -458,10 +458,10 @@ def ask_bot(query: str, mode="faq", user_data=None, available_slots=None, sessio
                     created = create_lead(
                         organization_id=org_id_for_lead,
                         session_id=session_id,
-                        name=user_data.get("name") or "",
-                        email=user_data.get("email") or "",
+                        name=user_data.get("name"),
+                        email=user_data.get("email"),
                         phone=user_data.get("phone"),
-                        inquiry=inquiry_text,
+                        inquiry=inquiry_text if inquiry_text else "",
                         source="chatbot"
                     )
                     if created:

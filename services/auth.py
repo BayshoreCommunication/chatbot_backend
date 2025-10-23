@@ -71,7 +71,9 @@ def create_user(user_data: Dict[str, Any]) -> Dict[str, Any]:
         user_doc = {
             "id": user_id,
             "email": user_data["email"],
-            "name": user_data["name"],
+            "organization_name": user_data["name"],  # Changed from "name" to "organization_name"
+            "website": user_data.get("website"),
+            "company_organization_type": user_data.get("company_organization_type"),
             "has_paid_subscription": False,
             "created_at": datetime.utcnow(),
             "updated_at": datetime.utcnow()
@@ -176,7 +178,7 @@ def create_admin_user(email: str, password: str, name: str) -> Dict[str, Any]:
         admin_doc = {
             "id": user_id,
             "email": email,
-            "name": name,
+            "organization_name": name,  # Changed from "name" to "organization_name"
             "role": "admin",
             "is_admin": True,
             "has_paid_subscription": True,  # Admins have full access

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Request, HTTPException, Depends
+from fastapi import APIRouter, Request, HTTPException, Depends, Header
 from pydantic import BaseModel
 from typing import Optional, List, Dict
 import json
@@ -7,11 +7,21 @@ from dotenv import load_dotenv
 from datetime import datetime
 import uuid
 from services.database import create_lead, get_leads_by_organization, search_leads
+from services.database import get_organization_by_api_key
 
 # Load environment variables
 load_dotenv()
 
 router = APIRouter()
+
+async def get_organization_from_api_key(api_key: Optional[str] = Header(None, alias="X-API-Key")):
+    """Resolve organization using X-API-Key header (same pattern as unknown_questions routes)."""
+    if not api_key:
+        raise HTTPException(status_code=401, detail="API key required")
+    organization = get_organization_by_api_key(api_key)
+    if not organization:
+        raise HTTPException(status_code=401, detail="Invalid API key")
+    return organization
 
 class Lead(BaseModel):
     name: str
@@ -44,63 +54,62 @@ async def check_admin_auth(request: Request):
         raise HTTPException(status_code=401, detail="Unauthorized")
     return True
 
-@router.post("/submit")
-async def submit_lead(lead: Lead):
-    """Submit a new lead"""
+@router.get("/leads-list-byorg")
+async def leads_list_byorg(
+    organization_id: Optional[str] = None,
+    limit: int = 100,
+    skip: int = 0,
+    organization=Depends(get_organization_from_api_key)
+):
+    """List leads for a single organization (user dashboard).
+    Organization is resolved by explicit organization_id or by X-API-Key header.
+    """
     try:
-        # Ensure we have required organization_id
-        if not lead.organization_id:
-            raise HTTPException(status_code=400, detail="organization_id is required")
+        org_id = organization_id or (organization["id"] if "id" in organization else str(organization.get("_id")))
         
-        # Create lead in MongoDB
-        created_lead = create_lead(
-            organization_id=lead.organization_id,
-            session_id=lead.session_id or str(uuid.uuid4()),
-            name=lead.name,
-            email=lead.email,
-            phone=lead.phone,
-            inquiry=lead.inquiry,
-            source=lead.source
-        )
-        
-        return LeadResponse(
-            lead_id=created_lead["lead_id"],
-            status="success",
-            message="Lead submitted successfully"
-        )
+        # Paginated/sorted list by organization
+        leads_list = get_leads_by_organization(org_id, limit=limit, skip=skip)
+        return {"organization_id": org_id, "leads": leads_list}
+    except HTTPException:
+        raise
     except Exception as e:
-        print(f"Error submitting lead: {str(e)}")
-        raise HTTPException(status_code=500, detail="Failed to submit lead")
+        print(f"Error listing organization leads: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to list organization leads")
 
-@router.get("/list")
-async def list_leads(organization_id: Optional[str] = None, _=Depends(check_admin_auth)):
-    """List all leads (admin only)"""
+@router.get("/leads-list-all")
+async def leads_list_all(organization_id: Optional[str] = None, group_by_org: Optional[bool] = False, _=Depends(check_admin_auth)):
+    """Admin: list leads. If organization_id provided, returns that org; otherwise returns all.
+    Optionally group results by organization.
+    """
     try:
+        from services.database import leads as leads_col
         if organization_id:
-            # Get leads for specific organization
             leads_list = get_leads_by_organization(organization_id)
-        else:
-            # For admin dashboard, get all leads from all organizations
-            from services.database import leads
-            cursor = leads.find({}).sort("timestamp", -1).limit(100)
-            
-            leads_list = []
-            for lead in cursor:
-                # Convert ObjectId to string for JSON serialization
-                if "_id" in lead:
-                    lead["_id"] = str(lead["_id"])
-                # Convert datetime to ISO string
-                if "timestamp" in lead and isinstance(lead["timestamp"], datetime):
-                    lead["timestamp"] = lead["timestamp"].isoformat()
-                if "created_at" in lead and isinstance(lead["created_at"], datetime):
-                    lead["created_at"] = lead["created_at"].isoformat()
-                if "updated_at" in lead and isinstance(lead["updated_at"], datetime):
-                    lead["updated_at"] = lead["updated_at"].isoformat()
-                leads_list.append(lead)
+            return {"organization_id": organization_id, "leads": leads_list}
         
-        return {"leads": leads_list}
+        cursor = leads_col.find({}).sort("timestamp", -1).limit(1000)
+        all_leads = []
+        for lead in cursor:
+            if "_id" in lead:
+                lead["_id"] = str(lead["_id"])
+            if "timestamp" in lead and isinstance(lead["timestamp"], datetime):
+                lead["timestamp"] = lead["timestamp"].isoformat()
+            if "created_at" in lead and isinstance(lead["created_at"], datetime):
+                lead["created_at"] = lead["created_at"].isoformat()
+            if "updated_at" in lead and isinstance(lead["updated_at"], datetime):
+                lead["updated_at"] = lead["updated_at"].isoformat()
+            all_leads.append(lead)
+        
+        if group_by_org:
+            grouped = {}
+            for ld in all_leads:
+                oid = ld.get("organization_id", "unknown")
+                grouped.setdefault(oid, []).append(ld)
+            return {"leads_by_organization": grouped}
+        
+        return {"leads": all_leads}
     except Exception as e:
-        print(f"Error listing leads: {str(e)}")
+        print(f"Error listing admin leads: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to list leads")
 
 @router.post("/search")

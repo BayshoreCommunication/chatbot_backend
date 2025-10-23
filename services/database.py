@@ -15,13 +15,32 @@ load_dotenv()
 # Get MongoDB connection string
 MONGO_URI = os.getenv("MONGO_URI")
 
+print(f"[DEBUG] MONGO_URI from environment: {MONGO_URI[:20] if MONGO_URI else 'None'}...")
+
+if not MONGO_URI:
+    print("[ERROR] MONGO_URI environment variable not set!")
+    raise ValueError("MONGO_URI environment variable is required")
+
+print(f"[DEBUG] Connecting to MongoDB with URI: {MONGO_URI[:20]}...")
+
 # Connect to MongoDB
-client = pymongo.MongoClient(MONGO_URI)
-db = client.saas_chatbot_db
+try:
+    client = pymongo.MongoClient(MONGO_URI)
+    db = client.saas_chatbot_db
+    # Test connection - use client.admin instead of db.admin
+    client.admin.command('ping')
+    print("[DEBUG] MongoDB connection successful")
+except Exception as e:
+    print(f"[ERROR] MongoDB connection failed: {str(e)}")
+    raise
 
 def get_database():
     """Return the database instance"""
     return db
+
+def get_client():
+    """Return the MongoDB client instance"""
+    return client
 
 # Collections
 organizations = db.organizations
@@ -93,10 +112,10 @@ def create_lead(organization_id: str, session_id: str, name: str, email: str, ph
         "lead_id": str(uuid.uuid4()),
         "organization_id": organization_id,
         "session_id": session_id,
-        "name": name or "",
-        "email": email or "",
-        "phone": phone,
-        "inquiry": inquiry,
+        "name": name if name else None,
+        "email": email if email else None,
+        "phone": phone if phone else None,
+        "inquiry": inquiry if inquiry else "",
         "source": source,
         "status": "new",
         "timestamp": current_time,
@@ -117,6 +136,9 @@ def create_lead(organization_id: str, session_id: str, name: str, email: str, ph
             existing_query["session_id"] = session_id
 
         existing_lead = leads.find_one(existing_query)
+        # If not found by visitor/session, try match by email within org
+        if not existing_lead and email:
+            existing_lead = leads.find_one({"organization_id": organization_id, "email": email})
         
         if existing_lead:
             # Update existing lead with new information
@@ -129,10 +151,13 @@ def create_lead(organization_id: str, session_id: str, name: str, email: str, ph
                 update_data["email"] = email
             if phone:
                 update_data["phone"] = phone
-            if inquiry:
+            if inquiry is not None:
                 update_data["inquiry"] = inquiry
             if not existing_lead.get("status"):
                 update_data["status"] = "new"
+            # Attach visitor_id if now available and missing on the lead
+            if visitor_id and not existing_lead.get("visitor_id"):
+                update_data["visitor_id"] = visitor_id
                 
             leads.update_one(
                 {"_id": existing_lead["_id"]},
@@ -260,8 +285,40 @@ def create_organization(name: str, subscription_tier: str = "free", user_id: str
 
 def get_organization_by_api_key(api_key: str) -> Optional[Dict[str, Any]]:
     """Get organization by API key"""
-    org = organizations.find_one({"api_key": api_key})
-    return org
+    try:
+        print(f"[DEBUG] get_organization_by_api_key called with API key: {api_key[:10]}...")
+        print(f"[DEBUG] API key length: {len(api_key)}")
+        
+        # Try to find the organization
+        org = organizations.find_one({"api_key": api_key})
+        
+        if org:
+            print(f"[DEBUG] Organization found: {org.get('_id')}")
+            print(f"[DEBUG] Organization name: {org.get('name', 'No name')}")
+        else:
+            print(f"[DEBUG] No organization found for API key: {api_key[:10]}...")
+            
+            # Debug: Check if there are any organizations at all
+            total_orgs = organizations.count_documents({})
+            print(f"[DEBUG] Total organizations in database: {total_orgs}")
+            
+            # Debug: Show a few sample API keys (first 10 chars only)
+            try:
+                sample_orgs = list(organizations.find({}, {"api_key": 1, "name": 1}).limit(3))
+                print(f"[DEBUG] Sample organizations:")
+                for sample_org in sample_orgs:
+                    sample_key = sample_org.get('api_key', 'No key')
+                    print(f"[DEBUG] - Name: {sample_org.get('name', 'No name')}, API Key: {sample_key[:10]}...")
+            except Exception as sample_error:
+                print(f"[ERROR] Failed to get sample organizations: {str(sample_error)}")
+        
+        return org
+    except Exception as e:
+        print(f"[ERROR] Error in get_organization_by_api_key: {str(e)}")
+        print(f"[ERROR] Exception type: {type(e).__name__}")
+        import traceback
+        print(f"[ERROR] Traceback: {traceback.format_exc()}")
+        return None
 
 def update_organization(org_id: str, update_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Update organization data"""

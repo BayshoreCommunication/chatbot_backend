@@ -4,7 +4,9 @@ from datetime import datetime
 
 class UserBase(BaseModel):
     email: str
-    name: str
+    organization_name: str
+    website: Optional[str] = None
+    company_organization_type: Optional[str] = None
     has_paid_subscription: bool = False
 
 class UserCreate(UserBase):
