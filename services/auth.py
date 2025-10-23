@@ -16,9 +16,8 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 # Get users collection
 users: Collection = db.users
 
-# Initialize indexes
-users.create_index("email", unique=True)
-users.create_index("google_id", sparse=True)
+# Note: Indexes are created in services/database.py init_db() function
+# No need to create them here to avoid conflicts
 
 def serialize_user(user: Dict[str, Any]) -> Dict[str, Any]:
     """Serialize user document for JSON response"""
