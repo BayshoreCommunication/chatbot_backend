@@ -240,7 +240,11 @@ async def ask_question(
     organization=Depends(get_organization_from_api_key)
 ):
     """Process a chat message and return a response"""
-    org_id = organization["id"]
+    # Safely get organization ID
+    org_id = organization.get("id") or organization.get("_id")
+    if not org_id:
+        raise HTTPException(status_code=500, detail="Organization ID not found")
+    
     org_api_key = organization.get("api_key")
     namespace = organization.get("pinecone_namespace", "")
 
@@ -895,8 +899,10 @@ async def change_mode(
     if not session_id or not new_mode:
         raise HTTPException(status_code=400, detail="Session ID and mode are required")
     
-    # Get organization ID
-    org_id = organization["id"]
+    # Safely get organization ID
+    org_id = organization.get("id") or organization.get("_id")
+    if not org_id:
+        raise HTTPException(status_code=500, detail="Organization ID not found")
     
     # Get or create session
     session_key = f"{org_id}:{session_id}"
@@ -928,7 +934,10 @@ async def get_upload_history(
     organization=Depends(get_organization_from_api_key)
 ):
     """Get upload history for an organization"""
-    org_id = organization["id"]
+    # Safely get organization ID
+    org_id = organization.get("id") or organization.get("_id")
+    if not org_id:
+        raise HTTPException(status_code=500, detail="Organization ID not found")
     
     history = []
     for item in upload_history_collection.find(
@@ -947,8 +956,12 @@ async def delete_upload_history(
 ):
     """Delete a document from upload history and knowledge base"""
     try:
-        org_id = organization["id"]
-        org_api_key = organization["api_key"]
+        # Safely get organization ID
+        org_id = organization.get("id") or organization.get("_id")
+        if not org_id:
+            raise HTTPException(status_code=500, detail="Organization ID not found")
+        
+        org_api_key = organization.get("api_key")
         
         print(f"[DELETE] Attempting to delete document: {document_id} for org: {org_id}")
         
@@ -1038,8 +1051,11 @@ async def upload_document(
     
     All content is stored under the organization's namespace in the vector database.
     """
-    org_id = organization["id"]
-    org_api_key = organization["api_key"]
+    # Safely get organization ID
+    org_id = organization.get("id") or organization.get("_id")
+    if not org_id:
+        raise HTTPException(status_code=500, detail="Organization ID not found")
+    org_api_key = organization.get("api_key")
     
     # Debug logging to see what we receive
     print(f"=== DEBUG upload_document ===")
@@ -1158,7 +1174,10 @@ async def check_previous_uploads(
     organization=Depends(get_organization_from_api_key)
 ):
     """Check if organization has any previous successful uploads"""
-    org_id = organization["id"]
+    # Safely get organization ID
+    org_id = organization.get("id") or organization.get("_id")
+    if not org_id:
+        raise HTTPException(status_code=500, detail="Organization ID not found")
     
     # Check for any successful uploads
     count = upload_history_collection.count_documents({
@@ -1183,8 +1202,10 @@ async def escalate(
     if not query:
         raise HTTPException(status_code=400, detail="Question is required")
     
-    # Get organization ID
-    org_id = organization["id"]
+    # Safely get organization ID
+    org_id = organization.get("id") or organization.get("_id")
+    if not org_id:
+        raise HTTPException(status_code=500, detail="Organization ID not found")
     
     # Get visitor if session_id is provided
     visitor_id = None
@@ -1278,10 +1299,23 @@ async def agent_takeover(
         if not session_id:
             raise HTTPException(status_code=400, detail="Session ID is required")
         
-        org_id = organization["id"]
+        # Safely get organization ID
+        org_id = organization.get("id") or organization.get("_id")
+        if not org_id:
+            raise HTTPException(status_code=500, detail="Organization ID not found")
+        
         org_api_key = organization.get("api_key")
         
         print(f"Agent takeover request - Session ID: {session_id}, Agent ID: {agent_id}, Org ID: {org_id}")
+        
+        # Ensure required functions are available
+        try:
+            set_agent_mode  # type: ignore  # noqa: F401
+        except NameError:
+            try:
+                from services.database import set_agent_mode  # type: ignore
+            except Exception as _e:
+                raise RuntimeError(f"database helper unavailable: set_agent_mode ({str(_e)})")
         
         # Set the chat to agent mode
         updated_visitor = set_agent_mode(org_id, session_id, agent_id)
@@ -1331,10 +1365,23 @@ async def agent_release(
         if not session_id:
             raise HTTPException(status_code=400, detail="Session ID is required")
         
-        org_id = organization["id"]
+        # Safely get organization ID
+        org_id = organization.get("id") or organization.get("_id")
+        if not org_id:
+            raise HTTPException(status_code=500, detail="Organization ID not found")
+        
         org_api_key = organization.get("api_key")
         
         print(f"Agent release request - Session ID: {session_id}, Org ID: {org_id}")
+        
+        # Ensure required functions are available
+        try:
+            set_bot_mode  # type: ignore  # noqa: F401
+        except NameError:
+            try:
+                from services.database import set_bot_mode  # type: ignore
+            except Exception as _e:
+                raise RuntimeError(f"database helper unavailable: set_bot_mode ({str(_e)})")
         
         # Set the chat back to bot mode
         updated_visitor = set_bot_mode(org_id, session_id)
@@ -1384,8 +1431,37 @@ async def send_agent_message(
         if not session_id or not message_content:
             raise HTTPException(status_code=400, detail="Session ID and message are required")
         
-        org_id = organization["id"]
+        # Safely get organization ID
+        org_id = organization.get("id") or organization.get("_id")
+        if not org_id:
+            raise HTTPException(status_code=500, detail="Organization ID not found")
+        
         org_api_key = organization.get("api_key")
+        
+        # Ensure required functions are available
+        try:
+            is_chat_in_agent_mode  # type: ignore  # noqa: F401
+        except NameError:
+            try:
+                from services.database import is_chat_in_agent_mode  # type: ignore
+            except Exception as _e:
+                raise RuntimeError(f"database helper unavailable: is_chat_in_agent_mode ({str(_e)})")
+        
+        try:
+            get_visitor  # type: ignore  # noqa: F401
+        except NameError:
+            try:
+                from services.database import get_visitor  # type: ignore
+            except Exception as _e:
+                raise RuntimeError(f"database helper unavailable: get_visitor ({str(_e)})")
+        
+        try:
+            add_conversation_message  # type: ignore  # noqa: F401
+        except NameError:
+            try:
+                from services.database import add_conversation_message  # type: ignore
+            except Exception as _e:
+                raise RuntimeError(f"database helper unavailable: add_conversation_message ({str(_e)})")
         
         # Verify the chat is in agent mode
         if not is_chat_in_agent_mode(org_id, session_id):
@@ -1690,7 +1766,10 @@ async def upload_video(
                 raise HTTPException(status_code=500, detail="Failed to upload video to storage")
         
         # Update organization settings with video info
-        org_id = organization["id"]
+        # Safely get organization ID
+        org_id = organization.get("id") or organization.get("_id")
+        if not org_id:
+            raise HTTPException(status_code=500, detail="Organization ID not found")
         
         print(f"[DEBUG] Updating video settings for org {org_id}")
         print(f"[DEBUG] Video URL: {video_url}")
@@ -1747,10 +1826,13 @@ async def delete_video(
 ):
     """Delete the current video"""
     try:
-        org_id = organization["id"]
+        # Safely get organization ID
+        org_id = organization.get("id") or organization.get("_id")
+        if not org_id:
+            raise HTTPException(status_code=500, detail="Organization ID not found")
         
         # Get current video info
-        org = db.organizations.find_one({"_id": organization["_id"]})
+        org = db.organizations.find_one({"_id": ObjectId(org_id)})
         if org and "chat_widget_settings" in org and "intro_video" in org["chat_widget_settings"]:
             intro_video = org["chat_widget_settings"]["intro_video"]
             video_filename = intro_video.get("video_filename")
