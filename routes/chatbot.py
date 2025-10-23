@@ -710,100 +710,143 @@ async def get_chat_history(
     organization=Depends(get_organization_from_api_key)
 ):
     """Retrieve chat history for a session"""
-    org_id = organization["id"]
-    
-    # Get fresh conversation data from MongoDB
-    previous_conversations = get_conversation_history(organization_id =org_id, session_id=session_id)
-    # Guard against None or unexpected types from storage layer
-    if not isinstance(previous_conversations, list):
-        previous_conversations = previous_conversations or []
-        try:
-            # Try to coerce iterable-like objects to list
-            previous_conversations = list(previous_conversations)
-        except Exception:
-            previous_conversations = []
-    print(f"[DEBUG] previous_conversations len: {len(previous_conversations)} organization: {org_id}")
-    
-    # Get visitor information
-    visitor = get_visitor(org_id, session_id)
-    if not visitor:
-        raise HTTPException(status_code=404, detail="Session not found")
-    
-    # Check if chat is in agent mode
-    is_agent_mode = visitor.get("is_agent_mode", False)
-    agent_id = visitor.get("agent_id")
-    agent_takeover_at = visitor.get("agent_takeover_at")
-    
-    # Get user profile
-    user_profile = get_user_profile(org_id, session_id)
-    profile_data = {}
-    if isinstance(user_profile, dict):
-        pd = user_profile.get("profile_data", {})
-        if isinstance(pd, dict):
-            profile_data = pd
-    
-    # Format conversation history
-    formatted_history = []
-    for msg in previous_conversations:
-        try:
-            role = msg.get("role") if isinstance(msg, dict) else None
-            content = msg.get("content") if isinstance(msg, dict) else None
-            if role and content:
-                formatted_history.append({
-                    "role": role,
-                    "content": content
-                })
-        except Exception:
-            # Skip malformed entries
-            continue
-    
-    # Get current mode
-    current_mode = "agent" if is_agent_mode else "faq"
-    if visitor and "metadata" in visitor and "mode" in visitor["metadata"]:
-        current_mode = visitor["metadata"]["mode"]
-        if is_agent_mode:
-            current_mode = "agent"
-    
-    # Get last assistant message
-    last_answer = ""
-    for msg in reversed(formatted_history):
-        if msg["role"] == "assistant":
-            last_answer = msg["content"]
-            break
-    
-    # Get suggested FAQs
     try:
-        suggested_faqs = get_suggested_faqs(org_id) or []
-    except Exception:
-        suggested_faqs = []
-    
-    # Build response
-    # Safely serialize agent_takeover_at which may be datetime or string
-    agent_takeover_at_str = None
-    if agent_takeover_at:
+        print(f"[DEBUG] Getting chat history for session: {session_id}")
+        print(f"[DEBUG] Session ID type: {type(session_id)}")
+        print(f"[DEBUG] Session ID length: {len(session_id) if session_id else 0}")
+        print(f"[DEBUG] Organization: {organization}")
+        
+        # Safely get organization ID
+        org_id = organization.get("id") or organization.get("_id")
+        if not org_id:
+            print(f"[ERROR] No organization ID found in organization object: {organization}")
+            raise HTTPException(status_code=500, detail="Organization ID not found")
+        
+        print(f"[DEBUG] Using organization ID: {org_id}")
+        print(f"[DEBUG] Looking for visitor with org_id: {org_id}, session_id: {session_id}")
+        
+        # Get fresh conversation data from MongoDB
+        previous_conversations = get_conversation_history(organization_id=org_id, session_id=session_id)
+        # Guard against None or unexpected types from storage layer
+        if not isinstance(previous_conversations, list):
+            previous_conversations = previous_conversations or []
+            try:
+                # Try to coerce iterable-like objects to list
+                previous_conversations = list(previous_conversations)
+            except Exception:
+                previous_conversations = []
+        print(f"[DEBUG] previous_conversations len: {len(previous_conversations)} organization: {org_id}")
+        
+        # Get visitor information
+        visitor = get_visitor(org_id, session_id)
+        if not visitor:
+            print(f"[DEBUG] No visitor found for session: {session_id}, returning empty history")
+            # Return empty history instead of error for missing visitors
+            response = {
+                "answer": "",
+                "mode": "faq",
+                "language": "en",
+                "user_data": {
+                    "conversation_history": [],
+                    "returning_user": False
+                },
+                "suggested_faqs": [],
+                "agent_mode": False,
+                "agent_id": "",
+                "agent_takeover_at": ""
+            }
+            print(f"[DEBUG] Returning empty history for new session: {session_id}")
+            return response
+        
+        # Check if chat is in agent mode
+        is_agent_mode = visitor.get("is_agent_mode", False)
+        agent_id = visitor.get("agent_id")
+        agent_takeover_at = visitor.get("agent_takeover_at")
+        
+        # Get user profile
+        user_profile = get_user_profile(org_id, session_id)
+        profile_data = {}
+        if isinstance(user_profile, dict):
+            pd = user_profile.get("profile_data", {})
+            if isinstance(pd, dict):
+                profile_data = pd
+        
+        # Format conversation history
+        formatted_history = []
+        for msg in previous_conversations:
+            try:
+                role = msg.get("role") if isinstance(msg, dict) else None
+                content = msg.get("content") if isinstance(msg, dict) else None
+                if role and content:
+                    formatted_history.append({
+                        "role": role,
+                        "content": content
+                    })
+            except Exception:
+                # Skip malformed entries
+                continue
+        
+        # Get current mode
+        current_mode = "agent" if is_agent_mode else "faq"
+        if visitor and "metadata" in visitor and "mode" in visitor["metadata"]:
+            current_mode = visitor["metadata"]["mode"]
+            if is_agent_mode:
+                current_mode = "agent"
+        
+        # Get last assistant message
+        last_answer = ""
+        for msg in reversed(formatted_history):
+            if msg["role"] == "assistant":
+                last_answer = msg["content"]
+                break
+        
+        # Get suggested FAQs
         try:
-            # datetime-like
-            agent_takeover_at_str = agent_takeover_at.isoformat()
-        except AttributeError:
-            # already a string or other type; coerce to str
-            agent_takeover_at_str = str(agent_takeover_at)
+            suggested_faqs = get_suggested_faqs(org_id) or []
+        except Exception:
+            suggested_faqs = []
+        
+        # Build response
+        # Safely serialize agent_takeover_at which may be datetime or string
+        agent_takeover_at_str = ""
+        if agent_takeover_at:
+            try:
+                # datetime-like
+                agent_takeover_at_str = agent_takeover_at.isoformat()
+            except AttributeError:
+                # already a string or other type; coerce to str
+                agent_takeover_at_str = str(agent_takeover_at)
 
-    response = {
-        "answer": last_answer,
-        "mode": current_mode,
-        "language": "en",
-        "user_data": {
-            **profile_data,
-            "conversation_history": formatted_history,
-            "returning_user": "name" in profile_data and bool(profile_data.get("name"))
-        },
-        "suggested_faqs": suggested_faqs,
-        "agent_mode": is_agent_mode,
-        "agent_id": agent_id,
-        "agent_takeover_at": agent_takeover_at_str
-    }
-    
-    return response
+        # Ensure agent_id is a string, not None
+        agent_id_str = str(agent_id) if agent_id else ""
+
+        response = {
+            "answer": last_answer,
+            "mode": current_mode,
+            "language": "en",
+            "user_data": {
+                **profile_data,
+                "conversation_history": formatted_history,
+                "returning_user": "name" in profile_data and bool(profile_data.get("name"))
+            },
+            "suggested_faqs": suggested_faqs,
+            "agent_mode": is_agent_mode,
+            "agent_id": agent_id_str,
+            "agent_takeover_at": agent_takeover_at_str
+        }
+        
+        print(f"[DEBUG] Successfully returning chat history for session: {session_id}")
+        return response
+        
+    except HTTPException:
+        # Re-raise HTTP exceptions as-is
+        raise
+    except Exception as e:
+        print(f"[ERROR] Unexpected error in get_chat_history: {str(e)}")
+        print(f"[ERROR] Error type: {type(e).__name__}")
+        import traceback
+        print(f"[ERROR] Traceback: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 @router.post("/change_mode")
 async def change_mode(
