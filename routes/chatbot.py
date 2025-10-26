@@ -1620,6 +1620,12 @@ async def get_chat_widget_settings(
     organization=Depends(get_organization_from_api_key)
 ):
     try:
+        # Ensure database is available
+        try:
+            from services.database import db  # type: ignore
+        except ImportError:
+            raise RuntimeError("database import unavailable")
+        
         # Get organization from MongoDB
         org = db.organizations.find_one({"_id": organization["_id"]})
         print(f"[DEBUG] Retrieved org: {org}")  # Debug log
@@ -1680,6 +1686,12 @@ async def save_chat_widget_settings(
         if not organization.get("_id"):
             print("[ERROR] Organization ID is missing")
             raise HTTPException(status_code=500, detail="Organization ID is missing")
+        
+        # Ensure database is available
+        try:
+            from services.database import db  # type: ignore
+        except ImportError:
+            raise RuntimeError("database import unavailable")
             
         # Convert settings to dict and ensure is_bot_connected is included
         settings_dict = settings.dict()
