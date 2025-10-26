@@ -60,6 +60,10 @@ async def register(user: UserCreate):
         "email": user.email,
         "password": user.password,
         "name": user.organization_name,
+        "organization_name": user.organization_name,
+        "website": user.website,
+        "company_organization_type": user.company_organization_type,
+        "has_paid_subscription": user.has_paid_subscription,
     })
     
     # Create access token
@@ -183,7 +187,11 @@ async def google_auth(user: UserGoogle):
         user_data = create_user({
             "email": user.email,
             "name": user.organization_name,
+            "organization_name": user.organization_name,
             "google_id": user.google_id,
+            "website": user.website,
+            "company_organization_type": user.company_organization_type,
+            "has_paid_subscription": user.has_paid_subscription,
         })
     
     # Create access token
@@ -277,6 +285,7 @@ async def google_oauth_callback(request: Request, code: str = None, state: str =
                 user_data = create_user({
                     "email": user_info['email'],
                     "name": user_info.get('name', user_info['email']),
+                    "organization_name": user_info.get('name', user_info['email']),
                     "google_id": user_info['id'],
                 })
         

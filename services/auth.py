@@ -70,10 +70,10 @@ def create_user(user_data: Dict[str, Any]) -> Dict[str, Any]:
         user_doc = {
             "id": user_id,
             "email": user_data["email"],
-            "organization_name": user_data["name"],  # Changed from "name" to "organization_name"
+            "organization_name": user_data.get("name") or user_data.get("organization_name"),
             "website": user_data.get("website"),
             "company_organization_type": user_data.get("company_organization_type"),
-            "has_paid_subscription": False,
+            "has_paid_subscription": user_data.get("has_paid_subscription", False),
             "created_at": datetime.utcnow(),
             "updated_at": datetime.utcnow()
         }
