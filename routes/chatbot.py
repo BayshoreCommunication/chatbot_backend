@@ -20,7 +20,18 @@ try:
         set_agent_mode, set_bot_mode, is_chat_in_agent_mode, create_user, get_user_by_email,
         get_user_by_id, update_user, create_lead, get_leads_by_organization
     )
-    from bson import ObjectId
+    # Import ObjectId with fallback
+    try:
+        from bson import ObjectId
+        print("[INFO] ObjectId imported from bson")
+    except ImportError:
+        try:
+            from pymongo import ObjectId
+            print("[INFO] ObjectId imported from pymongo")
+        except ImportError:
+            print("[WARNING] ObjectId import failed, will use runtime imports")
+            ObjectId = None
+    
     from services.faq_matcher import find_matching_faq, get_suggested_faqs
     from services.langchain.user_management import handle_name_collection, handle_email_collection
     SERVICES_AVAILABLE = True
@@ -28,6 +39,7 @@ except Exception as e:
     print(f"Error importing services: {str(e)}")
     print(traceback.format_exc())
     SERVICES_AVAILABLE = False
+    ObjectId = None  # Ensure ObjectId is defined even if import fails
 
 from typing import Optional, Dict, Any, List
 import json
@@ -47,6 +59,41 @@ import boto3
 
 router = APIRouter()
 sio = None
+
+def get_org_object_id(organization):
+    """Helper function to safely get organization ID and handle both UUID and ObjectId formats"""
+    org_id = organization.get("id") or organization.get("_id")
+    if not org_id:
+        raise ValueError("Organization ID is missing")
+    
+    # For UUIDs (36 characters with hyphens), use as string
+    if isinstance(org_id, str) and len(org_id) == 36 and '-' in org_id:
+        return org_id
+    
+    # For ObjectId strings (24 characters), try to convert to ObjectId
+    if isinstance(org_id, str) and len(org_id) == 24:
+        try:
+            # Use global ObjectId if available
+            if ObjectId is not None:
+                return ObjectId(org_id)
+            else:
+                # Fallback to runtime import
+                try:
+                    from bson import ObjectId as RuntimeObjectId  # type: ignore
+                    return RuntimeObjectId(org_id)
+                except ImportError:
+                    try:
+                        from pymongo import ObjectId as RuntimeObjectId  # type: ignore
+                        return RuntimeObjectId(org_id)
+                    except ImportError:
+                        # If ObjectId import fails, use as string
+                        return org_id
+        except Exception:
+            # If ObjectId conversion fails, use as string
+            return org_id
+    
+    # For any other format, use as string
+    return org_id
 
 # Initialize socket.io
 def init_socketio(app: FastAPI):
@@ -983,7 +1030,19 @@ async def delete_upload_history(
         
         # Validate ObjectId format
         try:
-            obj_id = ObjectId(document_id)
+            if ObjectId is not None:
+                obj_id = ObjectId(document_id)
+            else:
+                # Fallback to runtime import
+                try:
+                    from bson import ObjectId as RuntimeObjectId  # type: ignore
+                    obj_id = RuntimeObjectId(document_id)
+                except ImportError:
+                    try:
+                        from pymongo import ObjectId as RuntimeObjectId  # type: ignore
+                        obj_id = RuntimeObjectId(document_id)
+                    except ImportError:
+                        raise ValueError("ObjectId import unavailable")
         except Exception as e:
             print(f"[DELETE] Invalid ObjectId format: {document_id}")
             raise HTTPException(status_code=400, detail=f"Invalid document ID format: {document_id}")
@@ -1021,7 +1080,7 @@ async def delete_upload_history(
         
         # Delete from upload history
         delete_result = upload_history_collection.delete_one({
-            "_id": ObjectId(document_id),
+            "_id": obj_id,
             "org_id": org_id
         })
         
@@ -1241,72 +1300,7 @@ async def escalate(
     
     return escalate_to_human(query, escalation_context)
 
-@router.post("/save-settings")
-async def save_chat_widget_settings(
-    settings: ChatWidgetSettings,
-    organization=Depends(get_organization_from_api_key)
-):
-    try:
-        print("\n=== Starting save_chat_widget_settings ===")
-        
-        # Safely get organization ID
-        org_id = organization.get("id") or organization.get("_id")
-        if not org_id:
-            print("[ERROR] Organization ID is missing")
-            raise HTTPException(status_code=500, detail="Organization ID is missing")
-        
-        print(f"Organization ID: {org_id}")
-        
-        # Validate organization ID
-        if not org_id:
-            print("[ERROR] Organization ID is missing")
-            raise HTTPException(status_code=500, detail="Organization ID is missing")
-            
-        # Convert settings to dict and ensure is_bot_connected is included
-        settings_dict = settings.dict()
-        print(f"\n[DEBUG] Incoming settings: {settings_dict}")
-        
-        # Update organization in MongoDB with chat widget settings
-        update_data = {
-            "$set": {
-                "chat_widget_settings": settings_dict
-            },
-            # Remove the old settings field if it exists
-            "$unset": {
-                "settings": ""
-            }
-        }
-        
-        print(f"\n[DEBUG] Update operation: {update_data}")
-        
-        result = db.organizations.update_one(
-            {"_id": ObjectId(org_id)},
-            update_data
-        )
-        
-        print(f"\n[DEBUG] MongoDB update result: {result.raw_result}")
-        
-        if result.matched_count == 0:
-            print("[ERROR] No matching document found")
-            raise HTTPException(status_code=404, detail="Organization not found")
-            
-        # Verify the update by retrieving the updated document
-        updated_org = db.organizations.find_one({"_id": ObjectId(org_id)})
-        print(f"\n[DEBUG] Updated organization document: {updated_org}")
-        print(f"\n[DEBUG] Updated chat_widget_settings: {updated_org.get('chat_widget_settings')}")
-        print("\n=== Completed save_chat_widget_settings ===\n")
-            
-        return {
-            "status": "success",
-            "message": "Chat widget settings saved successfully"
-        }
-        
-    except Exception as e:
-        print(f"\n[ERROR] Exception in save_chat_widget_settings: {str(e)}")
-        print(f"[ERROR] Exception type: {type(e)}")
-        import traceback
-        print(f"[ERROR] Traceback: {traceback.format_exc()}")
-        raise HTTPException(status_code=500, detail=str(e))
+
         
 @router.post("/agent-takeover")
 async def agent_takeover(
@@ -1626,40 +1620,15 @@ async def get_chat_widget_settings(
     organization=Depends(get_organization_from_api_key)
 ):
     try:
-        print(f"[DEBUG] Starting get_chat_widget_settings")
-        
-        # Safely get organization ID
-        org_id = organization.get("id") or organization.get("_id")
-        if not org_id:
-            print("[ERROR] Organization ID is missing")
-            raise HTTPException(status_code=500, detail="Organization ID is missing")
-        
-        print(f"[DEBUG] Organization ID: {org_id}")
-        print(f"[DEBUG] Organization data: {organization}")
-        
-        # Get organization from MongoDB directly
-        from services.database import db
-        print(f"[DEBUG] Database object: {db}")
-        print(f"[DEBUG] Database name: {db.name}")
-        
-        # Test database connection first
-        try:
-            from services.database import client
-            client.admin.command('ping')
-            print("[DEBUG] Database ping successful")
-        except Exception as ping_error:
-            print(f"[ERROR] Database ping failed: {str(ping_error)}")
-            raise HTTPException(status_code=500, detail=f"Database connection failed: {str(ping_error)}")
-        
-        org = db.organizations.find_one({"_id": ObjectId(org_id)})
-        print(f"[DEBUG] Retrieved org: {org}")
-        print(f"[DEBUG] Retrieved chat_widget_settings: {org.get('chat_widget_settings') if org else None}")
+        # Get organization from MongoDB
+        org = db.organizations.find_one({"_id": organization["_id"]})
+        print(f"[DEBUG] Retrieved org: {org}")  # Debug log
+        print(f"[DEBUG] Retrieved chat_widget_settings: {org.get('chat_widget_settings') if org else None}")  # Debug log
         
         if not org or "chat_widget_settings" not in org:
-            print("[DEBUG] No settings found, creating default settings")
             default_settings = {
                 "name": "Bay AI",
-                "selectedColor": "#4f46e5",  # Changed to hex color
+                "selectedColor": "black",
                 "leadCapture": True,
                 "botBehavior": "2",
                 "avatarUrl": None,
@@ -1677,55 +1646,103 @@ async def get_chat_widget_settings(
             
             # If no settings exist, save the default settings
             if org:
-                print("[DEBUG] Updating organization with default settings")
-                try:
-                    update_result = db.organizations.update_one(
-                        {"_id": ObjectId(org_id)},
-                        {"$set": {"chat_widget_settings": default_settings}}
-                    )
-                    print(f"[DEBUG] Update result: {update_result.modified_count} documents modified")
-                except Exception as update_error:
-                    print(f"[ERROR] Failed to update organization: {str(update_error)}")
-                    # Continue with default settings even if update fails
+                db.organizations.update_one(
+                    {"_id": organization["_id"]},
+                    {"$set": {"chat_widget_settings": default_settings}}
+                )
             
-            print("[DEBUG] Returning default settings")
-            response_data = {
+            return {
                 "status": "success",
                 "settings": default_settings
             }
             
-        else:
-            print("[DEBUG] Returning existing settings")
-            response_data = {
-                "status": "success",
-                "settings": org["chat_widget_settings"]
-            }
+        return {
+            "status": "success",
+            "settings": org["chat_widget_settings"]
+        }
         
-        print(f"[DEBUG] Final response data: {response_data}")
-        
-        # Return response with CORS headers
-        from fastapi.responses import JSONResponse
-        response = JSONResponse(content=response_data)
-        response.headers["Access-Control-Allow-Origin"] = "*"
-        response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS, PATCH"
-        response.headers["Access-Control-Allow-Headers"] = "X-API-Key, Content-Type, Authorization"
-        
-        print("[DEBUG] Response created successfully")
-        return response
-        
-    except HTTPException:
-        # Re-raise HTTP exceptions (like 401 for invalid API key)
-        print("[DEBUG] Re-raising HTTP exception")
-        raise
     except Exception as e:
         print(f"[ERROR] Exception in get_chat_widget_settings: {str(e)}")
-        print(f"[ERROR] Exception type: {type(e).__name__}")
-        import traceback
-        print(f"[ERROR] Traceback: {traceback.format_exc()}")
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # Add new router for chatbot widget settings
+@router.post("/save-settings")
+async def save_chat_widget_settings(
+    settings: ChatWidgetSettings,
+    organization=Depends(get_organization_from_api_key)
+):
+    try:
+        print("\n=== Starting save_chat_widget_settings ===")
+        print(f"Organization ID: {organization.get('_id')}")
+        
+        # Validate organization ID
+        if not organization.get("_id"):
+            print("[ERROR] Organization ID is missing")
+            raise HTTPException(status_code=500, detail="Organization ID is missing")
+            
+        # Convert settings to dict and ensure is_bot_connected is included
+        settings_dict = settings.dict()
+        print(f"\n[DEBUG] Incoming settings: {settings_dict}")
+        
+        # First, get the existing settings to preserve video settings
+        existing_org = db.organizations.find_one({"_id": organization["_id"]})
+        existing_settings = existing_org.get("chat_widget_settings", {}) if existing_org else {}
+        
+        # Merge new settings with existing settings, preserving video settings
+        merged_settings = {
+            **existing_settings,
+            **settings_dict
+        }
+        
+        # Specifically preserve video settings if they exist
+        if "intro_video" in existing_settings:
+            merged_settings["intro_video"] = existing_settings["intro_video"]
+        
+        print(f"\n[DEBUG] Merged settings (preserving video): {merged_settings}")
+        
+        # Update organization in MongoDB with chat widget settings
+        update_data = {
+            "$set": {
+                "chat_widget_settings": merged_settings
+            },
+            # Remove the old settings field if it exists
+            "$unset": {
+                "settings": ""
+            }
+        }
+        
+        print(f"\n[DEBUG] Update operation: {update_data}")
+        
+        result = db.organizations.update_one(
+            {"_id": organization["_id"]},
+            update_data
+        )
+        
+        print(f"\n[DEBUG] MongoDB update result: {result.raw_result}")
+        
+        if result.matched_count == 0:
+            print("[ERROR] No matching document found")
+            raise HTTPException(status_code=404, detail="Organization not found")
+            
+        # Verify the update by retrieving the updated document
+        updated_org = db.organizations.find_one({"_id": organization["_id"]})
+        print(f"\n[DEBUG] Updated organization document: {updated_org}")
+        print(f"\n[DEBUG] Updated chat_widget_settings: {updated_org.get('chat_widget_settings')}")
+        print("\n=== Completed save_chat_widget_settings ===\n")
+            
+        return {
+            "status": "success",
+            "message": "Chat widget settings saved successfully"
+        }
+        
+    except Exception as e:
+        print(f"\n[ERROR] Exception in save_chat_widget_settings: {str(e)}")
+        print(f"[ERROR] Exception type: {type(e)}")
+        import traceback
+        print(f"[ERROR] Traceback: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 # Video upload endpoints
 @router.post("/upload-video")
@@ -1735,45 +1752,6 @@ async def upload_video(
 ):
     """Upload a video for the chat widget"""
     try:
-        # Ensure required imports are available
-        try:
-            from bson import ObjectId  # type: ignore
-        except ImportError:
-            try:
-                from pymongo import ObjectId  # type: ignore
-            except ImportError:
-                raise RuntimeError("ObjectId import unavailable")
-        
-        try:
-            import boto3  # type: ignore
-        except ImportError:
-            raise RuntimeError("boto3 import unavailable")
-        
-        try:
-            import uuid  # type: ignore
-        except ImportError:
-            raise RuntimeError("uuid import unavailable")
-        
-        try:
-            from pathlib import Path  # type: ignore
-        except ImportError:
-            raise RuntimeError("pathlib import unavailable")
-        
-        try:
-            import shutil  # type: ignore
-        except ImportError:
-            raise RuntimeError("shutil import unavailable")
-        
-        # Ensure database is available
-        try:
-            from services.database import db  # type: ignore
-            if not db:
-                raise RuntimeError("database object is None")
-        except ImportError:
-            raise RuntimeError("database import unavailable")
-        except Exception as e:
-            raise RuntimeError(f"database import error: {str(e)}")
-        
         # Validate file type
         if not file.content_type.startswith('video/'):
             raise HTTPException(status_code=400, detail="Only video files are allowed")
@@ -1846,7 +1824,7 @@ async def upload_video(
         print(f"[DEBUG] Video filename: {unique_filename}")
         
         update_result = db.organizations.update_one(
-            {"_id": ObjectId(org_id)},
+            {"_id": organization["_id"]},
             {
                 "$set": {
                     "chat_widget_settings.intro_video.enabled": True,
@@ -1862,7 +1840,7 @@ async def upload_video(
         print(f"[DEBUG] Update result: {update_result.modified_count} documents modified")
         
         # Verify the update
-        updated_org = db.organizations.find_one({"_id": ObjectId(org_id)})
+        updated_org = db.organizations.find_one({"_id": organization["_id"]})
         print(f"[DEBUG] After update - intro_video: {updated_org.get('chat_widget_settings', {}).get('intro_video')}")
         
         return {
@@ -1896,42 +1874,13 @@ async def delete_video(
 ):
     """Delete the current video"""
     try:
-        # Ensure required imports are available
-        try:
-            from bson import ObjectId  # type: ignore
-        except ImportError:
-            try:
-                from pymongo import ObjectId  # type: ignore
-            except ImportError:
-                raise RuntimeError("ObjectId import unavailable")
-        
-        try:
-            import boto3  # type: ignore
-        except ImportError:
-            raise RuntimeError("boto3 import unavailable")
-        
-        try:
-            from pathlib import Path  # type: ignore
-        except ImportError:
-            raise RuntimeError("pathlib import unavailable")
-        
-        # Ensure database is available
-        try:
-            from services.database import db  # type: ignore
-            if not db:
-                raise RuntimeError("database object is None")
-        except ImportError:
-            raise RuntimeError("database import unavailable")
-        except Exception as e:
-            raise RuntimeError(f"database import error: {str(e)}")
-        
         # Safely get organization ID
         org_id = organization.get("id") or organization.get("_id")
         if not org_id:
             raise HTTPException(status_code=500, detail="Organization ID not found")
         
         # Get current video info
-        org = db.organizations.find_one({"_id": ObjectId(org_id)})
+        org = db.organizations.find_one({"_id": organization["_id"]})
         if org and "chat_widget_settings" in org and "intro_video" in org["chat_widget_settings"]:
             intro_video = org["chat_widget_settings"]["intro_video"]
             video_filename = intro_video.get("video_filename")
@@ -1977,7 +1926,7 @@ async def delete_video(
                 
                 # Update organization settings - reset intro_video to default state
                 db.organizations.update_one(
-                    {"_id": ObjectId(org_id)},
+                    {"_id": organization["_id"]},
                     {
                         "$set": {
                             "chat_widget_settings.intro_video": {
@@ -2009,21 +1958,6 @@ async def update_video_settings(
 ):
     """Update video settings"""
     try:
-        # Ensure required imports are available
-        try:
-            from bson import ObjectId  # type: ignore
-        except ImportError:
-            try:
-                from pymongo import ObjectId  # type: ignore
-            except ImportError:
-                raise RuntimeError("ObjectId import unavailable")
-        
-        # Ensure database is available
-        try:
-            from services.database import db  # type: ignore
-        except ImportError:
-            raise RuntimeError("database import unavailable")
-        
         # Safely get organization ID
         org_id = organization.get("id") or organization.get("_id")
         if not org_id:
@@ -2033,20 +1967,18 @@ async def update_video_settings(
         enabled = data.get("enabled", False)
         autoplay = data.get("autoplay", True)
         duration = data.get("duration", 10)
-        
-        update_data = {
-            "chat_widget_settings.intro_video.enabled": enabled,
-            "chat_widget_settings.intro_video.autoplay": autoplay,
-            "chat_widget_settings.intro_video.duration": duration,
-        }
-        
-        # Only update show_on_first_visit if provided (for backwards compatibility)
-        if "show_on_first_visit" in data:
-            update_data["chat_widget_settings.intro_video.show_on_first_visit"] = data.get("show_on_first_visit", True)
+        show_on_first_visit = data.get("show_on_first_visit", True)
         
         db.organizations.update_one(
-            {"_id": ObjectId(org_id)},
-            {"$set": update_data}
+            {"_id": organization["_id"]},
+            {
+                "$set": {
+                    "chat_widget_settings.intro_video.enabled": enabled,
+                    "chat_widget_settings.intro_video.autoplay": autoplay,
+                    "chat_widget_settings.intro_video.duration": duration,
+                    "chat_widget_settings.intro_video.show_on_first_visit": show_on_first_visit
+                }
+            }
         )
         
         return {
@@ -2056,6 +1988,7 @@ async def update_video_settings(
                 "enabled": enabled,
                 "autoplay": autoplay,
                 "duration": duration,
+                "show_on_first_visit": show_on_first_visit
             }
         }
         
@@ -2069,27 +2002,12 @@ async def get_video_settings(
 ):
     """Get current video settings"""
     try:
-        # Ensure required imports are available
-        try:
-            from bson import ObjectId  # type: ignore
-        except ImportError:
-            try:
-                from pymongo import ObjectId  # type: ignore
-            except ImportError:
-                raise RuntimeError("ObjectId import unavailable")
-        
-        # Ensure database is available
-        try:
-            from services.database import db  # type: ignore
-        except ImportError:
-            raise RuntimeError("database import unavailable")
-        
         # Safely get organization ID
         org_id = organization.get("id") or organization.get("_id")
         if not org_id:
             raise HTTPException(status_code=500, detail="Organization ID not found")
         
-        org = db.organizations.find_one({"_id": ObjectId(org_id)})
+        org = db.organizations.find_one({"_id": organization["_id"]})
         
         if org and "chat_widget_settings" in org and "intro_video" in org["chat_widget_settings"]:
             intro_video = org["chat_widget_settings"]["intro_video"]
