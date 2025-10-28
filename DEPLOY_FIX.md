@@ -3,6 +3,7 @@
 ## What Was Fixed
 
 The code now has **BACKWARD COMPATIBILITY** - works with both:
+
 - ✅ Old langchain (< 0.3.18) - uses `load_qa_chain`
 - ✅ New langchain (>= 0.3.18) - uses `create_stuff_documents_chain`
 
@@ -19,6 +20,7 @@ git pull origin main  # or your branch
 ```
 
 **If using Docker:**
+
 ```bash
 docker compose down
 docker compose build web
@@ -27,12 +29,14 @@ docker logs chatbot-backend  # Check logs
 ```
 
 **If using PM2:**
+
 ```bash
 pm2 restart all
 pm2 logs  # Check logs
 ```
 
 **If using systemd:**
+
 ```bash
 sudo systemctl restart your-service
 sudo journalctl -u your-service -f  # Check logs
@@ -43,6 +47,7 @@ sudo journalctl -u your-service -f  # Check logs
 ### Method 2: Direct File Upload (If no git)
 
 1. **Copy the fixed file to your server:**
+
    ```bash
    # From your local machine
    scp services/langchain/engine.py user@api.bayshorecommunication.org:/path/to/chatbot_backend/services/langchain/
@@ -99,17 +104,20 @@ curl -X POST https://api.bayshorecommunication.org/api/chatbot/ask \
 Look for one of these messages:
 
 **Good (New Langchain):**
+
 ```
 ✅ QA chain initialized (new API)
 ```
 
 **Good (Old Langchain):**
+
 ```
 [INFO] Using legacy langchain chains
 ✅ QA chain initialized (legacy API)
 ```
 
 **Bad (Still failing):**
+
 ```
 Error importing services: ...
 ```
@@ -121,19 +129,23 @@ Error importing services: ...
 If you still see the 500 error after deploying:
 
 1. **Check if code was actually updated:**
+
    ```bash
    # On production server
    grep -n "USE_NEW_CHAINS" /path/to/chatbot_backend/services/langchain/engine.py
    ```
+
    Should show the new backward compatibility code.
 
 2. **Check application was restarted:**
+
    ```bash
    # Check process start time (should be recent)
    ps aux | grep uvicorn  # or your app name
    ```
 
 3. **Check logs for the actual error:**
+
    ```bash
    docker logs chatbot-backend --tail 100  # if Docker
    pm2 logs --lines 100  # if PM2
@@ -141,4 +153,3 @@ If you still see the 500 error after deploying:
    ```
 
 4. **Share the logs with me** - I'll help debug further!
-
