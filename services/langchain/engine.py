@@ -10,8 +10,24 @@ This version includes:
 """
 
 from langchain_openai import ChatOpenAI
-from langchain.chains.combine_documents import create_stuff_documents_chain
-from langchain.chains import create_retrieval_chain
+
+# Backward compatible imports - works with both old and new langchain versions
+try:
+    # Try new langchain 0.3.x imports first
+    from langchain.chains.combine_documents import create_stuff_documents_chain
+    from langchain.chains import create_retrieval_chain
+    USE_NEW_CHAINS = True
+except ImportError:
+    # Fall back to old langchain imports if new ones not available
+    try:
+        from langchain.chains.question_answering import load_qa_chain
+        USE_NEW_CHAINS = False
+        print("[INFO] Using legacy langchain chains (consider upgrading to langchain>=0.3.18)")
+    except ImportError:
+        # If both fail, we'll handle it later
+        USE_NEW_CHAINS = None
+        print("[WARNING] No langchain chain imports available")
+
 from dotenv import load_dotenv
 import os
 import openai
@@ -187,15 +203,21 @@ def initialize():
     else:
         print("❌ WARNING: Vectorstore initialization failed")
     
-    # Set up QA chain - using newer langchain 0.3.x approach
+    # Set up QA chain - with backward compatibility
     try:
-        from langchain_core.prompts import ChatPromptTemplate
-        qa_prompt = ChatPromptTemplate.from_messages([
-            ("system", "You are a helpful assistant. Use the following context to answer the question."),
-            ("user", "Context: {context}\n\nQuestion: {input}")
-        ])
-        qa_chain = create_stuff_documents_chain(llm, qa_prompt)
-        print("✅ QA chain initialized")
+        if USE_NEW_CHAINS:
+            # Use new langchain 0.3.x approach
+            from langchain_core.prompts import ChatPromptTemplate
+            qa_prompt = ChatPromptTemplate.from_messages([
+                ("system", "You are a helpful assistant. Use the following context to answer the question."),
+                ("user", "Context: {context}\n\nQuestion: {input}")
+            ])
+            qa_chain = create_stuff_documents_chain(llm, qa_prompt)
+            print("✅ QA chain initialized (new API)")
+        else:
+            # Use legacy langchain approach for older versions
+            qa_chain = load_qa_chain(llm, chain_type="stuff")
+            print("✅ QA chain initialized (legacy API)")
     except Exception as e:
         print(f"⚠️ WARNING: QA chain initialization failed: {str(e)}")
         qa_chain = None
