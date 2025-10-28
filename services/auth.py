@@ -3,6 +3,7 @@ import uuid
 from typing import Optional, Dict, Any
 from passlib.context import CryptContext
 from pymongo.collection import Collection
+from pymongo.errors import OperationFailure
 from services.database import db
 from bson import ObjectId
 import logging
@@ -16,9 +17,20 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 # Get users collection
 users: Collection = db.users
 
-# Initialize indexes
-users.create_index("email", unique=True)
-users.create_index("google_id", sparse=True)
+# Initialize indexes (idempotent and production-safe)
+try:
+    users.create_index("email", unique=True)
+except OperationFailure:
+    # Ignore if index already exists with compatible spec
+    pass
+
+try:
+    # Ensure google_id index matches existing unique+sparse in production
+    users.create_index("google_id", unique=True, sparse=True)
+except OperationFailure as e:
+    # Code 86: IndexKeySpecsConflict – keep existing index
+    if getattr(e, "code", None) != 86:
+        raise
 
 def serialize_user(user: Dict[str, Any]) -> Dict[str, Any]:
     """Serialize user document for JSON response"""
