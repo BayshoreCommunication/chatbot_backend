@@ -3,7 +3,15 @@ from langchain_pinecone import PineconeVectorStore
 import os
 from langchain_community.document_loaders import WebBaseLoader, PyPDFLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_core.documents import Document
+
+# Backward compatible import for Document
+try:
+    from langchain_core.documents import Document
+except ImportError:
+    try:
+        from langchain.docstore.document import Document
+    except ImportError:
+        from langchain.schema import Document
 import openai
 from services.database import get_organization_by_api_key
 import datetime
