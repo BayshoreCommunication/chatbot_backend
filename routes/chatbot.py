@@ -743,7 +743,7 @@ async def delete_upload_history(
     """Delete a document from upload history and knowledge base"""
     try:
         org_id = get_org_id(organization)
-        org_api_key = organization["api_key"]
+        org_api_key = organization.get("api_key")
         
         print(f"[DELETE] Attempting to delete document: {document_id} for org: {org_id}")
         
@@ -834,7 +834,8 @@ async def upload_document(
     All content is stored under the organization's namespace in the vector database.
     """
     org_id = get_org_id(organization)
-    org_api_key = organization["api_key"]
+    org_api_key = organization.get("api_key")
+    org_api_key = organization.get("api_key")
     
     # Debug logging to see what we receive
     print(f"=== DEBUG upload_document ===")
@@ -991,7 +992,7 @@ async def escalate(
     # Add additional organization context
     escalation_context = {
         "organization_id": org_id,
-        "organization_name": organization["name"],
+        "organization_name": organization.get("name", ""),
         "visitor_id": visitor_id,
         "session_id": session_id,
         **user_info
