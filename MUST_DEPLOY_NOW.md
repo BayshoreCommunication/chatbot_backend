@@ -15,6 +15,7 @@ The fix is ready in your LOCAL code, but it's not on your production server yet!
 3. **No core logic changed** - Only import fallbacks added
 
 These fixes work with BOTH:
+
 - ✅ Old langchain (< 0.3.18) - uses legacy imports
 - ✅ New langchain (>= 0.3.18) - uses new imports
 
@@ -23,6 +24,7 @@ These fixes work with BOTH:
 ## 🚀 DEPLOY TO PRODUCTION (Required Steps)
 
 ### Step 1: Push Code to Git (If not done)
+
 ```bash
 # On your local machine
 cd D:\BayAIchatbot15-09\chatbot_backend
@@ -32,11 +34,13 @@ git push origin main
 ### Step 2: Deploy to Production Server
 
 **SSH into your production server:**
+
 ```bash
 ssh your-user@api.bayshorecommunication.org
 ```
 
 **Then run these commands:**
+
 ```bash
 # Go to your backend directory
 cd /path/to/your/chatbot_backend  # Change this to your actual path
@@ -74,7 +78,8 @@ curl -X POST https://api.bayshorecommunication.org/api/chatbot/ask \
 ```
 
 **Expected Result:**
-- ❌ Before deploy: `"error": "500: Chatbot services are not available"`  
+
+- ❌ Before deploy: `"error": "500: Chatbot services are not available"`
 - ✅ After deploy: Actual answer to your question
 
 ---
@@ -84,17 +89,20 @@ curl -X POST https://api.bayshorecommunication.org/api/chatbot/ask \
 Look for these messages in your logs:
 
 **✅ Good (using backward compatibility with old langchain):**
+
 ```
 [INFO] Using legacy langchain chains
 ✅ QA chain initialized (legacy API)
 ```
 
 **✅ Good (using new langchain):**
+
 ```
 ✅ QA chain initialized (new API)
 ```
 
 **❌ Bad (still failing - code not updated):**
+
 ```
 Error importing services: No module named 'langchain.chains.combine_documents'
 ```
@@ -111,6 +119,7 @@ grep -n "USE_NEW_CHAINS" /path/to/your/chatbot_backend/services/langchain/engine
 ```
 
 **Should show:**
+
 ```
 19:    USE_NEW_CHAINS = True
 24:        USE_NEW_CHAINS = False
@@ -119,6 +128,7 @@ grep -n "USE_NEW_CHAINS" /path/to/your/chatbot_backend/services/langchain/engine
 ```
 
 If you don't see this, the code wasn't updated. Try:
+
 ```bash
 git status  # Check if you're on the right branch
 git log -1  # Check last commit
@@ -129,17 +139,20 @@ git log -1  # Check last commit
 ## 🆘 If Still Not Working
 
 **1. Make sure you're in the right directory:**
+
 ```bash
 pwd  # Should show your backend path
 ls -la services/langchain/engine.py  # File should exist
 ```
 
 **2. Make sure code was pulled:**
+
 ```bash
 git log --oneline -5  # Should show recent commit about "backward compatibility"
 ```
 
 **3. Make sure server restarted:**
+
 ```bash
 # Check process start time (should be recent)
 ps aux | grep python | grep -v grep
@@ -148,6 +161,7 @@ docker ps  # Status should show "Up X seconds/minutes" (recent)
 ```
 
 **4. Send me the logs:**
+
 ```bash
 # Docker
 docker logs chatbot-backend --tail 200 > /tmp/logs.txt
@@ -181,4 +195,3 @@ cat /tmp/logs.txt
 ## The Fix IS Ready - Just Needs Deployment!
 
 The code on your LOCAL machine is fixed. You just need to get it onto your PRODUCTION server and restart!
-

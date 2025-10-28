@@ -1,0 +1,9 @@
+{
+  "question": "Do you take personal injury cases?",
+  "session_id": "test_session_new_456",
+  "mode": "faq",
+  "user_data": {
+    "name": "Test User"
+  }
+}
+
