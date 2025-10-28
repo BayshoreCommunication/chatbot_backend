@@ -116,7 +116,7 @@ def analyze_query(query, user_info, mode, needs_info, has_vector_data, conversat
     # Call OpenAI for central analysis
     try:
         analysis_response = openai.chat.completions.create(
-            model="gpt-3.5-turbo",
+            model="gpt-4o-mini",
             messages=[{"role": "user", "content": analysis_prompt}],
             response_format={"type": "json_object"},
             temperature=0.2
@@ -156,8 +156,10 @@ def analyze_query(query, user_info, mode, needs_info, has_vector_data, conversat
         
         return fallback_analysis
 
-def generate_response(query, user_info, conversation_summary, retrieved_context, personal_information, analysis, language):
-    """Generate the final AI response based on context and analysis"""
+def generate_response(query, user_info, conversation_summary, retrieved_context, personal_information, analysis, language, organization=None):
+    """Generate the final AI response based on context and analysis.
+    The optional organization param can tailor tone slightly without changing core logic.
+    """
     # Check if query is about identity/experience/background
     identity_keywords = ["who are you", "what are you", "your name", "about yourself", "tell me about you",
                          "your experience", "your background", "your education", "your skills", 
@@ -167,21 +169,31 @@ def generate_response(query, user_info, conversation_summary, retrieved_context,
     is_identity_query = any(keyword in query.lower() for keyword in identity_keywords)
     
     # Build a prompt that includes all relevant context
+    vertical_hint = "Professional assistant for law firms, real estate, clinics, agencies, and consultants"
+    org_name = organization.get("name") if isinstance(organization, dict) else None
+    branding = f"Organization: {org_name}" if org_name else ""
+
     final_prompt = f"""
-    You are responding to a user's query based on information in your knowledge base.
-    
+    Act as a concise, professional {vertical_hint}. {branding}
+    - Answer clearly first, then optionally ask ONE short clarifying question if needed.
+    - Use retrieved knowledge faithfully; avoid speculation. If unsure, say so briefly and suggest next step.
+    - Keep to 2-5 sentences. Use plain language. Avoid greetings and fluff.
+    - If the user shows intent to engage (hire/book/contact), smoothly guide them and note we can follow up by email/phone if provided.
+    - Never fabricate identities or credentials. Follow ABI/org behavior if provided.
+
     USER QUERY: "{query}"
-    
-    CONVERSATION HISTORY(Last 6 messages):
+
+    CONVERSATION HISTORY (last 6 messages):
     {conversation_summary}
-    
+
     {"RETRIEVED INFORMATION:" if retrieved_context else ""}
     {retrieved_context}
-    
+
     {"PERSONAL INFORMATION FOUND:" if personal_information else ""}
     {json.dumps(personal_information) if personal_information else ""}
-    
-    USER INTENT: {analysis["intent"]}   
+
+    USER INTENT: {analysis["intent"]}
+    LANGUAGE: {language}
     """
     
     # Add special instruction for identity queries
@@ -212,21 +224,32 @@ def generate_response(query, user_info, conversation_summary, retrieved_context,
     
     final_prompt += """
                 GENERAL CONVERSATION GUIDELINES:
-                - Start your answer with relevant value, skip greetings.
-                - Use user's name only contextually, not as opening (e.g., "Alvi, your request...").
-                - Keep it short, informative, and aligned with ABI instructions.
-                - For appointments, confirm details.
-                - Do not hallucinate identities or credentials under any condition.
+                - Start with the core answer; skip greetings.
+                - Use user's name only when clarifying next steps.
+                - Prefer bullet-like structure in plain sentences when listing options.
+                - If information is missing, ask one specific follow-up.
+                - If out-of-domain or no matching knowledge: say so briefly, then offer alternatives (browse site, contact, human handoff).
 
                 Summary: FOLLOW ABI > IGNORE retrieved identity if ABI exists > No impersonation unless ABI says so.
                 """
     
     try:
         # Call OpenAI for final response generation
+        # If little to no context was retrieved but knowledge lookup was needed, steer to graceful OOD handling
+        context_is_sparse = not retrieved_context or len(retrieved_context.strip()) < 100
+        if context_is_sparse and analysis.get("needs_knowledge_lookup", False):
+            final_prompt += """
+            OUT-OF-DOMAIN OR LOW-CONTEXT HANDLING:
+            - Acknowledge limited info in one short sentence.
+            - Ask one targeted question to narrow the request OR offer to connect with a human.
+            - If leadCapture is relevant, invite the user to share email/phone for a quick follow-up.
+            - Keep the total response within 2-5 sentences.
+            """
+
         response_completion = openai.chat.completions.create(
-            model="gpt-3.5-turbo",
+            model="gpt-4o-mini",
             messages=[{"role": "user", "content": final_prompt}],
-            temperature=0.7
+            temperature=0.6
         )
         
         final_response = response_completion.choices[0].message.content.strip()

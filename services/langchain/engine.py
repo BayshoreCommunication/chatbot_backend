@@ -229,14 +229,23 @@ def initialize():
     
     print("🎉 Enhanced Langchain engine initialization complete!")
 
-# Initialize the engine when this module is imported
-try:
-    print("Starting enhanced langchain engine initialization...")
-    initialize()
-    print("Enhanced langchain engine initialization completed successfully")
-except Exception as e:
-    print(f"❌ ERROR during langchain engine initialization: {str(e)}")
-    print("Some features may not be available")
+# Lazy initialization - only initialize when first called, not on import
+_initialized = False
+
+def ensure_initialized():
+    """Ensure engine is initialized before use"""
+    global _initialized
+    if not _initialized:
+        try:
+            print("Starting enhanced langchain engine initialization...")
+            initialize()
+            print("Enhanced langchain engine initialization completed successfully")
+            _initialized = True
+        except Exception as e:
+            print(f"❌ ERROR during langchain engine initialization: {str(e)}")
+            print("Some features may not be available")
+            # Don't set _initialized = True so it can retry later
+            raise 
 
 def get_org_vectorstore(api_key):
     """Get organization-specific vectorstore with caching"""
@@ -350,6 +359,9 @@ def should_collect_info_now(user_data: dict, lead_capture_enabled: bool) -> bool
 @create_error_handler
 def ask_bot(query: str, mode="faq", user_data=None, available_slots=None, session_id=None, api_key=None):
     """Enhanced chatbot with smart lead capture and advanced caching"""
+    # Ensure engine is initialized
+    ensure_initialized()
+    
     # Initialize user data if None
     if user_data is None:
         user_data = {}
@@ -593,7 +605,9 @@ def ask_bot(query: str, mode="faq", user_data=None, available_slots=None, sessio
         print(f"[DEBUG] Inline pending-info handler error: {str(e)}")
    
     # STEP 2: Smart Information Collection - only if leadCapture is enabled and timing is right
-    if lead_capture_enabled and should_collect_info_now(user_data, lead_capture_enabled):
+    # Skip prompting during active appointment flows to avoid breaking the booking UX
+    is_active_appointment_flow = analysis.get("appropriate_mode") == "appointment" and analysis.get("appointment_action") != "none"
+    if lead_capture_enabled and not is_active_appointment_flow and should_collect_info_now(user_data, lead_capture_enabled):
         print(f"[DEBUG] Smart timing triggered - attempting to collect user information")
         
         if "name" not in user_data:
@@ -707,8 +721,17 @@ def ask_bot(query: str, mode="faq", user_data=None, available_slots=None, sessio
                     text = text.strip()
                     return text if len(text) <= limit else text[:limit] + "..."
 
+                # Lightweight re-rank: prefer similarity scores when available
+                ranked_docs = documents
+                if similarity_scores:
+                    pairs = list(zip(documents, similarity_scores))
+                    pairs.sort(key=lambda p: p[1], reverse=True)
+                    ranked_docs = [d for d, _ in pairs]
+                else:
+                    ranked_docs = sorted(documents, key=lambda d: len(getattr(d, "page_content", "")), reverse=True)
+
                 knowledge_base_results = []
-                for d in documents[:12]:
+                for d in ranked_docs[:12]:
                     knowledge_base_results.append({
                         "content": _compress(getattr(d, "page_content", "")),
                         "metadata": getattr(d, "metadata", {}),
@@ -774,7 +797,7 @@ def ask_bot(query: str, mode="faq", user_data=None, available_slots=None, sessio
         # If we determined a KB lookup was needed but context is empty, do not fabricate
         if analysis.get("needs_knowledge_lookup") and not retrieved_context:
             fallback = {
-                "answer": "I don't have that in the training data yet. Would you like me to connect you with a team member or try a related question?",
+                "answer": "I don't know about this question. Would you like me to connect you with a team member or try a related question?",
                 "mode": "faq",
                 "language": language,
                 "user_data": user_data
@@ -873,6 +896,19 @@ def ask_bot(query: str, mode="faq", user_data=None, available_slots=None, sessio
         
         cache_manager.cache_response(cache_key, response, ttl_minutes)
     
+    # If we failed to find KB context, suggest top related FAQs (if available)
+    if not retrieved_context and knowledge_base_results:
+        # Take metadata titles/urls if present for UI follow-up buttons
+        related = []
+        for item in knowledge_base_results[:3]:
+            meta = item.get("metadata", {})
+            title = meta.get("title") or meta.get("source")
+            url = meta.get("url") or meta.get("source_url")
+            if title or url:
+                related.append({"title": title, "url": url})
+        if related:
+            response["related_resources"] = related
+
     return response
 
 def get_conversation_context(session_id: str, api_key: str, user_data: dict, org_id: str) -> str:
@@ -986,7 +1022,8 @@ def generate_enhanced_response(query: str, user_info: dict, conversation_summary
             retrieved_context, 
             personal_information, 
             analysis, 
-            language
+            language,
+            organization
         )
         
         # Post-process for quality improvements
@@ -1122,6 +1159,7 @@ def enhance_contextual_response(response: str, query: str, user_data: dict, orga
 # Utility functions
 def add_document(file_path=None, url=None, text=None, api_key=None):
     """Add documents to the vector store with cache invalidation"""
+    ensure_initialized()
     result = add_document_to_vectorstore(
         get_org_vectorstore(api_key), pc, index_name, embeddings, 
         api_key=api_key, file_path=file_path, url=url, text=text

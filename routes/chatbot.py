@@ -17,8 +17,10 @@ try:
     from services.database import (
         get_organization_by_api_key, create_or_update_visitor, add_conversation_message, 
         get_visitor, get_conversation_history, save_user_profile, get_user_profile, db,
-        set_agent_mode, set_bot_mode, is_chat_in_agent_mode, create_user, get_user_by_email,
-        get_user_by_id, update_user, create_lead, get_leads_by_organization
+        set_agent_mode, set_bot_mode, is_chat_in_agent_mode, create_lead, get_leads_by_organization
+    )
+    from services.auth import (
+        create_user, get_user_by_email, get_user_by_id, update_user
     )
     # Import ObjectId with fallback
     try:
