@@ -650,6 +650,13 @@ async def ask_question(
         request.user_data["organization_id"] = org_id
         request.user_data["session_id"] = request.session_id
         
+        # Check if services are available
+        if not SERVICES_AVAILABLE:
+            raise HTTPException(
+                status_code=500,
+                detail="Chatbot services are not available. Please check server logs for import errors."
+            )
+        
         # Don't add the enhanced query to conversation history - use original question
         response = ask_bot(
             query=enhanced_query,
