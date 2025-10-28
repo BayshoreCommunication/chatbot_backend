@@ -181,7 +181,9 @@ async def ask_question(
     organization=Depends(get_organization_from_api_key)
 ):
     """Process a chat message and return a response"""
-    org_id = organization["id"]
+    org_id = organization.get("id")
+    if not org_id:
+        raise HTTPException(status_code=500, detail="Organization ID is missing")
     org_api_key = organization.get("api_key")
     namespace = organization.get("pinecone_namespace", "")
 
@@ -597,7 +599,9 @@ async def get_chat_history(
     organization=Depends(get_organization_from_api_key)
 ):
     """Retrieve chat history for a session"""
-    org_id = organization["id"]
+    org_id = organization.get("id")
+    if not org_id:
+        raise HTTPException(status_code=500, detail="Organization ID is missing")
     
     # Get fresh conversation data from MongoDB
     previous_conversations = get_conversation_history(organization_id =org_id, session_id=session_id)
@@ -677,7 +681,9 @@ async def change_mode(
         raise HTTPException(status_code=400, detail="Session ID and mode are required")
     
     # Get organization ID
-    org_id = organization["id"]
+    org_id = organization.get("id")
+    if not org_id:
+        raise HTTPException(status_code=500, detail="Organization ID is missing")
     
     # Get or create session
     session_key = f"{org_id}:{session_id}"
@@ -709,7 +715,9 @@ async def get_upload_history(
     organization=Depends(get_organization_from_api_key)
 ):
     """Get upload history for an organization"""
-    org_id = organization["id"]
+    org_id = organization.get("id")
+    if not org_id:
+        raise HTTPException(status_code=500, detail="Organization ID is missing")
     
     history = []
     for item in upload_history_collection.find(
@@ -728,7 +736,9 @@ async def delete_upload_history(
 ):
     """Delete a document from upload history and knowledge base"""
     try:
-        org_id = organization["id"]
+        org_id = organization.get("id")
+        if not org_id:
+            raise HTTPException(status_code=500, detail="Organization ID is missing")
         org_api_key = organization["api_key"]
         
         print(f"[DELETE] Attempting to delete document: {document_id} for org: {org_id}")
@@ -819,7 +829,9 @@ async def upload_document(
     
     All content is stored under the organization's namespace in the vector database.
     """
-    org_id = organization["id"]
+    org_id = organization.get("id")
+    if not org_id:
+        raise HTTPException(status_code=500, detail="Organization ID is missing")
     org_api_key = organization["api_key"]
     
     # Debug logging to see what we receive
@@ -939,7 +951,9 @@ async def check_previous_uploads(
     organization=Depends(get_organization_from_api_key)
 ):
     """Check if organization has any previous successful uploads"""
-    org_id = organization["id"]
+    org_id = organization.get("id")
+    if not org_id:
+        raise HTTPException(status_code=500, detail="Organization ID is missing")
     
     # Check for any successful uploads
     count = upload_history_collection.count_documents({
@@ -965,7 +979,9 @@ async def escalate(
         raise HTTPException(status_code=400, detail="Question is required")
     
     # Get organization ID
-    org_id = organization["id"]
+    org_id = organization.get("id")
+    if not org_id:
+        raise HTTPException(status_code=500, detail="Organization ID is missing")
     
     # Get visitor if session_id is provided
     visitor_id = None
@@ -1059,7 +1075,9 @@ async def agent_takeover(
         if not session_id:
             raise HTTPException(status_code=400, detail="Session ID is required")
         
-        org_id = organization["id"]
+        org_id = organization.get("id")
+        if not org_id:
+            raise HTTPException(status_code=500, detail="Organization ID is missing")
         org_api_key = organization.get("api_key")
         
         print(f"Agent takeover request - Session ID: {session_id}, Agent ID: {agent_id}, Org ID: {org_id}")
@@ -1112,7 +1130,9 @@ async def agent_release(
         if not session_id:
             raise HTTPException(status_code=400, detail="Session ID is required")
         
-        org_id = organization["id"]
+        org_id = organization.get("id")
+        if not org_id:
+            raise HTTPException(status_code=500, detail="Organization ID is missing")
         org_api_key = organization.get("api_key")
         
         print(f"Agent release request - Session ID: {session_id}, Org ID: {org_id}")
@@ -1165,7 +1185,9 @@ async def send_agent_message(
         if not session_id or not message_content:
             raise HTTPException(status_code=400, detail="Session ID and message are required")
         
-        org_id = organization["id"]
+        org_id = organization.get("id")
+        if not org_id:
+            raise HTTPException(status_code=500, detail="Organization ID is missing")
         org_api_key = organization.get("api_key")
         
         # Verify the chat is in agent mode
@@ -1333,7 +1355,9 @@ async def upload_video(
                 raise HTTPException(status_code=500, detail="Failed to upload video to storage")
         
         # Update organization settings with video info
-        org_id = organization["id"]
+        org_id = organization.get("id")
+        if not org_id:
+            raise HTTPException(status_code=500, detail="Organization ID is missing")
         
         print(f"[DEBUG] Updating video settings for org {org_id}")
         print(f"[DEBUG] Video URL: {video_url}")
@@ -1390,7 +1414,9 @@ async def delete_video(
 ):
     """Delete the current video"""
     try:
-        org_id = organization["id"]
+        org_id = organization.get("id")
+        if not org_id:
+            raise HTTPException(status_code=500, detail="Organization ID is missing")
         
         # Get current video info
         org = db.organizations.find_one({"_id": organization["_id"]})
