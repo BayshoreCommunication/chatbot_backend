@@ -166,6 +166,18 @@ class ChatWidgetSettings(BaseModel):
         "duration": 10,
         "show_on_first_visit": True
     })
+    font_name: Optional[str] = "Arial"
+    sound_notifications: Optional[dict] = Field(default_factory=lambda: {
+        "enabled": False,
+        "welcome_sound": {
+            "enabled": True,
+            "play_on_first_load": True
+        },
+        "message_sound": {
+            "enabled": True,
+            "play_on_send": True
+        }
+    })
 
 class ChatRequest(BaseModel):
     question: str
@@ -1008,73 +1020,7 @@ async def escalate(
     
     return escalate_to_human(query, escalation_context)
 
-@router.post("/save-settings")
-async def save_chat_widget_settings(
-    settings: ChatWidgetSettings,
-    organization=Depends(get_organization_from_api_key)
-):
-    try:
-        print("\n=== Starting save_chat_widget_settings ===")
-        print(f"Organization ID: {organization.get('_id')}")
-        
-        # Validate organization ID
-        if not organization.get("_id"):
-            print("[ERROR] Organization ID is missing")
-            raise HTTPException(status_code=500, detail="Organization ID is missing")
-            
-        # Convert settings to dict, excluding unset fields to preserve existing ones
-        settings_dict = settings.model_dump(exclude_unset=True)
-        print(f"\n[DEBUG] Incoming settings: {settings_dict}")
-        
-        # Get existing settings to preserve fields not being updated
-        existing_org = db.organizations.find_one({"_id": organization["_id"]})
-        existing_settings = existing_org.get("chat_widget_settings", {}) if existing_org else {}
-        
-        # Merge: update only provided fields, keep existing ones
-        merged_settings = {**existing_settings, **settings_dict}
-        
-        # Update organization in MongoDB with chat widget settings
-        update_data = {
-            "$set": {
-                "chat_widget_settings": merged_settings
-            },
-            # Remove the old settings field if it exists
-            "$unset": {
-                "settings": ""
-            }
-        }
-        
-        print(f"\n[DEBUG] Merged settings: {merged_settings}")
-        print(f"\n[DEBUG] Update operation: {update_data}")
-        
-        result = db.organizations.update_one(
-            {"_id": organization["_id"]},
-            update_data
-        )
-        
-        print(f"\n[DEBUG] MongoDB update result: {result.raw_result}")
-        
-        if result.matched_count == 0:
-            print("[ERROR] No matching document found")
-            raise HTTPException(status_code=404, detail="Organization not found")
-            
-        # Verify the update by retrieving the updated document
-        updated_org = db.organizations.find_one({"_id": organization["_id"]})
-        print(f"\n[DEBUG] Updated organization document: {updated_org}")
-        print(f"\n[DEBUG] Updated chat_widget_settings: {updated_org.get('chat_widget_settings')}")
-        print("\n=== Completed save_chat_widget_settings ===\n")
-            
-        return {
-            "status": "success",
-            "message": "Chat widget settings saved successfully"
-        }
-        
-    except Exception as e:
-        print(f"\n[ERROR] Exception in save_chat_widget_settings: {str(e)}")
-        print(f"[ERROR] Exception type: {type(e)}")
-        import traceback
-        print(f"[ERROR] Traceback: {traceback.format_exc()}")
-        raise HTTPException(status_code=500, detail=str(e))
+
         
 @router.post("/agent-takeover")
 async def agent_takeover(
@@ -1241,6 +1187,75 @@ async def send_agent_message(
         print(f"Error sending agent message: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
+@router.post("/save-settings")
+async def save_chat_widget_settings(
+    settings: ChatWidgetSettings,
+    organization=Depends(get_organization_from_api_key)
+):
+    try:
+        print("\n=== Starting save_chat_widget_settings ===")
+        print(f"Organization ID: {organization.get('_id')}")
+        
+        # Validate organization ID
+        if not organization.get("_id"):
+            print("[ERROR] Organization ID is missing")
+            raise HTTPException(status_code=500, detail="Organization ID is missing")
+            
+        # Convert settings to dict, excluding unset fields to preserve existing ones
+        settings_dict = settings.model_dump(exclude_unset=True)
+        print(f"\n[DEBUG] Incoming settings: {settings_dict}")
+        
+        # Get existing settings to preserve fields not being updated
+        existing_org = db.organizations.find_one({"_id": organization["_id"]})
+        existing_settings = existing_org.get("chat_widget_settings", {}) if existing_org else {}
+        
+        # Merge: update only provided fields, keep existing ones
+        merged_settings = {**existing_settings, **settings_dict}
+        
+        # Update organization in MongoDB with chat widget settings
+        update_data = {
+            "$set": {
+                "chat_widget_settings": merged_settings
+            },
+            # Remove the old settings field if it exists
+            "$unset": {
+                "settings": ""
+            }
+        }
+        
+        print(f"\n[DEBUG] Merged settings: {merged_settings}")
+        print(f"\n[DEBUG] Update operation: {update_data}")
+        
+        result = db.organizations.update_one(
+            {"_id": organization["_id"]},
+            update_data
+        )
+        
+        print(f"\n[DEBUG] MongoDB update result: {result.raw_result}")
+        
+        if result.matched_count == 0:
+            print("[ERROR] No matching document found")
+            raise HTTPException(status_code=404, detail="Organization not found")
+            
+        # Verify the update by retrieving the updated document
+        updated_org = db.organizations.find_one({"_id": organization["_id"]})
+        print(f"\n[DEBUG] Updated organization document: {updated_org}")
+        print(f"\n[DEBUG] Updated chat_widget_settings: {updated_org.get('chat_widget_settings')}")
+        print("\n=== Completed save_chat_widget_settings ===\n")
+            
+        return {
+            "status": "success",
+            "message": "Chat widget settings saved successfully"
+        }
+        
+    except Exception as e:
+        print(f"\n[ERROR] Exception in save_chat_widget_settings: {str(e)}")
+        print(f"[ERROR] Exception type: {type(e)}")
+        import traceback
+        print(f"[ERROR] Traceback: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @router.get("/settings")
 async def get_chat_widget_settings(
     organization=Depends(get_organization_from_api_key)
@@ -1267,6 +1282,18 @@ async def get_chat_widget_settings(
                     "autoplay": True,
                     "duration": 10,
                     "show_on_first_visit": True
+                },
+                "font_name": "Arial",
+                "sound_notifications": {
+                    "enabled": False,
+                    "welcome_sound": {
+                        "enabled": True,
+                        "play_on_first_load": True
+                    },
+                    "message_sound": {
+                        "enabled": True,
+                        "play_on_send": True
+                    }
                 }
             }
             

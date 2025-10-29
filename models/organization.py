@@ -62,6 +62,18 @@ class Organization(BaseModel):
             "autoplay": True,
             "duration": 10,
             "show_on_first_visit": True
+        },
+        "font_name": "Arial",
+        "sound_notifications": {
+            "enabled": False,
+            "welcome_sound": {
+                "enabled": True,
+                "play_on_first_load": True
+            },
+            "message_sound": {
+                "enabled": True,
+                "play_on_send": True
+            }
         }
     })
     
@@ -89,6 +101,18 @@ class Organization(BaseModel):
                         "autoplay": True,
                         "duration": 10,
                         "show_on_first_visit": True
+                    },
+                    "font_name": "Arial",
+                    "sound_notifications": {
+                        "enabled": False,
+                        "welcome_sound": {
+                            "enabled": True,
+                            "play_on_first_load": True
+                        },
+                        "message_sound": {
+                            "enabled": True,
+                            "play_on_send": True
+                        }
                     }
                 }
             }
