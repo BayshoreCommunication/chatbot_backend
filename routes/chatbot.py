@@ -34,7 +34,7 @@ import os
 import uuid
 import shutil
 from pathlib import Path
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from datetime import datetime
 import pymongo
 import re
@@ -158,6 +158,14 @@ class ChatWidgetSettings(BaseModel):
     ai_behavior: str
     avatarUrl: Optional[str] = None
     is_bot_connected: Optional[bool] = False
+    intro_video: Optional[dict] = Field(default_factory=lambda: {
+        "enabled": False,
+        "video_url": None,
+        "video_filename": None,
+        "autoplay": True,
+        "duration": 10,
+        "show_on_first_visit": True
+    })
 
 class ChatRequest(BaseModel):
     question: str
@@ -1014,14 +1022,21 @@ async def save_chat_widget_settings(
             print("[ERROR] Organization ID is missing")
             raise HTTPException(status_code=500, detail="Organization ID is missing")
             
-        # Convert settings to dict and ensure is_bot_connected is included
-        settings_dict = settings.dict()
+        # Convert settings to dict, excluding unset fields to preserve existing ones
+        settings_dict = settings.model_dump(exclude_unset=True)
         print(f"\n[DEBUG] Incoming settings: {settings_dict}")
+        
+        # Get existing settings to preserve fields not being updated
+        existing_org = db.organizations.find_one({"_id": organization["_id"]})
+        existing_settings = existing_org.get("chat_widget_settings", {}) if existing_org else {}
+        
+        # Merge: update only provided fields, keep existing ones
+        merged_settings = {**existing_settings, **settings_dict}
         
         # Update organization in MongoDB with chat widget settings
         update_data = {
             "$set": {
-                "chat_widget_settings": settings_dict
+                "chat_widget_settings": merged_settings
             },
             # Remove the old settings field if it exists
             "$unset": {
@@ -1029,6 +1044,7 @@ async def save_chat_widget_settings(
             }
         }
         
+        print(f"\n[DEBUG] Merged settings: {merged_settings}")
         print(f"\n[DEBUG] Update operation: {update_data}")
         
         result = db.organizations.update_one(
@@ -1238,7 +1254,7 @@ async def get_chat_widget_settings(
         if not org or "chat_widget_settings" not in org:
             default_settings = {
                 "name": "Bay AI",
-                "selectedColor": "black",
+                "selectedColor": "#4f46e5",  # Updated to match organization model
                 "leadCapture": True,
                 "botBehavior": "2",
                 "avatarUrl": None,

@@ -49,7 +49,7 @@ class Organization(BaseModel):
     pinecone_namespace: str  # Namespace in vector DB for organization's data
     chat_widget_settings: dict = Field(default_factory=lambda: {
         "name": "Bay AI",
-        "selectedColor": "black",
+        "selectedColor": "#4f46e5",  # Changed to hex color
         "leadCapture": True,
         "botBehavior": "2",
         "avatarUrl": None,
@@ -76,7 +76,7 @@ class Organization(BaseModel):
                 "stripe_subscription_id": "sub_1234567890",
                 "chat_widget_settings": {
                     "name": "Bay AI",
-                    "selectedColor": "black",
+                    "selectedColor": "#4f46e5",  # Changed to hex color
                     "leadCapture": True,
                     "botBehavior": "2",
                     "avatarUrl": None,

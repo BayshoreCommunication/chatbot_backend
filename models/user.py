@@ -4,7 +4,9 @@ from datetime import datetime
 
 class UserBase(BaseModel):
     email: str
-    name: str
+    organization_name: str
+    website: Optional[str] = None
+    company_organization_type: Optional[str] = None
     has_paid_subscription: bool = False
 
 class UserCreate(UserBase):
@@ -24,4 +26,4 @@ class User(UserBase):
     updated_at: datetime = Field(default_factory=datetime.now)
 
     class Config:
-        orm_mode = True 
+        from_attributes = True 
