@@ -64,6 +64,7 @@ class Organization(BaseModel):
             "show_on_first_visit": True
         },
         "font_name": "Arial",
+        "auto_open_widget": False,
         "sound_notifications": {
             "enabled": False,
             "welcome_sound": {
@@ -103,6 +104,7 @@ class Organization(BaseModel):
                         "show_on_first_visit": True
                     },
                     "font_name": "Arial",
+                    "auto_open_widget": False,
                     "sound_notifications": {
                         "enabled": False,
                         "welcome_sound": {

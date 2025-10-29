@@ -167,6 +167,7 @@ class ChatWidgetSettings(BaseModel):
         "show_on_first_visit": True
     })
     font_name: Optional[str] = "Arial"
+    auto_open_widget: Optional[bool] = False
     sound_notifications: Optional[dict] = Field(default_factory=lambda: {
         "enabled": False,
         "welcome_sound": {
@@ -1284,6 +1285,7 @@ async def get_chat_widget_settings(
                     "show_on_first_visit": True
                 },
                 "font_name": "Arial",
+                "auto_open_widget": False,
                 "sound_notifications": {
                     "enabled": False,
                     "welcome_sound": {
