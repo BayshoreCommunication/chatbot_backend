@@ -168,6 +168,7 @@ class ChatWidgetSettings(BaseModel):
     })
     font_name: Optional[str] = "Arial"
     auto_open_widget: Optional[bool] = False
+    ai_persona_tags: Optional[List[str]] = Field(default_factory=list)
     sound_notifications: Optional[dict] = Field(default_factory=lambda: {
         "enabled": False,
         "welcome_sound": {
@@ -1276,6 +1277,7 @@ async def get_chat_widget_settings(
                 "avatarUrl": None,
                 "is_bot_connected": False,
                 "ai_behavior": "You are a helpful and friendly AI assistant. You should be professional, concise, and focus on providing accurate information while maintaining a warm and engaging tone.",
+                "ai_persona_tags": ["Helpful", "Professional", "Warm"],
                 "intro_video": {
                     "enabled": False,
                     "video_url": None,

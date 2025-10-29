@@ -55,6 +55,7 @@ class Organization(BaseModel):
         "avatarUrl": None,
         "is_bot_connected": False,
         "ai_behavior": "You are a helpful and friendly AI assistant. You should be professional, concise, and focus on providing accurate information while maintaining a warm and engaging tone.",
+        "ai_persona_tags": ["Helpful", "Professional", "Warm"],
         "intro_video": {
             "enabled": False,
             "video_url": None,
@@ -95,6 +96,7 @@ class Organization(BaseModel):
                     "avatarUrl": None,
                     "is_bot_connected": False,
                     "ai_behavior": "You are a helpful and friendly AI assistant. You should be professional, concise, and focus on providing accurate information while maintaining a warm and engaging tone.",
+                    "ai_persona_tags": ["Helpful", "Professional", "Warm"],
                     "intro_video": {
                         "enabled": False,
                         "video_url": None,
