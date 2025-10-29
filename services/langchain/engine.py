@@ -742,7 +742,7 @@ def ask_bot(query: str, mode="faq", user_data=None, available_slots=None, sessio
         # If we determined a KB lookup was needed but context is empty, do not fabricate
         if analysis.get("needs_knowledge_lookup") and not retrieved_context:
             fallback = {
-                "answer": "I don't have that in the training data yet. Would you like me to connect you with a team member or try a related question?",
+                "answer": "I don’t have that information available at the moment. Would you like me to connect you with a team member, or should I look into a related question for you?",
                 "mode": "faq",
                 "language": language,
                 "user_data": user_data
