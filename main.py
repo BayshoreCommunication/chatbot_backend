@@ -155,6 +155,7 @@ origins = [
     "http://chatbot.bayshorecommunication.com",
     "https://chatbot-user-dashboard.vercel.app",
     "https://aibotwidget.bayshorecommunication.org",
+    "http://aibotwidget.bayshorecommunication.org",
     "https://aibotwidget.bayshorecommunication.org/chatbot-widget.min.js",
     "https://www.carterinjurylaw.com",
     "http://www.carterinjurylaw.com",
