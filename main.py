@@ -232,7 +232,7 @@ if instant_reply_available:
     available_features.append("Instant Reply Configuration")
 
 if lead_available:
-    app.include_router(lead_router, prefix="/lead", tags=["Lead Management"])
+    app.include_router(lead_router, prefix="/api", tags=["Lead Management"])
     available_features.append("Lead Capture Mode")
 
 if appointment_available:
