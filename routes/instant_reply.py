@@ -1,10 +1,21 @@
-from fastapi import APIRouter, HTTPException, Header, Body
+from fastapi import APIRouter, HTTPException, Header, Body, Depends
 from services.database import get_organization_by_api_key, db
 from datetime import datetime
 from typing import Optional, List
 from pydantic import BaseModel
 
 router = APIRouter()
+
+async def get_organization_from_api_key(api_key: Optional[str] = Header(None, alias="X-API-Key")):
+    """Dependency to get organization from API key"""
+    if not api_key:
+        raise HTTPException(status_code=401, detail="API key is required")
+    
+    organization = get_organization_by_api_key(api_key)
+    if not organization:
+        raise HTTPException(status_code=401, detail="Invalid API key")
+    
+    return organization
 
 class InstantReplyMessage(BaseModel):
     id: Optional[str] = None
@@ -17,17 +28,13 @@ class InstantReplyUpdate(BaseModel):
 
 @router.post("/")
 async def set_instant_reply(
-    x_api_key: str = Header(...),
-    data: InstantReplyUpdate = Body(...)
+    data: InstantReplyUpdate = Body(...),
+    organization=Depends(get_organization_from_api_key)
 ):
     try:
-        org = get_organization_by_api_key(x_api_key)
-        if not org:
-            raise HTTPException(status_code=401, detail="Invalid API key")
-        
         # Check if an instant reply already exists for this org
         existing_reply = db.instant_reply.find_one({
-            "organization_id": str(org["_id"]), 
+            "organization_id": str(organization["_id"]), 
             "type": "instant_reply"
         })
         
@@ -57,7 +64,7 @@ async def set_instant_reply(
         
         # Create new instant reply
         new_reply = {
-            "organization_id": str(org["_id"]),
+            "organization_id": str(organization["_id"]),
             "type": "instant_reply",
             "messages": messages_data,
             "isActive": data.isActive,
@@ -71,14 +78,10 @@ async def set_instant_reply(
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/")
-async def get_instant_reply(x_api_key: str = Header(...)):
+async def get_instant_reply(organization=Depends(get_organization_from_api_key)):
     try:
-        org = get_organization_by_api_key(x_api_key)
-        if not org:
-            raise HTTPException(status_code=401, detail="Invalid API key")
-            
         reply = db.instant_reply.find_one({
-            "organization_id": str(org["_id"]),
+            "organization_id": str(organization["_id"]),
             "type": "instant_reply"
         })
         
@@ -110,15 +113,11 @@ async def get_instant_reply(x_api_key: str = Header(...)):
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.delete("/")
-async def delete_instant_reply(x_api_key: str = Header(...)):
+async def delete_instant_reply(organization=Depends(get_organization_from_api_key)):
     try:
-        org = get_organization_by_api_key(x_api_key)
-        if not org:
-            raise HTTPException(status_code=401, detail="Invalid API key")
-            
         # Find and delete the instant reply document
         result = db.instant_reply.delete_one({
-            "organization_id": str(org["_id"]),
+            "organization_id": str(organization["_id"]),
             "type": "instant_reply"
         })
             
