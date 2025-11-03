@@ -87,14 +87,18 @@ async def leads_list_byorg(
     skip: int = 0,
     organization=Depends(get_organization_from_api_key)
 ):
+    """Get leads for an organization (follows settings route structure)."""
     try:
+        # Use organization from dependency injection (same as settings route)
         org_id = organization_id or str(organization.get("_id") or organization.get("id"))
 
-        print("Final Org ID:", org_id)
+        print(f"[LEADS] Fetching leads for organization: {org_id}")
 
         leads_list = get_leads_by_organization(org_id, limit=limit, skip=skip)
 
+        # Match settings route response format
         return {
+            "status": "success",
             "organization_id": org_id,
             "total": len(leads_list),
             "leads": leads_list
@@ -102,8 +106,8 @@ async def leads_list_byorg(
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Error listing organization leads: {e}")
-        raise HTTPException(status_code=500, detail="Failed to list organization leads")
+        print(f"[ERROR] Error listing organization leads: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/leads-list-all")
