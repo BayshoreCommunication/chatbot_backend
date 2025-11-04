@@ -129,6 +129,13 @@ except Exception as e:
     print(f"Warning: Conversations router failed to import: {e}")
     conversations_available = False
 
+try:
+    from routes.faq_intelligence import router as faq_intelligence_router
+    faq_intelligence_available = True
+except Exception as e:
+    print(f"Warning: FAQ Intelligence router failed to import: {e}")
+    faq_intelligence_available = False
+
 # API credentials are now hardcoded in the respective service files
 # But we still need to load environment variables for configuration
 load_dotenv()
@@ -250,6 +257,11 @@ if sales_available:
 if organization_available:
     app.include_router(organization_router, prefix="/organization", tags=["Organization Management"])
     available_features.append("Multi-tenant organization support")
+
+# FAQ Intelligence router
+if faq_intelligence_available:
+    app.include_router(faq_intelligence_router, prefix="/api/faq-intelligence", tags=["FAQ Intelligence"])
+    available_features.append("AI-Powered FAQ Analysis & Suggestions")
 
 # Dashboard router is always included
 app.include_router(dashboard_router, prefix="/api", tags=["Dashboard"])
