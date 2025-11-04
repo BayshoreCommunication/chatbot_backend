@@ -33,7 +33,224 @@ async def get_organization_from_api_key(api_key: Optional[str] = Header(None, al
     return organization
 
 
-@router.get("/analyze")
+@router.get("/latest")
+async def get_latest_analysis(
+    organization=Depends(get_organization_from_api_key)
+):
+    """
+    📊 Get Latest Analysis Report
+    
+    Returns the most recent analysis report for the organization.
+    If no analysis exists, runs quick-check to show immediate stats.
+    
+    This endpoint loads on page mount to show last analysis data.
+    """
+    try:
+        org_id = organization["id"]
+        
+        # Get latest report
+        latest_report = analysis_reports.find_one(
+            {"organization_id": org_id},
+            sort=[("timestamp", -1)]
+        )
+        
+        if latest_report:
+            # Convert ObjectId to string for JSON serialization
+            latest_report["_id"] = str(latest_report["_id"])
+            
+            return {
+                "status": "success",
+                **latest_report
+            }
+        
+        # No analysis yet - run quick check to show immediate stats
+        print(f"⚡ No analysis found for org {org_id}, running quick check...")
+        
+        # Get user data
+        user_id = organization.get("user_id")
+        user_data = {}
+        if user_id:
+            user = db.users.find_one({"_id": ObjectId(user_id)} if len(str(user_id)) == 24 else {"id": user_id})
+            if user:
+                user_data = user
+        
+        # Quick checks
+        missing_fields = []
+        alerts = []
+        
+        # Check profile
+        if not user_data.get("organization_name"):
+            missing_fields.append("organization_name")
+            alerts.append({
+                "type": "critical",
+                "category": "profile",
+                "message": "Organization name is missing",
+                "action": "Add your organization name in settings"
+            })
+        
+        if not user_data.get("website"):
+            missing_fields.append("website")
+            alerts.append({
+                "type": "warning",
+                "category": "profile",
+                "message": "Website URL is missing",
+                "action": "Add your website URL to enable content analysis"
+            })
+        
+        if not user_data.get("company_organization_type"):
+            missing_fields.append("company_organization_type")
+            alerts.append({
+                "type": "warning",
+                "category": "profile",
+                "message": "Company type is missing",
+                "action": "Specify your company/organization type for better AI suggestions"
+            })
+        
+        # Check FAQs
+        faq_count = db.faqs.count_documents({
+            "org_id": org_id,
+            "is_active": True
+        })
+        
+        if faq_count == 0:
+            alerts.append({
+                "type": "critical",
+                "category": "faqs",
+                "message": "No FAQs found",
+                "action": "Add at least 5-10 FAQs to your knowledge base"
+            })
+        elif faq_count < 5:
+            alerts.append({
+                "type": "warning",
+                "category": "faqs",
+                "message": f"Only {faq_count} FAQ(s) found",
+                "action": "Add more FAQs for comprehensive coverage"
+            })
+        
+        # Check documents
+        all_uploads = list(db.upload_history.find({
+            "org_id": org_id,
+            "status": "Used"
+        }))
+        
+        doc_count = sum(1 for upload in all_uploads if upload.get("type") in ["pdf", "csv", "text"])
+        
+        if doc_count == 0:
+            alerts.append({
+                "type": "warning",
+                "category": "documents",
+                "message": "No training documents found",
+                "action": "Upload PDF documents to improve AI responses"
+            })
+        
+        # Calculate quick score
+        score = 0
+        if not missing_fields:
+            score += 30
+        elif len(missing_fields) == 1:
+            score += 20
+        elif len(missing_fields) == 2:
+            score += 10
+        
+        if faq_count >= 10:
+            score += 40
+        elif faq_count >= 5:
+            score += 30
+        elif faq_count > 0:
+            score += 20
+        
+        if doc_count > 0:
+            score += 15
+        
+        # Check if website is available (from user profile OR uploaded URLs)
+        # Collect ALL URL uploads (type="url")
+        url_uploads = [upload for upload in all_uploads if upload.get("type") == "url"]
+        url_count = len(url_uploads)
+        
+        has_website = bool(user_data.get("website"))
+        website_url = user_data.get("website")
+        trained_urls = []
+        
+        # Add profile website if exists
+        if has_website:
+            trained_urls.append(website_url)
+        
+        # Add all uploaded URLs
+        for url_upload in url_uploads:
+            url = url_upload.get("url")
+            if url and url not in trained_urls:
+                trained_urls.append(url)
+        
+        # Update has_website based on either profile or uploads
+        if not has_website and url_count > 0:
+            has_website = True
+        
+        if has_website:
+            score += 10
+        
+        # Conversation check
+        conv_count = db.conversations.count_documents({
+            "organization_id": org_id
+        })
+        if conv_count > 10:
+            score += 15
+        
+        # Return quick check result
+        return {
+            "status": "success",
+            "message": "Quick check complete. Click 'Run Analysis' for AI-powered suggestions.",
+            "analysis_type": "quick",
+            "readiness_score": min(100, score),
+            "timestamp": datetime.utcnow().isoformat(),
+            "alerts": alerts,
+            "suggestions": [{
+                "type": "info",
+                "message": "Run full analysis to get AI-powered FAQ suggestions",
+                "action": "Click 'Run Analysis' button above"
+            }],
+            "stats": {
+                "faq_count": faq_count,
+                "document_count": doc_count,
+                "website_url": website_url if has_website else None,
+                "trained_urls": trained_urls,
+                "url_count": len(trained_urls),
+                "has_website": has_website,
+                "conversation_count": conv_count,
+                "profile_complete": len(missing_fields) == 0,
+                "missing_fields": missing_fields
+            },
+            "analysis": {
+                "profile": {
+                    "complete": len(missing_fields) == 0,
+                    "missing_critical_fields": missing_fields
+                },
+                "faqs": {
+                    "count": faq_count,
+                    "status": "good" if faq_count >= 10 else "needs_improvement"
+                },
+                "documents": {
+                    "count": doc_count,
+                    "status": "good" if doc_count > 0 else "missing"
+                },
+                "website": {
+                    "url": website_url if has_website else None,
+                    "trained_urls": trained_urls,
+                    "url_count": len(trained_urls),
+                    "status": "configured" if has_website else "missing"
+                },
+                "conversations": {
+                    "count": conv_count,
+                    "status": "good" if conv_count > 10 else "needs_more"
+                }
+            }
+        }
+        
+    except Exception as e:
+        print(f"❌ [FAQ-INTELLIGENCE] Error getting latest: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/analyze")
 async def analyze_faq_readiness(
     organization=Depends(get_organization_from_api_key)
 ):
@@ -108,8 +325,15 @@ async def analyze_faq_readiness(
             })
         print(f"📋 Found {len(existing_faqs)} active FAQs")
         
-        # 2. Get conversation history (last 100)
+        # 2. Get conversation history (last 100 for analysis, but count all)
         # Using organization_id field from conversations collection
+        
+        # Count total conversations
+        total_conv_count = db.conversations.count_documents({
+            "organization_id": org_id
+        })
+        
+        # Get last 100 for AI analysis
         conversations = list(db.conversations.find({
             "organization_id": org_id
         }).sort("created_at", -1).limit(100))
@@ -121,7 +345,7 @@ async def analyze_faq_readiness(
             }
             for conv in conversations
         ]
-        print(f"💬 Found {len(conversation_data)} conversations")
+        print(f"💬 Found {total_conv_count} total conversations (using last {len(conversation_data)} for analysis)")
         
         # 3. Get uploaded documents from upload_history collection
         # Separate website URLs from actual documents (PDFs, CSV, etc.)
@@ -135,6 +359,11 @@ async def analyze_faq_readiness(
         # - type="pdf", "csv", etc. → Documents (use for document analysis)
         doc_data = []
         website_url = user_data.get("website")  # Primary website from user profile
+        trained_urls = []
+        
+        # Add profile website if exists
+        if website_url:
+            trained_urls.append(website_url)
         
         for upload in all_uploads:
             upload_type = upload.get("type", "")
@@ -157,15 +386,20 @@ async def analyze_faq_readiness(
                 if doc_info:
                     doc_data.append(doc_info)
             
-            # Website URL uploads (type="url") - use for website analysis
+            # Website URL uploads (type="url") - collect all URLs
             elif upload_type == "url" and upload.get("url"):
+                url = upload.get("url")
+                if url not in trained_urls:
+                    trained_urls.append(url)
+                
                 # If no website in user profile, use the first uploaded URL as website
                 if not website_url:
-                    website_url = upload.get("url")
+                    website_url = url
                     print(f"🌐 Using uploaded URL as website: {website_url}")
         
         print(f"📄 Found {len(doc_data)} actual documents (PDFs, CSVs)")
         print(f"🌐 Website URL: {website_url}")
+        print(f"🌐 Total trained URLs: {len(trained_urls)}")
         
         # 4. Prepare organization data (using exact field names from user model)
         # These fields come from the users collection, not organizations collection
@@ -205,14 +439,18 @@ async def analyze_faq_readiness(
             "stats": {
                 "faq_count": len(existing_faqs),
                 "document_count": len(doc_data),
-                "conversation_count": len(conversation_data),
+                "website_url": website_url,
+                "trained_urls": trained_urls,
+                "url_count": len(trained_urls),
+                "has_website": len(trained_urls) > 0,
+                "conversation_count": total_conv_count,  # Use total count, not limited data
                 "profile_complete": len(result['analysis'].get('profile', {}).get('missing_critical_fields', [])) == 0,
                 "missing_fields": result['analysis'].get('profile', {}).get('missing_critical_fields', [])
             }
         }
         
         # Insert new report
-        analysis_reports.insert_one(report)
+        result_insert = analysis_reports.insert_one(report)
         
         # Keep only last 5 reports per organization
         all_reports = list(analysis_reports.find({
@@ -227,7 +465,18 @@ async def analyze_faq_readiness(
         
         print(f"💾 Report saved. Total reports for org: {min(len(all_reports), 5)}")
         
-        return result
+        # Convert ObjectId to string and convert datetime to ISO format for JSON serialization
+        report_response = {
+            **report,
+            "_id": str(result_insert.inserted_id),
+            "timestamp": report["timestamp"].isoformat() if isinstance(report["timestamp"], datetime) else report["timestamp"]
+        }
+        
+        # Return the full report with stats and status
+        return {
+            "status": "success",
+            **report_response
+        }
         
     except HTTPException:
         raise
@@ -238,180 +487,6 @@ async def analyze_faq_readiness(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/quick-check")
-async def quick_readiness_check(
-    organization=Depends(get_organization_from_api_key)
-):
-    """
-    ⚡ Quick readiness check (no AI analysis)
-    
-    Fast check for:
-    - Organization profile completeness
-    - FAQ count
-    - Document count
-    
-    Use this for dashboard widgets or frequent checks
-    """
-    
-    try:
-        org_id = organization["id"]  # Same field as FAQ list API uses
-        
-        # Get user data (organization_name, website, company_organization_type are in users collection)
-        user_id = organization.get("user_id")
-        user_data = {}
-        if user_id:
-            user = db.users.find_one({"_id": ObjectId(user_id)} if len(str(user_id)) == 24 else {"id": user_id})
-            if user:
-                user_data = user
-        
-        # Quick checks
-        missing_fields = []
-        alerts = []
-        
-        # Check profile (using exact field names from user model - stored in users collection)
-        if not user_data.get("organization_name"):
-            missing_fields.append("organization_name")
-            alerts.append({
-                "type": "critical",
-                "message": "⚠️ Organization name is missing",
-                "action": "Add your organization name in settings"
-            })
-        
-        if not user_data.get("website"):
-            missing_fields.append("website")
-            alerts.append({
-                "type": "warning",
-                "message": "⚠️ Website URL is missing",
-                "action": "Add your website URL to enable content analysis"
-            })
-        
-        if not user_data.get("company_organization_type"):
-            missing_fields.append("company_organization_type")
-            alerts.append({
-                "type": "warning",
-                "message": "⚠️ Company type is missing",
-                "action": "Specify your company/organization type for better AI suggestions"
-            })
-        
-        # Check FAQs using same query as FAQ list API
-        faq_count = db.faqs.count_documents({
-            "org_id": org_id,
-            "is_active": True
-        })
-        
-        if faq_count == 0:
-            alerts.append({
-                "type": "critical",
-                "message": "❌ No FAQs found",
-                "action": "Add at least 5-10 FAQs to your knowledge base"
-            })
-        elif faq_count < 5:
-            alerts.append({
-                "type": "warning",
-                "message": f"⚠️ Only {faq_count} FAQ(s) found",
-                "action": "Add more FAQs for comprehensive coverage"
-            })
-        
-        # Check documents from upload_history (PDFs, CSVs - NOT URLs)
-        # URLs (type="url") are for website training, not documents
-        all_uploads = list(db.upload_history.find({
-            "org_id": org_id,
-            "status": "Used"
-        }))
-        
-        # Count only actual documents (PDFs, CSV, text) - NOT URLs
-        doc_count = sum(1 for upload in all_uploads if upload.get("type") in ["pdf", "csv", "text"])
-        
-        # Check if website is available (from user profile OR uploaded URLs)
-        has_website = bool(user_data.get("website"))
-        if not has_website:
-            # Check if any URL was uploaded (type="url")
-            has_website = any(upload.get("type") == "url" for upload in all_uploads)
-        
-        if doc_count == 0:
-            alerts.append({
-                "type": "warning",
-                "message": "⚠️ No training documents found",
-                "action": "Upload PDF documents to improve AI responses"
-            })
-        
-        # Calculate quick score
-        score = 0
-        if not missing_fields:
-            score += 30
-        elif len(missing_fields) == 1:
-            score += 20
-        elif len(missing_fields) == 2:
-            score += 10
-        
-        if faq_count >= 10:
-            score += 40
-        elif faq_count >= 5:
-            score += 30
-        elif faq_count > 0:
-            score += 20
-        
-        if doc_count > 0:
-            score += 15
-        
-        # Conversation check
-        conv_count = db.conversations.count_documents({
-            "organization_id": org_id
-        })
-        if conv_count > 10:
-            score += 15
-        
-        # Prepare result
-        result = {
-            "status": "success",
-            "readiness_score": min(100, score),
-            "alerts": alerts,
-            "stats": {
-                "profile_complete": len(missing_fields) == 0,
-                "missing_fields": missing_fields,
-                "faq_count": faq_count,
-                "document_count": doc_count,
-                "conversation_count": conv_count
-            },
-            "recommendation": "Run full analysis for detailed suggestions" if score < 70 else "Your setup looks good!"
-        }
-        
-        # Save quick check report (keep last 5)
-        report = {
-            "organization_id": org_id,
-            "analysis_type": "quick",
-            "readiness_score": min(100, score),
-            "timestamp": datetime.utcnow(),
-            "alerts": alerts,
-            "suggestions": [],
-            "analysis": {},
-            "stats": {
-                "faq_count": faq_count,
-                "document_count": doc_count,
-                "conversation_count": conv_count,
-                "profile_complete": len(missing_fields) == 0,
-                "missing_fields": missing_fields
-            }
-        }
-        
-        # Insert new report
-        analysis_reports.insert_one(report)
-        
-        # Keep only last 5 reports per organization
-        all_reports = list(analysis_reports.find({
-            "organization_id": org_id
-        }).sort("timestamp", -1))
-        
-        if len(all_reports) > 5:
-            reports_to_delete = all_reports[5:]
-            for old_report in reports_to_delete:
-                analysis_reports.delete_one({"_id": old_report["_id"]})
-        
-        return result
-        
-    except Exception as e:
-        print(f"❌ [FAQ-INTELLIGENCE] Quick check error: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/company-types")
