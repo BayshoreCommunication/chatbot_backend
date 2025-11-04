@@ -735,3 +735,73 @@ async def clear_analysis_history(
     except Exception as e:
         print(f"❌ [FAQ-INTELLIGENCE] Delete history error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/suggestion/{suggestion_index}")
+async def remove_suggestion(
+    suggestion_index: int,
+    organization=Depends(get_organization_from_api_key)
+):
+    """
+    🗑️ Remove a specific FAQ suggestion
+    
+    Removes a suggestion from the latest analysis report after it has been added to FAQs.
+    This prevents showing the same suggestion again.
+    
+    Args:
+        suggestion_index: The index of the suggestion to remove (0-based)
+    """
+    
+    try:
+        org_id = organization["id"]
+        
+        # Get the latest analysis report
+        latest_report = analysis_reports.find_one(
+            {"organization_id": org_id},
+            sort=[("timestamp", -1)]
+        )
+        
+        if not latest_report:
+            raise HTTPException(status_code=404, detail="No analysis report found")
+        
+        # Get current suggestions
+        suggestions = latest_report.get("suggestions", [])
+        
+        if suggestion_index < 0 or suggestion_index >= len(suggestions):
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Invalid suggestion index. Must be between 0 and {len(suggestions)-1}"
+            )
+        
+        # Remove the suggestion at the specified index
+        removed_suggestion = suggestions.pop(suggestion_index)
+        
+        # Update the report with the modified suggestions list
+        analysis_reports.update_one(
+            {"_id": latest_report["_id"]},
+            {
+                "$set": {
+                    "suggestions": suggestions,
+                    "updated_at": datetime.utcnow()
+                }
+            }
+        )
+        
+        print(f"✅ [FAQ-INTELLIGENCE] Removed suggestion at index {suggestion_index}: {removed_suggestion.get('question', 'Unknown')}")
+        
+        return {
+            "status": "success",
+            "message": "Suggestion removed successfully",
+            "removed_suggestion": {
+                "question": removed_suggestion.get("question", ""),
+                "priority": removed_suggestion.get("priority", ""),
+            },
+            "remaining_suggestions": len(suggestions)
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ [FAQ-INTELLIGENCE] Remove suggestion error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
