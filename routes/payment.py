@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request, Header
 from pydantic import BaseModel
 import stripe
 import os
@@ -13,15 +13,203 @@ from services.database import (
     get_user_subscription,
     db
 )
-from datetime import datetime
+from datetime import datetime, timedelta
 from models.organization import Subscription
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+import logging
 
 load_dotenv()
 
-# Configure Stripe - Use hardcoded key for testing
-stripe.api_key = "sk_test_51QCEQyP8UcLxbKnCosBh1PeLlk7yKSNtkoaERiMTqfJDKZLPXekSzsQaXZ3099U9EWHZT5DjJt97QXmT52TlAu4U00CJoNvgCt"
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Configure Stripe
+stripe.api_key = os.getenv("STRIPE_SECRET_KEY", "sk_test_51QCEQyP8UcLxbKnCosBh1PeLlk7yKSNtkoaERiMTqfJDKZLPXekSzsQaXZ3099U9EWHZT5DjJt97QXmT52TlAu4U00CJoNvgCt")
+STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "")
+
+# Email configuration
+SMTP_SERVICE = os.getenv("SMPT_SERVICE", "gmail")
+SMTP_HOST = os.getenv("SMPT_HOST", "smtp.gmail.com")
+SMTP_PORT = int(os.getenv("SMPT_PORT", "465"))
+SMTP_MAIL = os.getenv("SMPT_MAIL", "bayshoreai@gmail.com")
+SMTP_PASSWORD = os.getenv("SMPT_PASSWORD", "rcwa sfkr lkvs hxbd")
 
 router = APIRouter()
+
+# Email sending function
+def send_email(to_email: str, subject: str, html_content: str):
+    """Send email using SMTP"""
+    try:
+        msg = MIMEMultipart('alternative')
+        msg['From'] = SMTP_MAIL
+        msg['To'] = to_email
+        msg['Subject'] = subject
+        
+        html_part = MIMEText(html_content, 'html')
+        msg.attach(html_part)
+        
+        with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT) as server:
+            server.login(SMTP_MAIL, SMTP_PASSWORD)
+            server.send_message(msg)
+            
+        logger.info(f"Email sent successfully to {to_email}")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to send email to {to_email}: {str(e)}")
+        return False
+
+# Email templates
+def get_payment_confirmation_email(customer_name: str, plan_name: str, amount: float, billing_cycle: str, next_billing_date: str):
+    """Payment confirmation email template"""
+    return f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <style>
+            body {{ font-family: Arial, sans-serif; line-height: 1.6; color: #333; }}
+            .container {{ max-width: 600px; margin: 0 auto; padding: 20px; }}
+            .header {{ background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px; text-align: center; border-radius: 10px 10px 0 0; }}
+            .content {{ background: #f9f9f9; padding: 30px; border-radius: 0 0 10px 10px; }}
+            .button {{ background: #667eea; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; display: inline-block; margin: 20px 0; }}
+            .details {{ background: white; padding: 20px; border-radius: 5px; margin: 20px 0; }}
+            .footer {{ text-align: center; margin-top: 30px; color: #666; font-size: 12px; }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="header">
+                <h1>🎉 Payment Successful!</h1>
+            </div>
+            <div class="content">
+                <p>Hi {customer_name},</p>
+                <p>Thank you for subscribing to our AI Assistant! Your payment has been processed successfully.</p>
+                
+                <div class="details">
+                    <h3>Subscription Details:</h3>
+                    <p><strong>Plan:</strong> {plan_name}</p>
+                    <p><strong>Amount:</strong> ${amount:.2f}</p>
+                    <p><strong>Billing Cycle:</strong> {billing_cycle}</p>
+                    <p><strong>Next Billing Date:</strong> {next_billing_date}</p>
+                </div>
+                
+                <p>You can now access all premium features of your subscription.</p>
+                
+                <a href="{os.getenv('FRONTEND_URL', 'http://localhost:5173')}/dashboard" class="button">Go to Dashboard</a>
+                
+                <p>If you have any questions, feel free to reach out to our support team.</p>
+                
+                <p>Best regards,<br>AI Assistant Team</p>
+            </div>
+            <div class="footer">
+                <p>© 2025 AI Assistant. All rights reserved.</p>
+            </div>
+        </div>
+    </body>
+    </html>
+    """
+
+def get_subscription_expiry_warning_email(customer_name: str, plan_name: str, days_remaining: int, renewal_date: str, amount: float):
+    """Subscription expiry warning email template"""
+    urgency = "⚠️ URGENT:" if days_remaining == 1 else "⏰ Reminder:"
+    return f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <style>
+            body {{ font-family: Arial, sans-serif; line-height: 1.6; color: #333; }}
+            .container {{ max-width: 600px; margin: 0 auto; padding: 20px; }}
+            .header {{ background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%); color: white; padding: 30px; text-align: center; border-radius: 10px 10px 0 0; }}
+            .content {{ background: #f9f9f9; padding: 30px; border-radius: 0 0 10px 10px; }}
+            .warning-box {{ background: #fff3cd; border-left: 4px solid #ffc107; padding: 15px; margin: 20px 0; border-radius: 5px; }}
+            .button {{ background: #f5576c; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; display: inline-block; margin: 20px 0; }}
+            .footer {{ text-align: center; margin-top: 30px; color: #666; font-size: 12px; }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="header">
+                <h1>{urgency} Subscription Renewal</h1>
+            </div>
+            <div class="content">
+                <p>Hi {customer_name},</p>
+                
+                <div class="warning-box">
+                    <h3>Your subscription is expiring soon!</h3>
+                    <p><strong>Plan:</strong> {plan_name}</p>
+                    <p><strong>Days Remaining:</strong> {days_remaining} day{"s" if days_remaining > 1 else ""}</p>
+                    <p><strong>Renewal Date:</strong> {renewal_date}</p>
+                    <p><strong>Renewal Amount:</strong> ${amount:.2f}</p>
+                </div>
+                
+                <p>Your subscription will automatically renew on <strong>{renewal_date}</strong> unless you cancel before then.</p>
+                
+                <p>To manage your subscription or update payment methods:</p>
+                
+                <a href="{os.getenv('FRONTEND_URL', 'http://localhost:5173')}/dashboard/billing" class="button">Manage Subscription</a>
+                
+                <p>Thank you for being a valued customer!</p>
+                
+                <p>Best regards,<br>AI Assistant Team</p>
+            </div>
+            <div class="footer">
+                <p>© 2025 AI Assistant. All rights reserved.</p>
+            </div>
+        </div>
+    </body>
+    </html>
+    """
+
+def get_subscription_cancelled_email(customer_name: str, plan_name: str, end_date: str):
+    """Subscription cancelled email template"""
+    return f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <style>
+            body {{ font-family: Arial, sans-serif; line-height: 1.6; color: #333; }}
+            .container {{ max-width: 600px; margin: 0 auto; padding: 20px; }}
+            .header {{ background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px; text-align: center; border-radius: 10px 10px 0 0; }}
+            .content {{ background: #f9f9f9; padding: 30px; border-radius: 0 0 10px 10px; }}
+            .info-box {{ background: white; padding: 20px; border-radius: 5px; margin: 20px 0; border-left: 4px solid #667eea; }}
+            .button {{ background: #667eea; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; display: inline-block; margin: 20px 0; }}
+            .footer {{ text-align: center; margin-top: 30px; color: #666; font-size: 12px; }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="header">
+                <h1>Subscription Cancelled</h1>
+            </div>
+            <div class="content">
+                <p>Hi {customer_name},</p>
+                <p>We're sorry to see you go. Your subscription has been cancelled.</p>
+                
+                <div class="info-box">
+                    <h3>Cancellation Details:</h3>
+                    <p><strong>Plan:</strong> {plan_name}</p>
+                    <p><strong>Access Until:</strong> {end_date}</p>
+                </div>
+                
+                <p>You will continue to have access to all premium features until <strong>{end_date}</strong>.</p>
+                
+                <p>We'd love to have you back! If you change your mind:</p>
+                
+                <a href="{os.getenv('FRONTEND_URL', 'http://localhost:5173')}/landing" class="button">Resubscribe Now</a>
+                
+                <p>If you have any feedback or questions, please don't hesitate to reach out.</p>
+                
+                <p>Best regards,<br>AI Assistant Team</p>
+            </div>
+            <div class="footer">
+                <p>© 2025 AI Assistant. All rights reserved.</p>
+            </div>
+        </div>
+    </body>
+    </html>
+    """
 
 class CheckoutSessionRequest(BaseModel):
     priceId: str
@@ -29,7 +217,8 @@ class CheckoutSessionRequest(BaseModel):
     cancelUrl: str
     customerEmail: str = None
     planId: str
-    organizationId: str  # Add organization ID to request
+    billingCycle: str  # 'monthly' or 'yearly'
+    organizationId: str
 
 class VerifySessionRequest(BaseModel):
     sessionId: str
@@ -38,49 +227,13 @@ class VerifySessionRequest(BaseModel):
 async def create_checkout_session(request: CheckoutSessionRequest):
     """Create a Stripe checkout session for subscription payment"""
     try:
-        # Debug: Print API key status
-        print(f"Stripe API key set: {stripe.api_key[:20] + '...' if stripe.api_key else 'None'}")
+        logger.info(f"Creating checkout session for plan: {request.planId}, cycle: {request.billingCycle}")
         
-        # Map price IDs to amounts and intervals
-        price_map = {
-            'price_monthly': 4900,  # $49.00
-            'price_trial': 4900,    # $49.00 (charged after trial)
-            'price_yearly': 49900,  # $499.00
-        }
-        
-        plan_names = {
-            'price_monthly': 'AI Assistant - Monthly Plan',
-            'price_trial': 'AI Assistant - Trial Plan',
-            'price_yearly': 'AI Assistant - Yearly Plan',
-        }
-
-        plan_intervals = {
-            'price_monthly': 'month',
-            'price_trial': 'month',
-            'price_yearly': 'year',
-        }
-        
-        amount = price_map.get(request.priceId, 4900)
-        plan_name = plan_names.get(request.priceId, 'AI Assistant Subscription')
-        interval = plan_intervals.get(request.priceId, 'month')
-        
-        print(f"Creating session for {plan_name} - ${amount/100} per {interval}")
-        
-        # Create checkout session with dynamic pricing
+        # Use the actual Stripe Price IDs from the frontend
         session_params = {
             'payment_method_types': ['card'],
             'line_items': [{
-                'price_data': {
-                    'currency': 'usd',
-                    'product_data': {
-                        'name': plan_name,
-                        'description': f'Subscription to {plan_name}',
-                    },
-                    'unit_amount': amount,
-                    'recurring': {
-                        'interval': interval,
-                    },
-                },
+                'price': request.priceId,  # Use the actual Stripe Price ID
                 'quantity': 1,
             }],
             'mode': 'subscription',
@@ -90,26 +243,32 @@ async def create_checkout_session(request: CheckoutSessionRequest):
             'allow_promotion_codes': True,
             'metadata': {
                 'organization_id': request.organizationId,
-                'plan_id': request.planId
+                'plan_id': request.planId,
+                'billing_cycle': request.billingCycle
+            },
+            'subscription_data': {
+                'metadata': {
+                    'organization_id': request.organizationId,
+                    'plan_id': request.planId,
+                    'billing_cycle': request.billingCycle
+                }
             }
         }
 
         # Add trial period for trial plan
-        if request.priceId == 'price_trial':
-            session_params['subscription_data'] = {
-                'trial_period_days': 30,
-            }
+        if request.planId == 'trial':
+            session_params['subscription_data']['trial_period_days'] = 30
         
         session = stripe.checkout.Session.create(**session_params)
         
-        print(f"Session created successfully: {session.id}")
+        logger.info(f"Session created successfully: {session.id}")
         return {"sessionId": session.id}
     
     except stripe.error.StripeError as e:
-        print(f"Stripe error: {str(e)}")
+        logger.error(f"Stripe error: {str(e)}")
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        print(f"General error: {str(e)}")
+        logger.error(f"General error: {str(e)}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 @router.post("/verify-session")
@@ -285,4 +444,303 @@ async def get_user_subscription_data(user_id: str):
         }
     except Exception as e:
         print(f"Error fetching subscription: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e)) 
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/webhook")
+async def stripe_webhook(request: Request, stripe_signature: str = Header(None)):
+    """Handle Stripe webhook events"""
+    try:
+        payload = await request.body()
+        
+        # Verify webhook signature if secret is configured
+        if STRIPE_WEBHOOK_SECRET:
+            try:
+                event = stripe.Webhook.construct_event(
+                    payload, stripe_signature, STRIPE_WEBHOOK_SECRET
+                )
+            except ValueError as e:
+                logger.error(f"Invalid payload: {e}")
+                raise HTTPException(status_code=400, detail="Invalid payload")
+            except stripe.error.SignatureVerificationError as e:
+                logger.error(f"Invalid signature: {e}")
+                raise HTTPException(status_code=400, detail="Invalid signature")
+        else:
+            event = stripe.Event.construct_from(
+                stripe.util.convert_to_dict(payload), stripe.api_key
+            )
+        
+        logger.info(f"Received webhook event: {event['type']}")
+        
+        # Handle different event types
+        if event['type'] == 'checkout.session.completed':
+            session = event['data']['object']
+            await handle_checkout_completed(session)
+            
+        elif event['type'] == 'customer.subscription.created':
+            subscription = event['data']['object']
+            await handle_subscription_created(subscription)
+            
+        elif event['type'] == 'customer.subscription.updated':
+            subscription = event['data']['object']
+            await handle_subscription_updated(subscription)
+            
+        elif event['type'] == 'customer.subscription.deleted':
+            subscription = event['data']['object']
+            await handle_subscription_deleted(subscription)
+            
+        elif event['type'] == 'invoice.payment_succeeded':
+            invoice = event['data']['object']
+            await handle_payment_succeeded(invoice)
+            
+        elif event['type'] == 'invoice.payment_failed':
+            invoice = event['data']['object']
+            await handle_payment_failed(invoice)
+        
+        return {"status": "success"}
+        
+    except Exception as e:
+        logger.error(f"Webhook error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+async def handle_checkout_completed(session):
+    """Handle successful checkout"""
+    try:
+        logger.info(f"Processing checkout completion for session: {session['id']}")
+        
+        customer_email = session.get('customer_details', {}).get('email')
+        subscription_id = session.get('subscription')
+        
+        if not customer_email or not subscription_id:
+            logger.error("Missing customer email or subscription ID")
+            return
+        
+        # Get user
+        user = get_user_by_email(customer_email)
+        if not user:
+            logger.error(f"User not found: {customer_email}")
+            return
+        
+        # Get subscription details
+        subscription = stripe.Subscription.retrieve(subscription_id)
+        organization_id = session.get('metadata', {}).get('organization_id')
+        plan_id = session.get('metadata', {}).get('plan_id', 'professional')
+        billing_cycle = session.get('metadata', {}).get('billing_cycle', 'monthly')
+        
+        # Update user subscription status
+        update_user(user["id"], {
+            "has_paid_subscription": True,
+            "subscription_id": subscription_id
+        })
+        
+        # Update organization
+        if organization_id:
+            update_organization_subscription(organization_id, subscription_id)
+        
+        # Get price information
+        amount = subscription['items']['data'][0]['price']['unit_amount'] / 100
+        plan_name = f"{plan_id.capitalize()} - {billing_cycle.capitalize()}"
+        next_billing = datetime.fromtimestamp(subscription['current_period_end']).strftime('%B %d, %Y')
+        
+        # Send payment confirmation email
+        send_email(
+            to_email=customer_email,
+            subject="🎉 Payment Successful - Welcome to AI Assistant!",
+            html_content=get_payment_confirmation_email(
+                customer_name=user.get('name', 'Valued Customer'),
+                plan_name=plan_name,
+                amount=amount,
+                billing_cycle=billing_cycle,
+                next_billing_date=next_billing
+            )
+        )
+        
+        logger.info(f"Checkout completed successfully for {customer_email}")
+        
+    except Exception as e:
+        logger.error(f"Error handling checkout completion: {str(e)}")
+
+async def handle_subscription_created(subscription):
+    """Handle subscription creation"""
+    try:
+        logger.info(f"Processing subscription creation: {subscription['id']}")
+        
+        customer = stripe.Customer.retrieve(subscription['customer'])
+        customer_email = customer['email']
+        
+        # Create subscription record
+        subscription_data = {
+            "user_id": customer.get('metadata', {}).get('user_id'),
+            "organization_id": subscription.get('metadata', {}).get('organization_id'),
+            "stripe_subscription_id": subscription['id'],
+            "payment_amount": subscription['items']['data'][0]['price']['unit_amount'] / 100,
+            "subscription_tier": subscription.get('metadata', {}).get('plan_id', 'professional'),
+            "current_period_start": datetime.fromtimestamp(subscription['current_period_start']),
+            "current_period_end": datetime.fromtimestamp(subscription['current_period_end'])
+        }
+        
+        create_subscription(**subscription_data)
+        logger.info(f"Subscription created in database for {customer_email}")
+        
+    except Exception as e:
+        logger.error(f"Error handling subscription creation: {str(e)}")
+
+async def handle_subscription_updated(subscription):
+    """Handle subscription updates"""
+    try:
+        logger.info(f"Processing subscription update: {subscription['id']}")
+        
+        # Check if subscription is about to expire
+        current_period_end = datetime.fromtimestamp(subscription['current_period_end'])
+        days_until_renewal = (current_period_end - datetime.now()).days
+        
+        # Send warning emails
+        if days_until_renewal == 7 or days_until_renewal == 1:
+            customer = stripe.Customer.retrieve(subscription['customer'])
+            customer_email = customer['email']
+            user = get_user_by_email(customer_email)
+            
+            if user:
+                plan_name = subscription.get('metadata', {}).get('plan_id', 'Professional').capitalize()
+                amount = subscription['items']['data'][0]['price']['unit_amount'] / 100
+                
+                send_email(
+                    to_email=customer_email,
+                    subject=f"⏰ Subscription Renewal in {days_until_renewal} day{'s' if days_until_renewal > 1 else ''}",
+                    html_content=get_subscription_expiry_warning_email(
+                        customer_name=user.get('name', 'Valued Customer'),
+                        plan_name=plan_name,
+                        days_remaining=days_until_renewal,
+                        renewal_date=current_period_end.strftime('%B %d, %Y'),
+                        amount=amount
+                    )
+                )
+        
+    except Exception as e:
+        logger.error(f"Error handling subscription update: {str(e)}")
+
+async def handle_subscription_deleted(subscription):
+    """Handle subscription cancellation"""
+    try:
+        logger.info(f"Processing subscription deletion: {subscription['id']}")
+        
+        customer = stripe.Customer.retrieve(subscription['customer'])
+        customer_email = customer['email']
+        user = get_user_by_email(customer_email)
+        
+        if user:
+            # Update user subscription status
+            update_user(user["id"], {
+                "has_paid_subscription": False,
+                "subscription_id": None
+            })
+            
+            # Send cancellation email
+            plan_name = subscription.get('metadata', {}).get('plan_id', 'Professional').capitalize()
+            end_date = datetime.fromtimestamp(subscription['current_period_end']).strftime('%B %d, %Y')
+            
+            send_email(
+                to_email=customer_email,
+                subject="Subscription Cancelled - We're Sorry to See You Go",
+                html_content=get_subscription_cancelled_email(
+                    customer_name=user.get('name', 'Valued Customer'),
+                    plan_name=plan_name,
+                    end_date=end_date
+                )
+            )
+            
+        logger.info(f"Subscription deleted successfully for {customer_email}")
+        
+    except Exception as e:
+        logger.error(f"Error handling subscription deletion: {str(e)}")
+
+async def handle_payment_succeeded(invoice):
+    """Handle successful payment"""
+    try:
+        logger.info(f"Processing successful payment for invoice: {invoice['id']}")
+        
+        customer = stripe.Customer.retrieve(invoice['customer'])
+        customer_email = customer['email']
+        
+        # For recurring payments (not first payment)
+        if invoice.get('billing_reason') == 'subscription_cycle':
+            user = get_user_by_email(customer_email)
+            if user:
+                amount = invoice['amount_paid'] / 100
+                subscription = stripe.Subscription.retrieve(invoice['subscription'])
+                plan_name = subscription.get('metadata', {}).get('plan_id', 'Professional').capitalize()
+                next_billing = datetime.fromtimestamp(subscription['current_period_end']).strftime('%B %d, %Y')
+                billing_cycle = subscription.get('metadata', {}).get('billing_cycle', 'monthly')
+                
+                send_email(
+                    to_email=customer_email,
+                    subject="✅ Payment Received - Subscription Renewed",
+                    html_content=get_payment_confirmation_email(
+                        customer_name=user.get('name', 'Valued Customer'),
+                        plan_name=plan_name,
+                        amount=amount,
+                        billing_cycle=billing_cycle,
+                        next_billing_date=next_billing
+                    )
+                )
+        
+    except Exception as e:
+        logger.error(f"Error handling payment success: {str(e)}")
+
+async def handle_payment_failed(invoice):
+    """Handle failed payment"""
+    try:
+        logger.info(f"Processing failed payment for invoice: {invoice['id']}")
+        
+        customer = stripe.Customer.retrieve(invoice['customer'])
+        customer_email = customer['email']
+        user = get_user_by_email(customer_email)
+        
+        if user:
+            # Send payment failed email
+            html_content = f"""
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <style>
+                    body {{ font-family: Arial, sans-serif; line-height: 1.6; color: #333; }}
+                    .container {{ max-width: 600px; margin: 0 auto; padding: 20px; }}
+                    .header {{ background: linear-gradient(135deg, #f5576c 0%, #f093fb 100%); color: white; padding: 30px; text-align: center; border-radius: 10px 10px 0 0; }}
+                    .content {{ background: #f9f9f9; padding: 30px; border-radius: 0 0 10px 10px; }}
+                    .alert-box {{ background: #ffe6e6; border-left: 4px solid #f5576c; padding: 15px; margin: 20px 0; border-radius: 5px; }}
+                    .button {{ background: #f5576c; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; display: inline-block; margin: 20px 0; }}
+                </style>
+            </head>
+            <body>
+                <div class="container">
+                    <div class="header">
+                        <h1>⚠️ Payment Failed</h1>
+                    </div>
+                    <div class="content">
+                        <p>Hi {user.get('name', 'Valued Customer')},</p>
+                        
+                        <div class="alert-box">
+                            <h3>We were unable to process your payment</h3>
+                            <p>Your subscription payment has failed. Please update your payment method to continue using our services.</p>
+                        </div>
+                        
+                        <p>To avoid service interruption, please update your payment information as soon as possible.</p>
+                        
+                        <a href="{os.getenv('FRONTEND_URL', 'http://localhost:5173')}/dashboard/billing" class="button">Update Payment Method</a>
+                        
+                        <p>If you have any questions, please contact our support team.</p>
+                        
+                        <p>Best regards,<br>AI Assistant Team</p>
+                    </div>
+                </div>
+            </body>
+            </html>
+            """
+            
+            send_email(
+                to_email=customer_email,
+                subject="❌ Payment Failed - Action Required",
+                html_content=html_content
+            )
+        
+    except Exception as e:
+        logger.error(f"Error handling payment failure: {str(e)}") 
