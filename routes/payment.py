@@ -19,6 +19,7 @@ import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import logging
+from services.subscription_emails import send_subscription_confirmation_email
 
 load_dotenv()
 
@@ -228,6 +229,15 @@ async def create_checkout_session(request: CheckoutSessionRequest):
     """Create a Stripe checkout session for subscription payment"""
     try:
         logger.info(f"Creating checkout session for plan: {request.planId}, cycle: {request.billingCycle}")
+        
+        # Free trial validation - check if user already used their free trial
+        if request.planId == 'trial' and request.customerEmail:
+            user = get_user_by_email(request.customerEmail)
+            if user and user.get('free_trial_used', False):
+                raise HTTPException(
+                    status_code=400,
+                    detail="You have already used your free trial. Please select a paid plan."
+                )
         
         # Use the actual Stripe Price IDs from the frontend
         session_params = {
@@ -520,41 +530,67 @@ async def handle_checkout_completed(session):
             logger.error(f"User not found: {customer_email}")
             return
         
-        # Get subscription details
+        # Get subscription details from Stripe
         subscription = stripe.Subscription.retrieve(subscription_id)
         organization_id = session.get('metadata', {}).get('organization_id')
         plan_id = session.get('metadata', {}).get('plan_id', 'professional')
         billing_cycle = session.get('metadata', {}).get('billing_cycle', 'monthly')
         
-        # Update user subscription status
-        update_user(user["id"], {
-            "has_paid_subscription": True,
-            "subscription_id": subscription_id
-        })
-        
-        # Update organization
-        if organization_id:
-            update_organization_subscription(organization_id, subscription_id)
+        # Calculate subscription dates
+        subscription_start = datetime.fromtimestamp(subscription['current_period_start'])
+        subscription_end = datetime.fromtimestamp(subscription['current_period_end'])
         
         # Get price information
         amount = subscription['items']['data'][0]['price']['unit_amount'] / 100
-        plan_name = f"{plan_id.capitalize()} - {billing_cycle.capitalize()}"
-        next_billing = datetime.fromtimestamp(subscription['current_period_end']).strftime('%B %d, %Y')
+        plan_name = f"{plan_id.capitalize()}"
         
-        # Send payment confirmation email
-        send_email(
+        # Determine subscription type based on plan_id
+        if plan_id == 'trial':
+            subscription_type = 'free_trial'
+        elif plan_id == 'professional':
+            subscription_type = 'professional'
+        elif plan_id == 'enterprise':
+            subscription_type = 'enterprise'
+        else:
+            subscription_type = 'free'
+        
+        # Prepare update data
+        update_data = {
+            "has_paid_subscription": True,
+            "subscription_type": subscription_type,
+            "subscription_start_date": subscription_start,
+            "subscription_end_date": subscription_end,
+            "billing_cycle": billing_cycle,
+            "stripe_subscription_id": subscription_id,
+            "stripe_customer_id": subscription['customer'],
+            "updated_at": datetime.utcnow()
+        }
+        
+        # Mark free trial as used if this is a trial subscription
+        if plan_id == 'trial':
+            update_data["free_trial_used"] = True
+            logger.info(f"Marking free trial as used for {customer_email}")
+        
+        # Update user subscription data with all new fields
+        update_user(user["id"], update_data)
+        
+        # Update organization if exists
+        if organization_id:
+            update_organization_subscription(organization_id, subscription_id)
+        
+        # Send subscription confirmation email
+        send_subscription_confirmation_email(
             to_email=customer_email,
-            subject="🎉 Payment Successful - Welcome to AI Assistant!",
-            html_content=get_payment_confirmation_email(
-                customer_name=user.get('name', 'Valued Customer'),
-                plan_name=plan_name,
-                amount=amount,
-                billing_cycle=billing_cycle,
-                next_billing_date=next_billing
-            )
+            customer_name=user.get('organization_name') or user.get('email', '').split('@')[0],
+            plan_name=plan_name,
+            amount=amount,
+            billing_cycle=billing_cycle,
+            subscription_start=subscription_start.strftime('%B %d, %Y'),
+            subscription_end=subscription_end.strftime('%B %d, %Y')
         )
         
         logger.info(f"Checkout completed successfully for {customer_email}")
+        logger.info(f"Subscription dates: {subscription_start} to {subscription_end}")
         
     except Exception as e:
         logger.error(f"Error handling checkout completion: {str(e)}")
@@ -567,19 +603,54 @@ async def handle_subscription_created(subscription):
         customer = stripe.Customer.retrieve(subscription['customer'])
         customer_email = customer['email']
         
-        # Create subscription record
+        # Get user
+        user = get_user_by_email(customer_email)
+        if not user:
+            logger.error(f"User not found: {customer_email}")
+            return
+        
+        # Calculate subscription dates
+        subscription_start = datetime.fromtimestamp(subscription['current_period_start'])
+        subscription_end = datetime.fromtimestamp(subscription['current_period_end'])
+        plan_id = subscription.get('metadata', {}).get('plan_id', 'professional')
+        billing_cycle = subscription.get('metadata', {}).get('billing_cycle', 'monthly')
+        
+        # Determine subscription type
+        if plan_id == 'trial':
+            subscription_type = 'free_trial'
+        elif plan_id == 'professional':
+            subscription_type = 'professional'
+        elif plan_id == 'enterprise':
+            subscription_type = 'enterprise'
+        else:
+            subscription_type = 'free'
+        
+        # Update user with subscription details
+        update_user(user["id"], {
+            "has_paid_subscription": True,
+            "subscription_type": subscription_type,
+            "subscription_start_date": subscription_start,
+            "subscription_end_date": subscription_end,
+            "billing_cycle": billing_cycle,
+            "stripe_subscription_id": subscription['id'],
+            "stripe_customer_id": subscription['customer'],
+            "updated_at": datetime.utcnow()
+        })
+        
+        # Create subscription record in database
         subscription_data = {
-            "user_id": customer.get('metadata', {}).get('user_id'),
+            "user_id": user["id"],
             "organization_id": subscription.get('metadata', {}).get('organization_id'),
             "stripe_subscription_id": subscription['id'],
             "payment_amount": subscription['items']['data'][0]['price']['unit_amount'] / 100,
-            "subscription_tier": subscription.get('metadata', {}).get('plan_id', 'professional'),
-            "current_period_start": datetime.fromtimestamp(subscription['current_period_start']),
-            "current_period_end": datetime.fromtimestamp(subscription['current_period_end'])
+            "subscription_tier": subscription_type,
+            "current_period_start": subscription_start,
+            "current_period_end": subscription_end
         }
         
         create_subscription(**subscription_data)
         logger.info(f"Subscription created in database for {customer_email}")
+        logger.info(f"Subscription period: {subscription_start} to {subscription_end}")
         
     except Exception as e:
         logger.error(f"Error handling subscription creation: {str(e)}")
@@ -628,10 +699,14 @@ async def handle_subscription_deleted(subscription):
         user = get_user_by_email(customer_email)
         
         if user:
-            # Update user subscription status
+            # Update user subscription status - reset to free tier
             update_user(user["id"], {
                 "has_paid_subscription": False,
-                "subscription_id": None
+                "subscription_type": "free",
+                "stripe_subscription_id": None,
+                "billing_cycle": None,
+                "updated_at": datetime.utcnow()
+                # Note: We keep subscription_start_date and subscription_end_date for history
             })
             
             # Send cancellation email
@@ -642,7 +717,7 @@ async def handle_subscription_deleted(subscription):
                 to_email=customer_email,
                 subject="Subscription Cancelled - We're Sorry to See You Go",
                 html_content=get_subscription_cancelled_email(
-                    customer_name=user.get('name', 'Valued Customer'),
+                    customer_name=user.get('organization_name') or user.get('email', '').split('@')[0],
                     plan_name=plan_name,
                     end_date=end_date
                 )

@@ -58,11 +58,14 @@ async def register(user: UserCreate):
     if get_user_by_email(user.email):
         raise HTTPException(status_code=400, detail="Email already registered")
     
-    # Create new user
+    # Create new user with organization_name defaulting to email prefix if not provided
     user_data = create_user({
         "email": user.email,
         "password": user.password,
-        "name": user.name,
+        "organization_name": user.organization_name or user.email.split('@')[0],
+        "website": user.website,
+        "company_organization_type": user.company_organization_type,
+        "has_paid_subscription": user.has_paid_subscription,
     })
     
     # Create access token
@@ -182,11 +185,14 @@ async def google_auth(user: UserGoogle):
                 detail="Email already registered with different method"
             )
         
-        # Create new user
+        # Create new user with Google OAuth data
         user_data = create_user({
             "email": user.email,
-            "name": user.name,
+            "organization_name": user.organization_name or user.email.split('@')[0],
             "google_id": user.google_id,
+            "website": user.website,
+            "company_organization_type": user.company_organization_type,
+            "has_paid_subscription": user.has_paid_subscription,
         })
     
     # Create access token

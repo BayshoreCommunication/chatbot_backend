@@ -303,6 +303,14 @@ async def startup_event():
     """Run on application startup"""
     # Seed default admin user
     seed_default_admin()
+    
+    # Start subscription monitoring service
+    try:
+        from services.subscription_monitor import start_subscription_monitor
+        start_subscription_monitor()
+        print("Subscription monitor started successfully")
+    except Exception as e:
+        print(f"Warning: Failed to start subscription monitor: {e}")
 
 # Create the final app instance
 if chatbot_available and 'socket_app' in locals():
