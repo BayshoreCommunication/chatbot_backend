@@ -35,7 +35,7 @@ SMTP_SERVICE = os.getenv("SMPT_SERVICE", "gmail")
 SMTP_HOST = os.getenv("SMPT_HOST", "smtp.gmail.com")
 SMTP_PORT = int(os.getenv("SMPT_PORT", "465"))
 SMTP_MAIL = os.getenv("SMPT_MAIL", "bayshoreai@gmail.com")
-SMTP_PASSWORD = os.getenv("SMPT_PASSWORD", "rcwa sfkr lkvs hxbd")
+SMTP_PASSWORD = os.getenv("SMPT_PASSWORD", "rcwasfkrlkvshxbd")  # Fixed: removed spaces
 
 router = APIRouter()
 

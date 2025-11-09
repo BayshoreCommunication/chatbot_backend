@@ -33,9 +33,9 @@ SECRET_KEY = os.getenv("JWT_SECRET_KEY", "your-secret-key")
 ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("JWT_ACCESS_TOKEN_EXPIRE_MINUTES", "30"))
 
-# Google OAuth configuration
-GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "580986048415-qpgtv2kvij47ae4if8ep47jjq8o2qtmj.apps.googleusercontent.com")
-GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "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")
+# Google OAuth configuration - MUST match frontend credentials
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "29570795006-hidgjb0mu747knbjok10fs9v3r876ude.apps.googleusercontent.com")
+GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "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")
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 

@@ -18,9 +18,9 @@ with open('.env', 'w') as f:
     f.write('DO_SPACES_SECRET=VTaTd4LASdw+OjDylmiBOPa4GOD956R/25597C7ULX8\n') 
     f.write('DO_FOLDER_NAME=ai_bot\n')
     
-    # Add Google OAuth configuration
-    f.write('GOOGLE_CLIENT_ID=580986048415-qpgtv2kvij47ae4if8ep47jjq8o2qtmj.apps.googleusercontent.com\n')
-    f.write('GOOGLE_CLIENT_SECRET=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\n')
+    # Add Google OAuth configuration - Updated credentials
+    f.write('GOOGLE_CLIENT_ID=29570795006-hidgjb0mu747knbjok10fs9v3r876ude.apps.googleusercontent.com\n')
+    f.write('GOOGLE_CLIENT_SECRET=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\n')
     
     # Add JWT configuration
     f.write('JWT_SECRET_KEY=e4f7c6d9b2a84f4aa01f1e3391e3e33e7c8a9cf23de141df97ad9e915c90b0f8\n')
