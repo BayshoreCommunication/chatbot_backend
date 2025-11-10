@@ -27,6 +27,16 @@ FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
 def send_email(to_email: str, subject: str, html_content: str) -> bool:
     """Send email using SMTP"""
     try:
+        # Validate configuration
+        if not SMTP_PASSWORD or not SMTP_MAIL:
+            logger.error("❌ SMTP configuration incomplete: Missing password or email")
+            logger.error(f"SMTP_MAIL: {SMTP_MAIL}, SMTP_PASSWORD: {'SET' if SMTP_PASSWORD else 'NOT SET'}")
+            return False
+        
+        logger.info(f"📧 Preparing email to {to_email}")
+        logger.info(f"📧 Subject: {subject}")
+        logger.info(f"📧 SMTP Config: {SMTP_HOST}:{SMTP_PORT}")
+        
         msg = MIMEMultipart('alternative')
         msg['From'] = SMTP_MAIL
         msg['To'] = to_email
@@ -35,14 +45,25 @@ def send_email(to_email: str, subject: str, html_content: str) -> bool:
         html_part = MIMEText(html_content, 'html')
         msg.attach(html_part)
         
+        logger.info(f"🔌 Connecting to SMTP server...")
         with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT) as server:
+            logger.info(f"🔐 Authenticating as {SMTP_MAIL}...")
             server.login(SMTP_MAIL, SMTP_PASSWORD)
+            logger.info(f"📤 Sending email...")
             server.send_message(msg)
             
-        logger.info(f"Email sent successfully to {to_email}")
+        logger.info(f"✅ Email sent successfully to {to_email}")
         return True
+    except smtplib.SMTPAuthenticationError as e:
+        logger.error(f"❌ SMTP Authentication failed: {str(e)}")
+        logger.error(f"❌ Check SMTP_MAIL ({SMTP_MAIL}) and SMTP_PASSWORD in .env")
+        return False
+    except smtplib.SMTPException as e:
+        logger.error(f"❌ SMTP error sending to {to_email}: {str(e)}")
+        return False
     except Exception as e:
-        logger.error(f"Failed to send email to {to_email}: {str(e)}")
+        logger.error(f"❌ Failed to send email to {to_email}: {str(e)}")
+        logger.error(f"❌ Error type: {type(e).__name__}")
         return False
 
 

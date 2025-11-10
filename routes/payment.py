@@ -594,23 +594,24 @@ async def handle_checkout_completed(session):
         if organization_id:
             update_organization_subscription(organization_id, subscription_id)
         
-        # Send subscription confirmation email
+        # Send subscription confirmation email using the proper service function
         customer_name = user.get('organization_name') or user.get('email', '').split('@')[0]
-        email_subject = f"🎉 Welcome to {plan_name} Plan!"
-        email_content = get_payment_confirmation_email(
+        
+        logger.info(f"Sending confirmation email to {customer_email}")
+        email_sent = send_subscription_confirmation_email(
+            to_email=customer_email,
             customer_name=customer_name,
             plan_name=plan_name,
             amount=amount,
             billing_cycle=billing_cycle,
-            next_billing_date=subscription_end.strftime('%B %d, %Y')
+            subscription_start=subscription_start.strftime('%B %d, %Y'),
+            subscription_end=subscription_end.strftime('%B %d, %Y')
         )
         
-        # Send the email
-        email_sent = send_email(customer_email, email_subject, email_content)
         if email_sent:
-            logger.info(f"Confirmation email sent successfully to {customer_email}")
+            logger.info(f"✅ Confirmation email sent successfully to {customer_email}")
         else:
-            logger.error(f"Failed to send confirmation email to {customer_email}")
+            logger.error(f"❌ Failed to send confirmation email to {customer_email}")
         
         logger.info(f"Checkout completed successfully for {customer_email}")
         logger.info(f"Subscription dates: {subscription_start} to {subscription_end}")
