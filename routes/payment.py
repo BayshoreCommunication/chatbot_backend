@@ -44,6 +44,11 @@ router = APIRouter()
 def send_email(to_email: str, subject: str, html_content: str):
     """Send email using SMTP"""
     try:
+        # Validate email configuration
+        if not SMTP_PASSWORD or not SMTP_MAIL:
+            logger.error("SMTP configuration incomplete: Missing password or email")
+            return False
+            
         msg = MIMEMultipart('alternative')
         msg['From'] = SMTP_MAIL
         msg['To'] = to_email
@@ -52,14 +57,25 @@ def send_email(to_email: str, subject: str, html_content: str):
         html_part = MIMEText(html_content, 'html')
         msg.attach(html_part)
         
+        logger.info(f"Attempting to send email to {to_email}")
+        logger.info(f"SMTP Host: {SMTP_HOST}, Port: {SMTP_PORT}")
+        
         with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT) as server:
             server.login(SMTP_MAIL, SMTP_PASSWORD)
             server.send_message(msg)
             
-        logger.info(f"Email sent successfully to {to_email}")
+        logger.info(f"✅ Email sent successfully to {to_email}")
         return True
+    except smtplib.SMTPAuthenticationError as e:
+        logger.error(f"❌ SMTP Authentication failed: {str(e)}")
+        logger.error(f"Check SMTP_MAIL and SMTP_PASSWORD in .env file")
+        return False
+    except smtplib.SMTPException as e:
+        logger.error(f"❌ SMTP error when sending to {to_email}: {str(e)}")
+        return False
     except Exception as e:
-        logger.error(f"Failed to send email to {to_email}: {str(e)}")
+        logger.error(f"❌ Failed to send email to {to_email}: {str(e)}")
+        logger.error(f"Error type: {type(e).__name__}")
         return False
 
 # Email templates
@@ -579,15 +595,22 @@ async def handle_checkout_completed(session):
             update_organization_subscription(organization_id, subscription_id)
         
         # Send subscription confirmation email
-        send_subscription_confirmation_email(
-            to_email=customer_email,
-            customer_name=user.get('organization_name') or user.get('email', '').split('@')[0],
+        customer_name = user.get('organization_name') or user.get('email', '').split('@')[0]
+        email_subject = f"🎉 Welcome to {plan_name} Plan!"
+        email_content = get_payment_confirmation_email(
+            customer_name=customer_name,
             plan_name=plan_name,
             amount=amount,
             billing_cycle=billing_cycle,
-            subscription_start=subscription_start.strftime('%B %d, %Y'),
-            subscription_end=subscription_end.strftime('%B %d, %Y')
+            next_billing_date=subscription_end.strftime('%B %d, %Y')
         )
+        
+        # Send the email
+        email_sent = send_email(customer_email, email_subject, email_content)
+        if email_sent:
+            logger.info(f"Confirmation email sent successfully to {customer_email}")
+        else:
+            logger.error(f"Failed to send confirmation email to {customer_email}")
         
         logger.info(f"Checkout completed successfully for {customer_email}")
         logger.info(f"Subscription dates: {subscription_start} to {subscription_end}")
