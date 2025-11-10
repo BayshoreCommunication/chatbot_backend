@@ -168,44 +168,71 @@ async def login(request: Request, user: UserLogin):
             }
         )
 
+@router.options("/google")
+async def options_google():
+    """Handle OPTIONS request for Google OAuth endpoint"""
+    return JSONResponse(
+        content={},
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "POST, OPTIONS",
+            "Access-Control-Allow-Headers": "*"
+        }
+    )
+
 @router.post("/google")
 async def google_auth(user: UserGoogle):
-    # Check if user exists by Google ID
-    db_user = get_user_by_google_id(user.google_id)
-    
-    if db_user:
-        # User exists, update last login
-        user_data = db_user
-    else:
-        # Check if email already exists
-        email_user = get_user_by_email(user.email)
-        if email_user:
-            raise HTTPException(
-                status_code=400,
-                detail="Email already registered with different method"
-            )
+    try:
+        logger.info(f"Google OAuth attempt for email: {user.email}")
+        logger.debug(f"Google ID: {user.google_id}")
         
-        # Create new user with Google OAuth data
-        user_data = create_user({
-            "email": user.email,
-            "organization_name": user.organization_name or user.email.split('@')[0],
-            "google_id": user.google_id,
-            "website": user.website,
-            "company_organization_type": user.company_organization_type,
-            "has_paid_subscription": user.has_paid_subscription,
-        })
-    
-    # Create access token
-    access_token = create_access_token(
-        data={"sub": user.email},
-        expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    )
-    
-    return {
-        "access_token": access_token,
-        "token_type": "bearer",
-        "user": user_data
-    }
+        # Check if user exists by Google ID
+        db_user = get_user_by_google_id(user.google_id)
+        
+        if db_user:
+            # User exists, update last login
+            logger.info(f"Existing Google user found: {user.email}")
+            user_data = db_user
+        else:
+            # Check if email already exists
+            email_user = get_user_by_email(user.email)
+            if email_user:
+                logger.warning(f"Email already registered with different method: {user.email}")
+                raise HTTPException(
+                    status_code=400,
+                    detail="Email already registered with different method"
+                )
+            
+            # Create new user with Google OAuth data
+            logger.info(f"Creating new Google user: {user.email}")
+            user_data = create_user({
+                "email": user.email,
+                "organization_name": user.organization_name or user.email.split('@')[0],
+                "google_id": user.google_id,
+                "website": user.website,
+                "company_organization_type": user.company_organization_type,
+                "has_paid_subscription": user.has_paid_subscription,
+            })
+        
+        # Create access token
+        access_token = create_access_token(
+            data={"sub": user.email},
+            expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        )
+        
+        logger.info(f"Google OAuth successful for: {user.email}")
+        
+        return {
+            "access_token": access_token,
+            "token_type": "bearer",
+            "user": user_data
+        }
+    except HTTPException as e:
+        logger.error(f"HTTP Exception in Google OAuth: {str(e)}")
+        raise e
+    except Exception as e:
+        logger.error(f"Unexpected error in Google OAuth: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Authentication failed: {str(e)}")
 
 @router.get("/google/login")
 async def google_oauth_login(request: Request, state: str = None, redirect_uri: str = None):
