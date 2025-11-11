@@ -472,61 +472,7 @@ async def get_user_subscription_data(user_id: str):
         print(f"Error fetching subscription: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.post("/webhook")
-async def stripe_webhook(request: Request, stripe_signature: str = Header(None)):
-    """Handle Stripe webhook events"""
-    try:
-        payload = await request.body()
-        
-        # Verify webhook signature if secret is configured
-        if STRIPE_WEBHOOK_SECRET:
-            try:
-                event = stripe.Webhook.construct_event(
-                    payload, stripe_signature, STRIPE_WEBHOOK_SECRET
-                )
-            except ValueError as e:
-                logger.error(f"Invalid payload: {e}")
-                raise HTTPException(status_code=400, detail="Invalid payload")
-            except stripe.error.SignatureVerificationError as e:
-                logger.error(f"Invalid signature: {e}")
-                raise HTTPException(status_code=400, detail="Invalid signature")
-        else:
-            event = stripe.Event.construct_from(
-                stripe.util.convert_to_dict(payload), stripe.api_key
-            )
-        
-        logger.info(f"Received webhook event: {event['type']}")
-        
-        # Handle different event types
-        if event['type'] == 'checkout.session.completed':
-            session = event['data']['object']
-            await handle_checkout_completed(session)
-            
-        elif event['type'] == 'customer.subscription.created':
-            subscription = event['data']['object']
-            await handle_subscription_created(subscription)
-            
-        elif event['type'] == 'customer.subscription.updated':
-            subscription = event['data']['object']
-            await handle_subscription_updated(subscription)
-            
-        elif event['type'] == 'customer.subscription.deleted':
-            subscription = event['data']['object']
-            await handle_subscription_deleted(subscription)
-            
-        elif event['type'] == 'invoice.payment_succeeded':
-            invoice = event['data']['object']
-            await handle_payment_succeeded(invoice)
-            
-        elif event['type'] == 'invoice.payment_failed':
-            invoice = event['data']['object']
-            await handle_payment_failed(invoice)
-        
-        return {"status": "success"}
-        
-    except Exception as e:
-        logger.error(f"Webhook error: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+
 
 async def handle_checkout_completed(session):
     """Handle successful checkout"""
@@ -620,9 +566,9 @@ async def handle_checkout_completed(session):
         logger.error(f"Error handling checkout completion: {str(e)}")
 
 async def handle_subscription_created(subscription):
-    """Handle subscription creation"""
+    """Handle subscription creation - Auto update user, subscription, and organization"""
     try:
-        logger.info(f"Processing subscription creation: {subscription['id']}")
+        logger.info(f"🔔 Processing subscription creation: {subscription['id']}")
         
         customer = stripe.Customer.retrieve(subscription['customer'])
         customer_email = customer['email']
@@ -630,14 +576,17 @@ async def handle_subscription_created(subscription):
         # Get user
         user = get_user_by_email(customer_email)
         if not user:
-            logger.error(f"User not found: {customer_email}")
+            logger.error(f"❌ User not found: {customer_email}")
             return
+        
+        logger.info(f"✅ Found user: {customer_email}")
         
         # Calculate subscription dates
         subscription_start = datetime.fromtimestamp(subscription['current_period_start'])
         subscription_end = datetime.fromtimestamp(subscription['current_period_end'])
         plan_id = subscription.get('metadata', {}).get('plan_id', 'professional')
         billing_cycle = subscription.get('metadata', {}).get('billing_cycle', 'monthly')
+        organization_id = subscription.get('metadata', {}).get('organization_id')
         
         # Determine subscription type
         if plan_id == 'trial':
@@ -649,9 +598,15 @@ async def handle_subscription_created(subscription):
         else:
             subscription_type = 'free'
         
-        # Update user with subscription details
-        update_user(user["id"], {
-            "has_paid_subscription": True,
+        # Get price information
+        amount = subscription['items']['data'][0]['price']['unit_amount'] / 100
+        plan_name = f"{plan_id.capitalize()}"
+        
+        logger.info(f"📊 Subscription details: {plan_name}, ${amount}, {billing_cycle}")
+        
+        # ✅ AUTO UPDATE USER MODEL
+        update_data = {
+            "has_paid_subscription": True,  # ← Auto set to TRUE
             "subscription_type": subscription_type,
             "subscription_start_date": subscription_start,
             "subscription_end_date": subscription_end,
@@ -659,98 +614,226 @@ async def handle_subscription_created(subscription):
             "stripe_subscription_id": subscription['id'],
             "stripe_customer_id": subscription['customer'],
             "updated_at": datetime.utcnow()
-        })
+        }
         
-        # Create subscription record in database
+        # Mark free trial as used if this is a trial subscription
+        if plan_id == 'trial':
+            update_data["free_trial_used"] = True
+            logger.info(f"🎁 Marking free trial as used for {customer_email}")
+        
+        update_user(user["id"], update_data)
+        logger.info(f"✅ User model updated: has_paid_subscription = TRUE")
+        
+        # ✅ AUTO UPDATE ORGANIZATION MODEL (if exists)
+        if organization_id:
+            try:
+                update_organization_subscription(organization_id, subscription['id'])
+                logger.info(f"✅ Organization model updated: {organization_id}")
+            except Exception as org_error:
+                logger.error(f"⚠️  Failed to update organization: {org_error}")
+        
+        # ✅ AUTO CREATE SUBSCRIPTION RECORD
         subscription_data = {
             "user_id": user["id"],
-            "organization_id": subscription.get('metadata', {}).get('organization_id'),
+            "organization_id": organization_id,
             "stripe_subscription_id": subscription['id'],
-            "payment_amount": subscription['items']['data'][0]['price']['unit_amount'] / 100,
+            "payment_amount": amount,
             "subscription_tier": subscription_type,
             "current_period_start": subscription_start,
             "current_period_end": subscription_end
         }
         
         create_subscription(**subscription_data)
-        logger.info(f"Subscription created in database for {customer_email}")
-        logger.info(f"Subscription period: {subscription_start} to {subscription_end}")
+        logger.info(f"✅ Subscription record created in database")
+        
+        # ✅ SEND CONFIRMATION EMAIL
+        customer_name = user.get('organization_name') or user.get('email', '').split('@')[0]
+        
+        logger.info(f"📧 Sending confirmation email to {customer_email}")
+        email_sent = send_subscription_confirmation_email(
+            to_email=customer_email,
+            customer_name=customer_name,
+            plan_name=plan_name,
+            amount=amount,
+            billing_cycle=billing_cycle,
+            subscription_start=subscription_start.strftime('%B %d, %Y'),
+            subscription_end=subscription_end.strftime('%B %d, %Y')
+        )
+        
+        if email_sent:
+            logger.info(f"✅ Confirmation email sent successfully to {customer_email}")
+        else:
+            logger.error(f"❌ Failed to send confirmation email to {customer_email}")
+        
+        logger.info(f"🎉 Subscription creation completed successfully for {customer_email}")
+        logger.info(f"📅 Subscription period: {subscription_start} to {subscription_end}")
         
     except Exception as e:
-        logger.error(f"Error handling subscription creation: {str(e)}")
+        logger.error(f"❌ Error handling subscription creation: {str(e)}")
 
 async def handle_subscription_updated(subscription):
-    """Handle subscription updates"""
+    """Handle subscription updates - Enhanced with expiry alerts"""
     try:
-        logger.info(f"Processing subscription update: {subscription['id']}")
+        logger.info(f"🔔 Processing subscription update: {subscription['id']}")
         
-        # Check if subscription is about to expire
-        current_period_end = datetime.fromtimestamp(subscription['current_period_end'])
-        days_until_renewal = (current_period_end - datetime.now()).days
-        
-        # Send warning emails
-        if days_until_renewal == 7 or days_until_renewal == 1:
-            customer = stripe.Customer.retrieve(subscription['customer'])
-            customer_email = customer['email']
-            user = get_user_by_email(customer_email)
-            
-            if user:
-                plan_name = subscription.get('metadata', {}).get('plan_id', 'Professional').capitalize()
-                amount = subscription['items']['data'][0]['price']['unit_amount'] / 100
-                
-                send_email(
-                    to_email=customer_email,
-                    subject=f"⏰ Subscription Renewal in {days_until_renewal} day{'s' if days_until_renewal > 1 else ''}",
-                    html_content=get_subscription_expiry_warning_email(
-                        customer_name=user.get('name', 'Valued Customer'),
-                        plan_name=plan_name,
-                        days_remaining=days_until_renewal,
-                        renewal_date=current_period_end.strftime('%B %d, %Y'),
-                        amount=amount
-                    )
-                )
-        
-    except Exception as e:
-        logger.error(f"Error handling subscription update: {str(e)}")
-
-async def handle_subscription_deleted(subscription):
-    """Handle subscription cancellation"""
-    try:
-        logger.info(f"Processing subscription deletion: {subscription['id']}")
-        
+        # Update user subscription data with latest information
         customer = stripe.Customer.retrieve(subscription['customer'])
         customer_email = customer['email']
         user = get_user_by_email(customer_email)
         
         if user:
-            # Update user subscription status - reset to free tier
-            update_user(user["id"], {
-                "has_paid_subscription": False,
-                "subscription_type": "free",
-                "stripe_subscription_id": None,
-                "billing_cycle": None,
+            logger.info(f"✅ Found user for update: {customer_email}")
+            
+            # Calculate subscription dates
+            subscription_start = datetime.fromtimestamp(subscription['current_period_start'])
+            subscription_end = datetime.fromtimestamp(subscription['current_period_end'])
+            plan_id = subscription.get('metadata', {}).get('plan_id', 'professional')
+            billing_cycle = subscription.get('metadata', {}).get('billing_cycle', 'monthly')
+            
+            # Determine subscription type
+            if plan_id == 'trial':
+                subscription_type = 'free_trial'
+            elif plan_id == 'professional':
+                subscription_type = 'professional'
+            elif plan_id == 'enterprise':
+                subscription_type = 'enterprise'
+            else:
+                subscription_type = 'free'
+            
+            # Update user subscription data
+            update_data = {
+                "subscription_start_date": subscription_start,
+                "subscription_end_date": subscription_end,
+                "billing_cycle": billing_cycle,
+                "subscription_type": subscription_type,
                 "updated_at": datetime.utcnow()
-                # Note: We keep subscription_start_date and subscription_end_date for history
-            })
+            }
             
-            # Send cancellation email
-            plan_name = subscription.get('metadata', {}).get('plan_id', 'Professional').capitalize()
-            end_date = datetime.fromtimestamp(subscription['current_period_end']).strftime('%B %d, %Y')
+            update_user(user["id"], update_data)
+            logger.info(f"✅ User subscription dates updated")
             
-            send_email(
-                to_email=customer_email,
-                subject="Subscription Cancelled - We're Sorry to See You Go",
-                html_content=get_subscription_cancelled_email(
-                    customer_name=user.get('organization_name') or user.get('email', '').split('@')[0],
-                    plan_name=plan_name,
-                    end_date=end_date
-                )
-            )
+            # Check if subscription is about to expire and send alerts
+            days_until_renewal = (subscription_end - datetime.now()).days
             
-        logger.info(f"Subscription deleted successfully for {customer_email}")
+            # This is a backup - main alerts are sent by background monitor
+            # Only send if subscription is manually updated and about to expire
+            if days_until_renewal == 7 or days_until_renewal == 1:
+                logger.info(f"⏰ Subscription renewal alert triggered by webhook: {days_until_renewal} days remaining")
+                
+                plan_name = subscription_type.capitalize()
+                customer_name = user.get('organization_name') or user.get('email', '').split('@')[0]
+                
+                logger.info(f"📧 Sending {days_until_renewal}-day expiry warning to {customer_email}")
+                
+                # Use dedicated email functions from subscription_emails service
+                if days_until_renewal == 7:
+                    from services.subscription_emails import send_subscription_expiry_warning_7days
+                    email_sent = send_subscription_expiry_warning_7days(
+                        to_email=customer_email,
+                        customer_name=customer_name,
+                        plan_name=plan_name,
+                        expiry_date=subscription_end.strftime('%B %d, %Y')
+                    )
+                else:  # 1 day
+                    from services.subscription_emails import send_subscription_expiry_warning_1day
+                    email_sent = send_subscription_expiry_warning_1day(
+                        to_email=customer_email,
+                        customer_name=customer_name,
+                        plan_name=plan_name,
+                        expiry_date=subscription_end.strftime('%B %d, %Y')
+                    )
+                
+                if email_sent:
+                    logger.info(f"✅ Expiry warning email sent successfully ({days_until_renewal} days)")
+                else:
+                    logger.error(f"❌ Failed to send expiry warning email")
         
     except Exception as e:
-        logger.error(f"Error handling subscription deletion: {str(e)}")
+        logger.error(f"❌ Error handling subscription update: {str(e)}")
+
+async def handle_subscription_deleted(subscription):
+    """Handle subscription cancellation - Auto update user, organization to free tier"""
+    try:
+        logger.info(f"🔔 Processing subscription deletion: {subscription['id']}")
+        
+        customer = stripe.Customer.retrieve(subscription['customer'])
+        customer_email = customer['email']
+        user = get_user_by_email(customer_email)
+        
+        if not user:
+            logger.error(f"❌ User not found: {customer_email}")
+            return
+        
+        logger.info(f"✅ Found user: {customer_email}")
+        
+        # Get metadata
+        plan_id = subscription.get('metadata', {}).get('plan_id', 'Professional')
+        organization_id = subscription.get('metadata', {}).get('organization_id')
+        end_date = datetime.fromtimestamp(subscription['current_period_end'])
+        plan_name = plan_id.capitalize()
+        
+        logger.info(f"📊 Cancelling subscription: {plan_name}, ends {end_date}")
+        
+        # ✅ AUTO UPDATE USER MODEL - Set to FREE
+        update_data = {
+            "has_paid_subscription": False,  # ← Auto set to FALSE
+            "subscription_type": "free",  # ← Reset to free tier
+            "stripe_subscription_id": None,
+            "billing_cycle": None,
+            "updated_at": datetime.utcnow()
+            # Note: We keep subscription_start_date and subscription_end_date for history
+        }
+        
+        update_user(user["id"], update_data)
+        logger.info(f"✅ User model updated: has_paid_subscription = FALSE")
+        
+        # ✅ AUTO UPDATE ORGANIZATION MODEL (if exists)
+        if organization_id:
+            try:
+                # Reset organization subscription
+                update_organization_subscription(organization_id, None)
+                logger.info(f"✅ Organization model updated (subscription removed): {organization_id}")
+            except Exception as org_error:
+                logger.error(f"⚠️  Failed to update organization: {org_error}")
+        
+        # ✅ UPDATE SUBSCRIPTION RECORD STATUS (mark as cancelled)
+        try:
+            db.subscriptions.update_one(
+                {"stripe_subscription_id": subscription['id']},
+                {"$set": {
+                    "status": "cancelled",
+                    "cancelled_at": datetime.utcnow(),
+                    "updated_at": datetime.utcnow()
+                }}
+            )
+            logger.info(f"✅ Subscription record marked as cancelled")
+        except Exception as sub_error:
+            logger.error(f"⚠️  Failed to update subscription record: {sub_error}")
+        
+        # ✅ SEND CANCELLATION EMAIL
+        customer_name = user.get('organization_name') or user.get('email', '').split('@')[0]
+        
+        logger.info(f"📧 Sending cancellation email to {customer_email}")
+        email_sent = send_email(
+            to_email=customer_email,
+            subject="Subscription Cancelled - We're Sorry to See You Go",
+            html_content=get_subscription_cancelled_email(
+                customer_name=customer_name,
+                plan_name=plan_name,
+                end_date=end_date.strftime('%B %d, %Y')
+            )
+        )
+        
+        if email_sent:
+            logger.info(f"✅ Cancellation email sent successfully to {customer_email}")
+        else:
+            logger.error(f"❌ Failed to send cancellation email to {customer_email}")
+        
+        logger.info(f"🎯 Subscription deletion completed successfully for {customer_email}")
+        logger.info(f"👋 User reverted to free tier, access until: {end_date}")
+        
+    except Exception as e:
+        logger.error(f"❌ Error handling subscription deletion: {str(e)}")
 
 async def handle_payment_succeeded(invoice):
     """Handle successful payment"""
@@ -786,60 +869,145 @@ async def handle_payment_succeeded(invoice):
         logger.error(f"Error handling payment success: {str(e)}")
 
 async def handle_payment_failed(invoice):
-    """Handle failed payment"""
+    """Handle failed payment - Auto disable subscription"""
     try:
-        logger.info(f"Processing failed payment for invoice: {invoice['id']}")
+        logger.info(f"🔔 Processing failed payment for invoice: {invoice['id']}")
         
         customer = stripe.Customer.retrieve(invoice['customer'])
         customer_email = customer['email']
         user = get_user_by_email(customer_email)
         
-        if user:
-            # Send payment failed email
-            html_content = f"""
-            <!DOCTYPE html>
-            <html>
-            <head>
-                <style>
-                    body {{ font-family: Arial, sans-serif; line-height: 1.6; color: #333; }}
-                    .container {{ max-width: 600px; margin: 0 auto; padding: 20px; }}
-                    .header {{ background: linear-gradient(135deg, #f5576c 0%, #f093fb 100%); color: white; padding: 30px; text-align: center; border-radius: 10px 10px 0 0; }}
-                    .content {{ background: #f9f9f9; padding: 30px; border-radius: 0 0 10px 10px; }}
-                    .alert-box {{ background: #ffe6e6; border-left: 4px solid #f5576c; padding: 15px; margin: 20px 0; border-radius: 5px; }}
-                    .button {{ background: #f5576c; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; display: inline-block; margin: 20px 0; }}
-                </style>
-            </head>
-            <body>
-                <div class="container">
-                    <div class="header">
-                        <h1>⚠️ Payment Failed</h1>
-                    </div>
-                    <div class="content">
-                        <p>Hi {user.get('name', 'Valued Customer')},</p>
-                        
-                        <div class="alert-box">
-                            <h3>We were unable to process your payment</h3>
-                            <p>Your subscription payment has failed. Please update your payment method to continue using our services.</p>
-                        </div>
-                        
-                        <p>To avoid service interruption, please update your payment information as soon as possible.</p>
-                        
-                        <a href="{os.getenv('FRONTEND_URL', 'http://localhost:5173')}/dashboard/billing" class="button">Update Payment Method</a>
-                        
-                        <p>If you have any questions, please contact our support team.</p>
-                        
-                        <p>Best regards,<br>AI Assistant Team</p>
-                    </div>
+        if not user:
+            logger.error(f"❌ User not found: {customer_email}")
+            return
+        
+        logger.info(f"✅ Found user: {customer_email}")
+        
+        # ✅ AUTO UPDATE USER MODEL - Disable subscription due to payment failure
+        update_data = {
+            "has_paid_subscription": False,  # ← Auto set to FALSE
+            "subscription_type": "free",
+            "stripe_subscription_id": None,
+            "billing_cycle": None,
+            "updated_at": datetime.utcnow()
+        }
+        
+        update_user(user["id"], update_data)
+        logger.info(f"✅ User subscription disabled: has_paid_subscription = FALSE (payment failed)")
+        
+        # ✅ SEND PAYMENT FAILED EMAIL
+        customer_name = user.get('organization_name') or user.get('email', '').split('@')[0]
+        
+        html_content = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <style>
+                body {{ font-family: Arial, sans-serif; line-height: 1.6; color: #333; }}
+                .container {{ max-width: 600px; margin: 0 auto; padding: 20px; }}
+                .header {{ background: linear-gradient(135deg, #f5576c 0%, #f093fb 100%); color: white; padding: 30px; text-align: center; border-radius: 10px 10px 0 0; }}
+                .content {{ background: #f9f9f9; padding: 30px; border-radius: 0 0 10px 10px; }}
+                .alert-box {{ background: #ffe6e6; border-left: 4px solid #f5576c; padding: 15px; margin: 20px 0; border-radius: 5px; }}
+                .button {{ background: #f5576c; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; display: inline-block; margin: 20px 0; }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <div class="header">
+                    <h1>⚠️ Payment Failed</h1>
                 </div>
-            </body>
-            </html>
-            """
-            
-            send_email(
-                to_email=customer_email,
-                subject="❌ Payment Failed - Action Required",
-                html_content=html_content
-            )
+                <div class="content">
+                    <p>Hi {customer_name},</p>
+                    
+                    <div class="alert-box">
+                        <h3>We were unable to process your payment</h3>
+                        <p>Your subscription payment has failed. Your subscription has been temporarily disabled.</p>
+                    </div>
+                    
+                    <p>To avoid service interruption and reactivate your subscription, please update your payment information as soon as possible.</p>
+                    
+                    <a href="{os.getenv('FRONTEND_URL', 'http://localhost:5173')}/dashboard/billing" class="button">Update Payment Method</a>
+                    
+                    <p>If you have any questions or need assistance, please contact our support team.</p>
+                    
+                    <p>Best regards,<br>AI Assistant Team</p>
+                </div>
+            </div>
+        </body>
+        </html>
+        """
+        
+        logger.info(f"📧 Sending payment failed email to {customer_email}")
+        email_sent = send_email(
+            to_email=customer_email,
+            subject="❌ Payment Failed - Action Required",
+            html_content=html_content
+        )
+        
+        if email_sent:
+            logger.info(f"✅ Payment failed email sent successfully to {customer_email}")
+        else:
+            logger.error(f"❌ Failed to send payment failed email to {customer_email}")
+        
+        logger.info(f"⚠️  Payment failure handled for {customer_email}")
         
     except Exception as e:
-        logger.error(f"Error handling payment failure: {str(e)}") 
+        logger.error(f"❌ Error handling payment failure: {str(e)}") 
+
+
+
+@router.post("/webhook")
+async def stripe_webhook(request: Request, stripe_signature: str = Header(None)):
+    """Handle Stripe webhook events"""
+    try:
+        payload = await request.body()
+        
+        # Verify webhook signature if secret is configured
+        if STRIPE_WEBHOOK_SECRET:
+            try:
+                event = stripe.Webhook.construct_event(
+                    payload, stripe_signature, STRIPE_WEBHOOK_SECRET
+                )
+            except ValueError as e:
+                logger.error(f"Invalid payload: {e}")
+                raise HTTPException(status_code=400, detail="Invalid payload")
+            except stripe.error.SignatureVerificationError as e:
+                logger.error(f"Invalid signature: {e}")
+                raise HTTPException(status_code=400, detail="Invalid signature")
+        else:
+            event = stripe.Event.construct_from(
+                stripe.util.convert_to_dict(payload), stripe.api_key
+            )
+        
+        logger.info(f"Received webhook event: {event['type']}")
+        
+        # Handle different event types
+        if event['type'] == 'checkout.session.completed':
+            session = event['data']['object']
+            await handle_checkout_completed(session)
+            
+        elif event['type'] == 'customer.subscription.created':
+            subscription = event['data']['object']
+            await handle_subscription_created(subscription)
+            
+        elif event['type'] == 'customer.subscription.updated':
+            subscription = event['data']['object']
+            await handle_subscription_updated(subscription)
+            
+        elif event['type'] == 'customer.subscription.deleted':
+            subscription = event['data']['object']
+            await handle_subscription_deleted(subscription)
+            
+        elif event['type'] == 'invoice.payment_succeeded':
+            invoice = event['data']['object']
+            await handle_payment_succeeded(invoice)
+            
+        elif event['type'] == 'invoice.payment_failed':
+            invoice = event['data']['object']
+            await handle_payment_failed(invoice)
+        
+        return {"status": "success"}
+        
+    except Exception as e:
+        logger.error(f"Webhook error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
