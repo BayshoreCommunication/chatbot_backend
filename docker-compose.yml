@@ -52,8 +52,8 @@ services:
     image: caddy:2
     restart: unless-stopped
     ports:
-      - "80:80"
-      - "443:443"
+      - "8080:80" # Changed from 80 to 8080 to avoid port conflict
+      - "8443:443" # Changed from 443 to 8443 to avoid port conflict
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
