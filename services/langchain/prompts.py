@@ -1,4 +1,7 @@
 from langchain.prompts import PromptTemplate
+# Note: LLMChain and ConversationBufferMemory are deprecated but still functional
+# TODO: Migrate to modern RunnableSequence pattern
+# See: https://python.langchain.com/docs/versions/migrating_chains/
 from langchain.chains import LLMChain
 from langchain.memory import ConversationBufferMemory
 

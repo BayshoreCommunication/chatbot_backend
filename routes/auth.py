@@ -52,33 +52,81 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
 
+@router.options("/register")
+async def options_register():
+    """Handle OPTIONS request for register endpoint"""
+    return JSONResponse(
+        content={},
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "POST, OPTIONS",
+            "Access-Control-Allow-Headers": "*"
+        }
+    )
+
 @router.post("/register")
 async def register(user: UserCreate):
-    # Check if user already exists
-    if get_user_by_email(user.email):
-        raise HTTPException(status_code=400, detail="Email already registered")
+    try:
+        logger.info(f"📝 Registration attempt for email: {user.email}")
+        
+        # Check if user already exists
+        if get_user_by_email(user.email):
+            logger.warning(f"❌ Registration failed: Email already registered - {user.email}")
+            raise HTTPException(status_code=400, detail="Email already registered")
+        
+        # Create new user with organization_name defaulting to email prefix if not provided
+        user_data = create_user({
+            "email": user.email,
+            "password": user.password,
+            "organization_name": user.organization_name or user.email.split('@')[0],
+            "website": user.website,
+            "company_organization_type": user.company_organization_type,
+            "has_paid_subscription": user.has_paid_subscription,
+        })
+        
+        logger.info(f"✅ User created successfully: {user.email}")
+        
+        # Create access token for automatic login
+        access_token = create_access_token(
+            data={"sub": user.email},
+            expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        )
+        
+        logger.info(f"🔑 Access token generated for automatic login")
+        
+        # Serialize user data to make it JSON compatible
+        serialized_user = {}
+        for k, v in user_data.items():
+            if isinstance(v, ObjectId):
+                serialized_user[k] = str(v)
+            elif isinstance(v, datetime):
+                serialized_user[k] = v.isoformat()
+            else:
+                serialized_user[k] = v
+        
+        # Return response in same format as login for consistency
+        response_data = {
+            "access_token": access_token,
+            "token_type": "bearer",
+            "user": serialized_user
+        }
+        
+        logger.info(f"🎉 Registration successful, user auto-logged in: {user.email}")
+        
+        return JSONResponse(
+            content=response_data,
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Credentials": "false"
+            }
+        )
     
-    # Create new user with organization_name defaulting to email prefix if not provided
-    user_data = create_user({
-        "email": user.email,
-        "password": user.password,
-        "organization_name": user.organization_name or user.email.split('@')[0],
-        "website": user.website,
-        "company_organization_type": user.company_organization_type,
-        "has_paid_subscription": user.has_paid_subscription,
-    })
-    
-    # Create access token
-    access_token = create_access_token(
-        data={"sub": user.email},
-        expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    )
-    
-    return {
-        "access_token": access_token,
-        "token_type": "bearer",
-        "user": user_data
-    }
+    except HTTPException as e:
+        logger.error(f"❌ HTTP Exception during registration: {e.status_code}: {e.detail}")
+        raise
+    except Exception as e:
+        logger.error(f"❌ Unexpected error during registration: {str(e)}")
+        raise HTTPException(status_code=500, detail="Registration failed")
 
 @router.options("/login")
 async def options_login():
@@ -95,22 +143,22 @@ async def options_login():
 @router.post("/login")
 async def login(request: Request, user: UserLogin):
     try:
-        logger.debug(f"Login attempt for email: {user.email}")
+        logger.info(f"🔐 Login attempt for email: {user.email}")
         
         # Get user from database
         db_user = get_user_by_email(user.email)
-        logger.debug(f"Database user found: {bool(db_user)}")
+        logger.info(f"👤 Database user found: {bool(db_user)}")
         
         if not db_user:
-            logger.warning(f"Login failed: Email not registered - {user.email}")
+            logger.warning(f"❌ Login failed: Email not registered - {user.email}")
             raise HTTPException(status_code=400, detail="Email not registered")
         
         # Verify password
         is_valid = verify_password(user.password, db_user["hashed_password"])
-        logger.debug(f"Password verification result: {is_valid}")
+        logger.info(f"🔑 Password verification result: {is_valid}")
         
         if not is_valid:
-            logger.warning(f"Login failed: Incorrect password for {user.email}")
+            logger.warning(f"❌ Login failed: Incorrect password for {user.email}")
             raise HTTPException(status_code=400, detail="Incorrect password")
         
         # Remove sensitive data and ensure all fields are JSON serializable

@@ -486,11 +486,26 @@ async def handle_checkout_completed(session):
             logger.error("Missing customer email or subscription ID")
             return
         
-        # Get user
+        # Get user - if doesn't exist, create minimal user record
         user = get_user_by_email(customer_email)
         if not user:
-            logger.error(f"User not found: {customer_email}")
-            return
+            logger.warning(f"⚠️  User not found during checkout: {customer_email}, creating minimal user record")
+            
+            # Create minimal user record for subscription
+            from services.auth import create_user
+            try:
+                user_data = {
+                    "email": customer_email,
+                    "password": None,
+                    "organization_name": customer_email.split('@')[0],
+                    "is_verified": True,
+                    "auth_provider": "stripe_checkout"
+                }
+                user = create_user(user_data)
+                logger.info(f"✅ Created new user during checkout: {customer_email}")
+            except Exception as create_error:
+                logger.error(f"❌ Failed to create user during checkout: {create_error}")
+                return
         
         # Get subscription details from Stripe
         subscription = stripe.Subscription.retrieve(subscription_id)
@@ -498,9 +513,14 @@ async def handle_checkout_completed(session):
         plan_id = session.get('metadata', {}).get('plan_id', 'professional')
         billing_cycle = session.get('metadata', {}).get('billing_cycle', 'monthly')
         
-        # Calculate subscription dates
-        subscription_start = datetime.fromtimestamp(subscription['current_period_start'])
-        subscription_end = datetime.fromtimestamp(subscription['current_period_end'])
+        # Calculate subscription dates - safely handle missing fields
+        try:
+            subscription_start = datetime.fromtimestamp(subscription.get('current_period_start', datetime.utcnow().timestamp()))
+            subscription_end = datetime.fromtimestamp(subscription.get('current_period_end', (datetime.utcnow() + timedelta(days=30)).timestamp()))
+        except Exception as e:
+            logger.error(f"Error parsing subscription dates: {e}")
+            subscription_start = datetime.utcnow()
+            subscription_end = subscription_start + timedelta(days=30)
         
         # Get price information
         amount = subscription['items']['data'][0]['price']['unit_amount'] / 100
@@ -573,17 +593,38 @@ async def handle_subscription_created(subscription):
         customer = stripe.Customer.retrieve(subscription['customer'])
         customer_email = customer['email']
         
-        # Get user
+        # Get user - if doesn't exist, create minimal user record
         user = get_user_by_email(customer_email)
         if not user:
-            logger.error(f"❌ User not found: {customer_email}")
-            return
+            logger.warning(f"⚠️  User not found: {customer_email}, creating minimal user record")
+            
+            # Create minimal user record for subscription
+            from services.auth import create_user
+            try:
+                user_data = {
+                    "email": customer_email,
+                    "password": None,  # No password for subscription-only users
+                    "organization_name": customer_email.split('@')[0],
+                    "is_verified": True,
+                    "auth_provider": "stripe_subscription"
+                }
+                user = create_user(user_data)
+                logger.info(f"✅ Created new user: {customer_email}")
+            except Exception as create_error:
+                logger.error(f"❌ Failed to create user: {create_error}")
+                return
         
         logger.info(f"✅ Found user: {customer_email}")
         
-        # Calculate subscription dates
-        subscription_start = datetime.fromtimestamp(subscription['current_period_start'])
-        subscription_end = datetime.fromtimestamp(subscription['current_period_end'])
+        # Calculate subscription dates - safely handle missing fields
+        try:
+            subscription_start = datetime.fromtimestamp(subscription.get('current_period_start', datetime.utcnow().timestamp()))
+            subscription_end = datetime.fromtimestamp(subscription.get('current_period_end', (datetime.utcnow() + timedelta(days=30)).timestamp()))
+        except Exception as e:
+            logger.error(f"Error parsing subscription dates: {e}")
+            subscription_start = datetime.utcnow()
+            subscription_end = subscription_start + timedelta(days=30)
+            
         plan_id = subscription.get('metadata', {}).get('plan_id', 'professional')
         billing_cycle = subscription.get('metadata', {}).get('billing_cycle', 'monthly')
         organization_id = subscription.get('metadata', {}).get('organization_id')
@@ -684,9 +725,15 @@ async def handle_subscription_updated(subscription):
         if user:
             logger.info(f"✅ Found user for update: {customer_email}")
             
-            # Calculate subscription dates
-            subscription_start = datetime.fromtimestamp(subscription['current_period_start'])
-            subscription_end = datetime.fromtimestamp(subscription['current_period_end'])
+            # Calculate subscription dates - safely handle missing fields
+            try:
+                subscription_start = datetime.fromtimestamp(subscription.get('current_period_start', datetime.utcnow().timestamp()))
+                subscription_end = datetime.fromtimestamp(subscription.get('current_period_end', (datetime.utcnow() + timedelta(days=30)).timestamp()))
+            except Exception as e:
+                logger.error(f"Error parsing subscription dates: {e}")
+                subscription_start = datetime.utcnow()
+                subscription_end = subscription_start + timedelta(days=30)
+                
             plan_id = subscription.get('metadata', {}).get('plan_id', 'professional')
             billing_cycle = subscription.get('metadata', {}).get('billing_cycle', 'monthly')
             
@@ -754,38 +801,73 @@ async def handle_subscription_updated(subscription):
 async def handle_subscription_deleted(subscription):
     """Handle subscription cancellation - Auto update user, organization to free tier"""
     try:
+        logger.info(f"🔔 ========== SUBSCRIPTION DELETION EVENT ==========")
         logger.info(f"🔔 Processing subscription deletion: {subscription['id']}")
+        
+        # Debug: Log available fields in subscription object
+        logger.info(f"� Available subscription fields: {list(subscription.keys())}")
+        logger.info(f"📋 Subscription status: {subscription.get('status', 'N/A')}")
+        logger.info(f"📋 Current period end: {subscription.get('current_period_end', 'N/A')}")
+        logger.info(f"📋 Ended at: {subscription.get('ended_at', 'N/A')}")
+        logger.info(f"📋 Canceled at: {subscription.get('canceled_at', 'N/A')}")
         
         customer = stripe.Customer.retrieve(subscription['customer'])
         customer_email = customer['email']
+        logger.info(f"📧 Customer email from Stripe: {customer_email}")
+        
         user = get_user_by_email(customer_email)
         
         if not user:
-            logger.error(f"❌ User not found: {customer_email}")
+            logger.error(f"❌ User not found in database: {customer_email}")
+            logger.error(f"❌ Cannot proceed with subscription deletion without user record")
             return
         
-        logger.info(f"✅ Found user: {customer_email}")
+        logger.info(f"✅ Found user in database: {customer_email}")
+        logger.info(f"👤 User ID: {user.get('id')}, Current subscription status: {user.get('has_paid_subscription')}")
         
         # Get metadata
         plan_id = subscription.get('metadata', {}).get('plan_id', 'Professional')
         organization_id = subscription.get('metadata', {}).get('organization_id')
-        end_date = datetime.fromtimestamp(subscription['current_period_end'])
+        
+        # Get end date - safely handle missing current_period_end field
+        end_date = None
+        try:
+            # Try to get current_period_end from subscription
+            if subscription.get('current_period_end'):
+                end_date = datetime.fromtimestamp(subscription.get('current_period_end'))
+                logger.info(f"📅 Using current_period_end from Stripe webhook")
+        except Exception as e:
+            logger.warning(f"⚠️  Could not get current_period_end from webhook: {e}")
+        
+        # Fallback to user's stored end date
+        if not end_date and user.get('subscription_end_date'):
+            end_date = user.get('subscription_end_date')
+            logger.info(f"📅 Using subscription_end_date from user record")
+        
+        # Last resort: use current time
+        if not end_date:
+            end_date = datetime.utcnow()
+            logger.info(f"📅 No end date available, using current time")
+        
         plan_name = plan_id.capitalize()
         
-        logger.info(f"📊 Cancelling subscription: {plan_name}, ends {end_date}")
+        logger.info(f"📊 Cancelling subscription: {plan_name}, access until {end_date}")
         
-        # ✅ AUTO UPDATE USER MODEL - Set to FREE
+        # ✅ AUTO UPDATE USER MODEL - Reset to FREE and nullify all subscription fields
         update_data = {
             "has_paid_subscription": False,  # ← Auto set to FALSE
             "subscription_type": "free",  # ← Reset to free tier
-            "stripe_subscription_id": None,
-            "billing_cycle": None,
+            "subscription_start_date": None,  # ← Nullify subscription dates
+            "subscription_end_date": None,  # ← Nullify subscription dates
+            "billing_cycle": None,  # ← Remove billing cycle
+            "stripe_subscription_id": None,  # ← Remove Stripe subscription ID
+            "stripe_customer_id": None,  # ← Remove Stripe customer ID
+            "last_reminder_sent": None,  # ← Reset reminder tracking
             "updated_at": datetime.utcnow()
-            # Note: We keep subscription_start_date and subscription_end_date for history
         }
         
         update_user(user["id"], update_data)
-        logger.info(f"✅ User model updated: has_paid_subscription = FALSE")
+        logger.info(f"✅ User model updated: All subscription fields nullified, reverted to free tier")
         
         # ✅ AUTO UPDATE ORGANIZATION MODEL (if exists)
         if organization_id:
@@ -813,27 +895,51 @@ async def handle_subscription_deleted(subscription):
         # ✅ SEND CANCELLATION EMAIL
         customer_name = user.get('organization_name') or user.get('email', '').split('@')[0]
         
-        logger.info(f"📧 Sending cancellation email to {customer_email}")
+        # Format end date safely
+        try:
+            if isinstance(end_date, datetime):
+                formatted_end_date = end_date.strftime('%B %d, %Y')
+            else:
+                formatted_end_date = str(end_date)
+        except Exception as date_error:
+            logger.error(f"⚠️  Error formatting end_date: {date_error}")
+            formatted_end_date = "the end of your billing period"
+        
+        logger.info(f"📧 ========== SENDING CANCELLATION EMAIL ==========")
+        logger.info(f"📧 To: {customer_email}")
+        logger.info(f"📧 Customer Name: {customer_name}")
+        logger.info(f"📧 Plan: {plan_name}")
+        logger.info(f"📧 End Date: {formatted_end_date}")
+        logger.info(f"📧 SMTP Config - Host: {SMTP_HOST}, Port: {SMTP_PORT}, From: {SMTP_MAIL}")
+        
         email_sent = send_email(
             to_email=customer_email,
             subject="Subscription Cancelled - We're Sorry to See You Go",
             html_content=get_subscription_cancelled_email(
                 customer_name=customer_name,
                 plan_name=plan_name,
-                end_date=end_date.strftime('%B %d, %Y')
+                end_date=formatted_end_date
             )
         )
         
         if email_sent:
-            logger.info(f"✅ Cancellation email sent successfully to {customer_email}")
+            logger.info(f"✅ ========== CANCELLATION EMAIL SENT SUCCESSFULLY ==========")
+            logger.info(f"✅ Email delivered to: {customer_email}")
         else:
-            logger.error(f"❌ Failed to send cancellation email to {customer_email}")
+            logger.error(f"❌ ========== CANCELLATION EMAIL FAILED ==========")
+            logger.error(f"❌ Failed to send email to: {customer_email}")
+            logger.error(f"❌ Check SMTP credentials and connection")
         
         logger.info(f"🎯 Subscription deletion completed successfully for {customer_email}")
-        logger.info(f"👋 User reverted to free tier, access until: {end_date}")
+        logger.info(f"👋 User reverted to free tier")
+        logger.info(f"🔔 ========== SUBSCRIPTION DELETION COMPLETE ==========")
         
     except Exception as e:
+        logger.error(f"❌ ========== ERROR IN SUBSCRIPTION DELETION ==========")
         logger.error(f"❌ Error handling subscription deletion: {str(e)}")
+        logger.error(f"❌ Error type: {type(e).__name__}")
+        import traceback
+        logger.error(f"❌ Traceback: {traceback.format_exc()}")
 
 async def handle_payment_succeeded(invoice):
     """Handle successful payment"""
@@ -850,7 +956,13 @@ async def handle_payment_succeeded(invoice):
                 amount = invoice['amount_paid'] / 100
                 subscription = stripe.Subscription.retrieve(invoice['subscription'])
                 plan_name = subscription.get('metadata', {}).get('plan_id', 'Professional').capitalize()
-                next_billing = datetime.fromtimestamp(subscription['current_period_end']).strftime('%B %d, %Y')
+                
+                # Safely get next billing date
+                try:
+                    next_billing = datetime.fromtimestamp(subscription.get('current_period_end', (datetime.utcnow() + timedelta(days=30)).timestamp())).strftime('%B %d, %Y')
+                except Exception:
+                    next_billing = (datetime.utcnow() + timedelta(days=30)).strftime('%B %d, %Y')
+                    
                 billing_cycle = subscription.get('metadata', {}).get('billing_cycle', 'monthly')
                 
                 send_email(

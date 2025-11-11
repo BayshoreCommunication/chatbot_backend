@@ -10,6 +10,9 @@ This version includes:
 """
 
 from langchain_openai import ChatOpenAI
+# Note: load_qa_chain is deprecated but still functional
+# TODO: Migrate to modern RunnableSequence pattern
+# See: https://python.langchain.com/docs/versions/migrating_chains/stuff_docs_chain
 from langchain.chains.question_answering import load_qa_chain
 from dotenv import load_dotenv
 import os
