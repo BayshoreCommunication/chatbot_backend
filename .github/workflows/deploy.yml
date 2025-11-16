@@ -579,8 +579,8 @@ jobs:
             }
 
             # Start containers
-            echo "🚀 Starting containers..."
-            $DC up -d
+            echo "🚀 Starting containers with DNS configuration..."
+            $DC up -d --force-recreate
 
             # Wait for Redis to be ready (MongoDB is external via Atlas)
             echo "⏳ Waiting for Redis to start..."
