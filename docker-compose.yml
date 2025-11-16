@@ -42,12 +42,18 @@ services:
       SMPT_MAIL: ${SMPT_MAIL}
       SMPT_PASSWORD: ${SMPT_PASSWORD}
       FRONTEND_URL: ${FRONTEND_URL}
+    network_mode: bridge
     volumes:
       - ./uploads:/opt/chatbot-app/uploads
       - ./logs:/opt/chatbot-app/logs
     dns:
       - 8.8.8.8
       - 8.8.4.4
+      - 1.1.1.1
+    dns_search:
+      - .
+    dns_opt:
+      - ndots:0
     depends_on:
       - redis
     healthcheck:
