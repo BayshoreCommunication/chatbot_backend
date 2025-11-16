@@ -63,6 +63,9 @@ jobs:
 
             echo "🧹 Cleaning up everything possible..."
 
+            # Stop Docker first (don't reload daemon yet)
+            sudo systemctl stop docker 2>/dev/null || true
+            
             # Stop all Docker containers and remove everything
             sudo docker stop $(sudo docker ps -aq) 2>/dev/null || true
             sudo docker rm $(sudo docker ps -aq) 2>/dev/null || true
@@ -77,14 +80,24 @@ jobs:
             sudo rm -rf /var/lib/docker/overlay2/* 2>/dev/null || true
             sudo rm -rf /var/lib/docker/image/* 2>/dev/null || true
 
-            # Repair Docker filesystem if corrupted
-            echo "🔧 Repairing Docker filesystem..."
-            sudo systemctl stop docker 2>/dev/null || true
-            sudo rm -rf /var/lib/docker/overlay2 2>/dev/null || true
-            sudo mkdir -p /var/lib/docker/overlay2 2>/dev/null || true
-            sudo systemctl start docker 2>/dev/null || true
-            sleep 5
-
+            # Clean systemd runtime directories
+            echo "🧹 Cleaning systemd runtime..."
+            sudo journalctl --vacuum-time=1h 2>/dev/null || true
+            sudo journalctl --vacuum-size=10M 2>/dev/null || true
+            sudo rm -rf /run/log/journal/* 2>/dev/null || true
+            sudo rm -rf /var/log/journal/* 2>/dev/null || true
+            
+            # Clean /run/systemd/ specifically
+            echo "🧹 Cleaning /run/systemd/ directory..."
+            sudo find /run/systemd/ -type f -name "*.timer" -delete 2>/dev/null || true
+            sudo find /run/systemd/ -type f -name "*.service" -delete 2>/dev/null || true
+            sudo rm -rf /run/systemd/transient/* 2>/dev/null || true
+            sudo rm -rf /run/systemd/units/* 2>/dev/null || true
+            
+            echo "📊 Space in /run/systemd/:"
+            df -h /run/systemd/ || true
+            du -sh /run/systemd/* 2>/dev/null | sort -hr | head -10 || true
+            
             # Clean package cache
             sudo apt-get autoremove -y 2>/dev/null || true
             sudo apt-get autoclean 2>/dev/null || true
@@ -101,10 +114,6 @@ jobs:
             # Clean old kernels
             sudo apt-get autoremove --purge -y 2>/dev/null || true
 
-            # Clean system logs
-            sudo journalctl --vacuum-time=1d 2>/dev/null || true
-            sudo find /var/log -name "*.log" -type f -mtime +7 -delete 2>/dev/null || true
-
             # Clean home directory
             rm -rf ~/.cache/* 2>/dev/null || true
             rm -rf ~/.npm/* 2>/dev/null || true
@@ -118,6 +127,11 @@ jobs:
 
             echo "🔍 Finding largest directories:"
             sudo du -h --max-depth=1 / 2>/dev/null | sort -hr | head -10 || true
+            
+            # Restart Docker WITHOUT daemon reload
+            echo "🐳 Starting Docker (without daemon reload)..."
+            sudo systemctl start docker 2>/dev/null || true
+            sleep 5
 
       - name: Create app directory on server
         uses: appleboy/ssh-action@v1.2.0
@@ -246,17 +260,26 @@ jobs:
             echo "📋 File permissions:"
             ls -la main.py requirements.txt Dockerfile docker-compose.yml 2>/dev/null || echo "Some files missing"
 
-            # Start Docker service
+            # Start Docker service (avoid daemon reload to prevent disk space issues)
             echo "🐳 Starting Docker service..."
-            sudo systemctl start docker
-            sudo systemctl enable docker
+            if ! sudo systemctl is-active --quiet docker; then
+              sudo systemctl start docker 2>/dev/null || true
+            fi
+            
+            # Do NOT enable Docker at boot if it causes daemon reload issues
+            # sudo systemctl enable docker
 
             # Wait for Docker to be ready
             echo "⏳ Waiting for Docker to be ready..."
             timeout 30 bash -c 'until docker info >/dev/null 2>&1; do sleep 1; done' || {
-              echo "❌ Docker failed to start"
-              sudo systemctl status docker
-              exit 1
+              echo "❌ Docker failed to start, trying restart..."
+              sudo systemctl restart docker 2>/dev/null || true
+              sleep 5
+              docker info >/dev/null 2>&1 || {
+                echo "❌ Docker still not running"
+                sudo systemctl status docker
+                exit 1
+              }
             }
 
             echo "✅ Docker is running"
