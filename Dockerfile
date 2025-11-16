@@ -23,7 +23,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY main.py .
 COPY logging_config.py .
 COPY init_db.py .
-COPY create_env.py .
 COPY models/ ./models/
 COPY routes/ ./routes/
 COPY services/ ./services/

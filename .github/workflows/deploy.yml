@@ -72,6 +72,16 @@ jobs:
             sudo pkill -9 dockerd 2>/dev/null || true
             sudo pkill -9 docker-containerd 2>/dev/null || true
             sudo pkill -9 docker-containerd-shim 2>/dev/null || true
+            sudo pkill -9 buildkitd 2>/dev/null || true
+            sleep 2
+
+            # Unmount any busy Docker filesystems
+            echo "🔓 Unmounting Docker filesystems..."
+            sudo umount /var/lib/docker/buildkit/executor/*/rootfs 2>/dev/null || true
+            sudo umount /var/lib/docker/overlay2/*/merged 2>/dev/null || true
+            for mount in $(mount | grep '/var/lib/docker' | awk '{print $3}'); do
+              sudo umount -f "$mount" 2>/dev/null || true
+            done
             sleep 2
 
             # Completely remove Docker's data directory to fix corruption
@@ -135,12 +145,12 @@ jobs:
 
             echo "🔍 Finding largest directories:"
             sudo du -h --max-depth=1 / 2>/dev/null | sort -hr | head -10 || true
-            
+
             # Restart Docker with fresh filesystem
             echo "🐳 Starting Docker with clean filesystem..."
             sudo systemctl start docker 2>/dev/null || true
             sleep 5
-            
+
             # Verify Docker is working
             echo "✅ Verifying Docker status..."
             sudo systemctl status docker --no-pager || true
@@ -149,7 +159,7 @@ jobs:
               sudo systemctl restart docker
               sleep 5
             }
-            
+
             echo "📊 Final disk usage:"
             df -h
 
@@ -466,7 +476,7 @@ jobs:
             # Reset Docker build cache to avoid corruption
             echo "🔄 Resetting Docker build cache..."
             sudo docker builder prune -af 2>/dev/null || true
-            
+
             # Verify Docker buildx is available (needed after fresh Docker install)
             echo "🔧 Verifying Docker buildx..."
             docker buildx version || {
@@ -474,7 +484,7 @@ jobs:
               sudo apt-get update
               sudo apt-get install -y docker-buildx-plugin || true
             }
-            
+
             # Create a new builder instance if needed
             echo "🏗️  Setting up Docker builder..."
             docker buildx create --use --name chatbot-builder 2>/dev/null || docker buildx use chatbot-builder || true
@@ -525,6 +535,19 @@ jobs:
               # Stop Docker completely
               sudo systemctl stop docker
               sleep 3
+              
+              # Kill all Docker processes including buildkit
+              sudo pkill -9 dockerd 2>/dev/null || true
+              sudo pkill -9 buildkitd 2>/dev/null || true
+              sudo pkill -9 docker-containerd 2>/dev/null || true
+              sleep 2
+              
+              # Unmount all Docker filesystems forcefully
+              echo "🔓 Force unmounting Docker filesystems..."
+              for mount in $(mount | grep '/var/lib/docker' | awk '{print $3}'); do
+                sudo umount -fl "$mount" 2>/dev/null || true
+              done
+              sleep 2
               
               # Remove everything again
               sudo rm -rf /var/lib/docker/*
