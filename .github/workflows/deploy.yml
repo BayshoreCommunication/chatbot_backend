@@ -515,6 +515,12 @@ jobs:
             export PUBLISHABLE_KEY="${{ secrets.PUBLISHABLE_KEY }}"
             export STRIPE_SECRET_KEY="${{ secrets.STRIPE_SECRET_KEY }}"
             export STRIPE_WEBHOOK_SECRET="${{ secrets.STRIPE_WEBHOOK_SECRET }}"
+            export SMPT_SERVICE="${{ secrets.SMPT_SERVICE }}"
+            export SMPT_HOST="${{ secrets.SMPT_HOST }}"
+            export SMPT_PORT="${{ secrets.SMPT_PORT }}"
+            export SMPT_MAIL="${{ secrets.SMPT_MAIL }}"
+            export SMPT_PASSWORD="${{ secrets.SMPT_PASSWORD }}"
+            export FRONTEND_URL="${{ secrets.FRONTEND_URL }}"
 
             # Debug: Check if critical environment variables are set
             echo "🔍 Verifying environment variables..."

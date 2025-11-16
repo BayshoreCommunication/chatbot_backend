@@ -1,16 +1,20 @@
 # Docker Overlay2 Corruption Fix
 
 ## Problem
+
 Docker build failing with corrupted overlay2 filesystem:
+
 ```
-failed to prepare as mtdg2iqt768yi88f75rq8ulr2: 
-symlink ../mtdg2iqt768yi88f75rq8ulr2/diff /var/lib/docker/overlay2/l/JQVWZTHJPH4BHGDYAKDF2DWL4L: 
+failed to prepare as mtdg2iqt768yi88f75rq8ulr2:
+symlink ../mtdg2iqt768yi88f75rq8ulr2/diff /var/lib/docker/overlay2/l/JQVWZTHJPH4BHGDYAKDF2DWL4L:
 no such file or directory
 Process exited with status 17
 ```
 
 ## Root Cause
+
 Docker's overlay2 storage driver filesystem is corrupted. This happens when:
+
 1. Disk fills up during Docker operations
 2. Docker daemon crashes mid-operation
 3. Incomplete cleanup leaves broken symlinks
@@ -19,6 +23,7 @@ Docker's overlay2 storage driver filesystem is corrupted. This happens when:
 ## Solution
 
 ### 1. Complete Docker Data Directory Wipe
+
 Instead of just cleaning Docker images/containers, we now completely remove `/var/lib/docker`:
 
 ```bash
@@ -48,6 +53,7 @@ sudo systemctl start docker
 ```
 
 ### 2. Verify Docker Buildx After Fresh Install
+
 After wiping Docker, ensure buildx is available:
 
 ```bash
@@ -63,22 +69,23 @@ docker buildx inspect --bootstrap
 ```
 
 ### 3. Build Retry with Complete Reset
+
 If build still fails, perform another complete reset:
 
 ```bash
 $DC build --no-cache --pull web || {
   # Stop Docker
   sudo systemctl stop docker
-  
+
   # Remove everything again
   sudo rm -rf /var/lib/docker/*
-  
+
   # Restart Docker
   sudo systemctl start docker
-  
+
   # Wait for Docker to be ready
   timeout 60 bash -c 'until docker info; do sleep 2; done'
-  
+
   # Retry build
   $DC build --no-cache --pull web
 }
@@ -89,6 +96,7 @@ $DC build --no-cache --pull web || {
 ### File: `.github/workflows/deploy.yml`
 
 #### 1. Emergency Cleanup Step (Lines ~65-95)
+
 **Complete Docker data wipe instead of partial cleanup:**
 
 ```yaml
@@ -119,6 +127,7 @@ sudo systemctl start docker
 ```
 
 #### 2. Docker Buildx Setup (Lines ~463-475)
+
 **Ensure buildx is available after fresh Docker install:**
 
 ```yaml
@@ -134,22 +143,23 @@ docker buildx inspect --bootstrap
 ```
 
 #### 3. Build with Retry Logic (Lines ~518-545)
+
 **Automatic retry with complete Docker reset if build fails:**
 
 ```yaml
 $DC build --no-cache --pull web || {
   echo "❌ Docker build failed! Trying complete Docker reset..."
-  
+
   # Stop and wipe Docker again
   sudo systemctl stop docker
   sudo rm -rf /var/lib/docker/*
   sudo mkdir -p /var/lib/docker
-  
+
   # Restart and retry
   sudo systemctl start docker
   sleep 10
   timeout 60 bash -c 'until docker info; do sleep 2; done'
-  
+
   # Retry build
   $DC build --no-cache --pull web || {
     echo "❌ Build still failed"
@@ -170,18 +180,23 @@ $DC build --no-cache --pull web || {
 ## What Gets Removed
 
 ### Before (Partial Cleanup - DOESN'T FIX CORRUPTION):
+
 ```bash
 sudo docker system prune -af
 sudo rm -rf /var/lib/docker/overlay2/*
 sudo rm -rf /var/lib/docker/tmp/*
 ```
+
 **Problem**: Keeps Docker daemon state, metadata, and partial layers
 
 ### After (Complete Wipe - FIXES CORRUPTION):
+
 ```bash
 sudo rm -rf /var/lib/docker/*
 ```
+
 **Result**: Removes EVERYTHING including:
+
 - All containers, images, volumes
 - Overlay2 storage driver data
 - Build cache and layers
@@ -193,17 +208,19 @@ sudo rm -rf /var/lib/docker/*
 ## Expected Behavior
 
 ### Before Fix:
+
 ```
 🏗️ Building new container...
 #1 [web internal] load build definition from Dockerfile
-#1 ERROR: failed to prepare as mtdg2iqt768yi88f75rq8ulr2: 
-symlink ../mtdg2iqt768yi88f75rq8ulr2/diff 
-/var/lib/docker/overlay2/l/JQVWZTHJPH4BHGDYAKDF2DWL4L: 
+#1 ERROR: failed to prepare as mtdg2iqt768yi88f75rq8ulr2:
+symlink ../mtdg2iqt768yi88f75rq8ulr2/diff
+/var/lib/docker/overlay2/l/JQVWZTHJPH4BHGDYAKDF2DWL4L:
 no such file or directory
 Error: Process completed with exit code 1
 ```
 
 ### After Fix:
+
 ```
 🗑️  Removing corrupted Docker data...
 📁 Recreating Docker directories...
@@ -219,11 +236,13 @@ Error: Process completed with exit code 1
 ## Trade-offs
 
 ### What We Lose:
+
 - ❌ All Docker images (must rebuild from scratch)
 - ❌ All Docker volumes (but we use external MongoDB Atlas)
 - ❌ Build cache (slower first build)
 
 ### What We Gain:
+
 - ✅ Guaranteed clean filesystem
 - ✅ No corruption errors
 - ✅ Deployment always succeeds
@@ -233,12 +252,14 @@ Error: Process completed with exit code 1
 ## Alternative Approaches Considered
 
 ### 1. Repair Overlay2 (DOESN'T WORK)
+
 ```bash
 # This doesn't fix deep corruption
 sudo docker system prune -af
 ```
 
 ### 2. Switch Storage Driver (COMPLEX)
+
 ```bash
 # Would require reconfiguring Docker daemon
 # /etc/docker/daemon.json
@@ -248,6 +269,7 @@ sudo docker system prune -af
 ```
 
 ### 3. Partial Cleanup (UNRELIABLE)
+
 ```bash
 # Doesn't remove all corruption
 sudo rm -rf /var/lib/docker/overlay2/*
@@ -256,6 +278,7 @@ sudo rm -rf /var/lib/docker/overlay2/*
 ## Testing
 
 ### 1. Check Docker Status After Cleanup
+
 ```bash
 ssh user@server
 sudo systemctl status docker
@@ -264,12 +287,14 @@ docker ps
 ```
 
 ### 2. Verify Clean Filesystem
+
 ```bash
 ls -la /var/lib/docker/
 # Should see fresh empty directories
 ```
 
 ### 3. Monitor First Build
+
 ```bash
 # Watch GitHub Actions logs
 # First build will be slower (no cache)
@@ -286,8 +311,10 @@ To prevent overlay2 corruption in the future:
 4. **Log Rotation**: Limit Docker container logs
 
 ## Status
+
 ✅ **FIXED** - Docker overlay2 corruption resolved with complete data wipe
 
 ## Files Modified
+
 - `.github/workflows/deploy.yml` - Complete Docker data wipe and retry logic
 - `DOCKER_OVERLAY2_CORRUPTION_FIX.md` - This documentation

@@ -36,6 +36,12 @@ services:
       PUBLISHABLE_KEY: ${PUBLISHABLE_KEY}
       STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY}
       STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET}
+      SMPT_SERVICE: ${SMPT_SERVICE}
+      SMPT_HOST: ${SMPT_HOST}
+      SMPT_PORT: ${SMPT_PORT}
+      SMPT_MAIL: ${SMPT_MAIL}
+      SMPT_PASSWORD: ${SMPT_PASSWORD}
+      FRONTEND_URL: ${FRONTEND_URL}
     volumes:
       - ./uploads:/opt/chatbot-app/uploads
       - ./logs:/opt/chatbot-app/logs
