@@ -46,7 +46,7 @@ def send_email(to_email: str, subject: str, html_content: str) -> bool:
         msg.attach(html_part)
         
         logger.info(f"🔌 Connecting to SMTP server...")
-        with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT) as server:
+        with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=10) as server:
             logger.info(f"🔐 Authenticating as {SMTP_MAIL}...")
             server.login(SMTP_MAIL, SMTP_PASSWORD)
             logger.info(f"📤 Sending email...")

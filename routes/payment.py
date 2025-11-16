@@ -61,7 +61,7 @@ def send_email(to_email: str, subject: str, html_content: str):
         logger.info(f"Attempting to send email to {to_email}")
         logger.info(f"SMTP Host: {SMTP_HOST}, Port: {SMTP_PORT}")
         
-        with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT) as server:
+        with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=10) as server:
             server.login(SMTP_MAIL, SMTP_PASSWORD)
             server.send_message(msg)
             
