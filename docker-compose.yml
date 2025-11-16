@@ -45,6 +45,9 @@ services:
     volumes:
       - ./uploads:/opt/chatbot-app/uploads
       - ./logs:/opt/chatbot-app/logs
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
     depends_on:
       - redis
     healthcheck:
@@ -87,3 +90,11 @@ volumes:
   redis_data:
   caddy_data:
   caddy_config:
+
+networks:
+  default:
+    driver: bridge
+    driver_opts:
+      com.docker.network.bridge.name: br-chatbot
+      com.docker.network.bridge.enable_ip_masquerade: "true"
+      com.docker.network.driver.mtu: "1500"
