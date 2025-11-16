@@ -79,15 +79,20 @@ jobs:
             echo "🔓 Unmounting Docker filesystems..."
             sudo umount /var/lib/docker/buildkit/executor/*/rootfs 2>/dev/null || true
             sudo umount /var/lib/docker/overlay2/*/merged 2>/dev/null || true
-            for mount in $(mount | grep '/var/lib/docker' | awk '{print $3}'); do
-              sudo umount -f "$mount" 2>/dev/null || true
+            for mount in $(mount | grep '/var/lib/docker' | awk '{print $3}' | tac); do
+              sudo umount -fl "$mount" 2>/dev/null || true
             done
-            sleep 2
+            sleep 3
 
             # Completely remove Docker's data directory to fix corruption
             echo "🗑️  Removing corrupted Docker data (this will fix overlay2 errors)..."
             sudo rm -rf /var/lib/docker/* 2>/dev/null || true
             sudo rm -rf /var/lib/docker/.* 2>/dev/null || true
+            
+            # Also clean buildkit cache separately
+            echo "🗑️  Cleaning buildkit cache..."
+            sudo rm -rf /var/lib/buildkit 2>/dev/null || true
+            sudo rm -rf ~/.docker/buildx 2>/dev/null || true
 
             # Recreate Docker directories with proper structure
             echo "📁 Recreating Docker directories..."
@@ -149,24 +154,26 @@ jobs:
             # Restart Docker with fresh filesystem
             echo "🐳 Starting Docker with clean filesystem..."
             sudo systemctl start docker 2>/dev/null || true
-            sleep 5
+            sleep 10
 
             # Verify Docker is working
             echo "✅ Verifying Docker status..."
-            sudo systemctl status docker --no-pager || true
-            docker info 2>/dev/null || {
+            timeout 30 bash -c 'until docker info >/dev/null 2>&1; do sleep 2; done' || {
               echo "⚠️  Docker not responding, trying restart..."
               sudo systemctl restart docker
-              sleep 5
+              sleep 10
+              timeout 30 bash -c 'until docker info >/dev/null 2>&1; do sleep 2; done' || {
+                echo "❌ Docker failed to start after restart"
+                sudo journalctl -u docker -n 50 --no-pager
+                exit 1
+              }
             }
+            
+            docker info
+            echo "✅ Docker is running successfully"
 
             echo "📊 Final disk usage:"
             df -h
-
-            # Restart Docker WITHOUT daemon reload
-            echo "🐳 Starting Docker (without daemon reload)..."
-            sudo systemctl start docker 2>/dev/null || true
-            sleep 5
 
       - name: Create app directory on server
         uses: appleboy/ssh-action@v1.2.0
@@ -476,19 +483,6 @@ jobs:
             # Reset Docker build cache to avoid corruption
             echo "🔄 Resetting Docker build cache..."
             sudo docker builder prune -af 2>/dev/null || true
-
-            # Verify Docker buildx is available (needed after fresh Docker install)
-            echo "🔧 Verifying Docker buildx..."
-            docker buildx version || {
-              echo "⚠️  Docker buildx not available, installing..."
-              sudo apt-get update
-              sudo apt-get install -y docker-buildx-plugin || true
-            }
-
-            # Create a new builder instance if needed
-            echo "🏗️  Setting up Docker builder..."
-            docker buildx create --use --name chatbot-builder 2>/dev/null || docker buildx use chatbot-builder || true
-            docker buildx inspect --bootstrap || true
 
             # Set environment variables from GitHub Secrets
             echo "🔧 Setting environment variables from secrets..."
