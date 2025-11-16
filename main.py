@@ -279,6 +279,23 @@ if admin_available:
 app.include_router(auth_router, prefix="/auth", tags=["auth"])
 app.include_router(user_router, prefix="/user", tags=["User Profile"])
 
+# Direct webhook endpoint to handle Stripe webhooks at /webhook (without /payment prefix)
+@app.post("/webhook")
+async def stripe_webhook_direct(request: Request):
+    """
+    Direct webhook endpoint for Stripe events.
+    Forwards to the payment router's webhook handler.
+    This exists to support legacy Stripe webhook URLs configured as /webhook
+    """
+    from routes.payment import stripe_webhook
+    from fastapi import Header
+    
+    # Get the stripe signature from headers
+    stripe_signature = request.headers.get("stripe-signature")
+    
+    # Forward to the actual webhook handler
+    return await stripe_webhook(request, stripe_signature)
+
 @app.get("/")
 def read_root():
     return {
