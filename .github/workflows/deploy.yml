@@ -64,21 +64,29 @@ jobs:
             echo "🧹 Cleaning up everything possible..."
 
             # Stop Docker first (don't reload daemon yet)
+            echo "🛑 Stopping Docker service..."
             sudo systemctl stop docker 2>/dev/null || true
+            sleep 3
 
-            # Stop all Docker containers and remove everything
-            sudo docker stop $(sudo docker ps -aq) 2>/dev/null || true
-            sudo docker rm $(sudo docker ps -aq) 2>/dev/null || true
-            sudo docker rmi $(sudo docker images -q) 2>/dev/null || true
-            sudo docker volume rm $(sudo docker volume ls -q) 2>/dev/null || true
-            sudo docker network rm $(sudo docker network ls -q) 2>/dev/null || true
-            sudo docker system prune -af --volumes 2>/dev/null || true
-            sudo docker builder prune -af 2>/dev/null || true
+            # Kill any remaining Docker processes
+            sudo pkill -9 dockerd 2>/dev/null || true
+            sudo pkill -9 docker-containerd 2>/dev/null || true
+            sudo pkill -9 docker-containerd-shim 2>/dev/null || true
+            sleep 2
 
-            # Clean Docker build cache and layers
-            sudo rm -rf /var/lib/docker/tmp/* 2>/dev/null || true
-            sudo rm -rf /var/lib/docker/overlay2/* 2>/dev/null || true
-            sudo rm -rf /var/lib/docker/image/* 2>/dev/null || true
+            # Completely remove Docker's data directory to fix corruption
+            echo "🗑️  Removing corrupted Docker data (this will fix overlay2 errors)..."
+            sudo rm -rf /var/lib/docker/* 2>/dev/null || true
+            sudo rm -rf /var/lib/docker/.* 2>/dev/null || true
+
+            # Recreate Docker directories with proper structure
+            echo "📁 Recreating Docker directories..."
+            sudo mkdir -p /var/lib/docker/overlay2
+            sudo mkdir -p /var/lib/docker/image
+            sudo mkdir -p /var/lib/docker/volumes
+            sudo mkdir -p /var/lib/docker/containers
+            sudo mkdir -p /var/lib/docker/tmp
+            sudo chmod -R 700 /var/lib/docker
 
             # Clean systemd runtime directories
             echo "🧹 Cleaning systemd runtime..."
@@ -127,6 +135,23 @@ jobs:
 
             echo "🔍 Finding largest directories:"
             sudo du -h --max-depth=1 / 2>/dev/null | sort -hr | head -10 || true
+            
+            # Restart Docker with fresh filesystem
+            echo "🐳 Starting Docker with clean filesystem..."
+            sudo systemctl start docker 2>/dev/null || true
+            sleep 5
+            
+            # Verify Docker is working
+            echo "✅ Verifying Docker status..."
+            sudo systemctl status docker --no-pager || true
+            docker info 2>/dev/null || {
+              echo "⚠️  Docker not responding, trying restart..."
+              sudo systemctl restart docker
+              sleep 5
+            }
+            
+            echo "📊 Final disk usage:"
+            df -h
 
             # Restart Docker WITHOUT daemon reload
             echo "🐳 Starting Docker (without daemon reload)..."
@@ -441,6 +466,19 @@ jobs:
             # Reset Docker build cache to avoid corruption
             echo "🔄 Resetting Docker build cache..."
             sudo docker builder prune -af 2>/dev/null || true
+            
+            # Verify Docker buildx is available (needed after fresh Docker install)
+            echo "🔧 Verifying Docker buildx..."
+            docker buildx version || {
+              echo "⚠️  Docker buildx not available, installing..."
+              sudo apt-get update
+              sudo apt-get install -y docker-buildx-plugin || true
+            }
+            
+            # Create a new builder instance if needed
+            echo "🏗️  Setting up Docker builder..."
+            docker buildx create --use --name chatbot-builder 2>/dev/null || docker buildx use chatbot-builder || true
+            docker buildx inspect --bootstrap || true
 
             # Set environment variables from GitHub Secrets
             echo "🔧 Setting environment variables from secrets..."
@@ -480,7 +518,36 @@ jobs:
             fi
 
             # Build with no cache to avoid corrupted layers
-            $DC build --no-cache --pull web
+            echo "🏗️  Building Docker images..."
+            $DC build --no-cache --pull web || {
+              echo "❌ Docker build failed! Trying complete Docker reset..."
+              
+              # Stop Docker completely
+              sudo systemctl stop docker
+              sleep 3
+              
+              # Remove everything again
+              sudo rm -rf /var/lib/docker/*
+              sudo mkdir -p /var/lib/docker
+              
+              # Restart Docker
+              sudo systemctl start docker
+              sleep 10
+              
+              # Wait for Docker to be ready
+              timeout 60 bash -c 'until docker info >/dev/null 2>&1; do sleep 2; done' || {
+                echo "❌ Docker failed to start after reset"
+                exit 1
+              }
+              
+              echo "✅ Docker reset complete, retrying build..."
+              $DC build --no-cache --pull web || {
+                echo "❌ Build still failed after Docker reset"
+                echo "📋 Docker logs:"
+                sudo journalctl -u docker -n 50 --no-pager
+                exit 1
+              }
+            }
 
             # Start containers
             echo "🚀 Starting containers..."
