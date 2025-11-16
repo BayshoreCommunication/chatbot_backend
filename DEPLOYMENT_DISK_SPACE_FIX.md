@@ -1,14 +1,17 @@
 # Deployment Disk Space Fix
 
 ## Problem
+
 GitHub Actions deployment was failing with:
+
 ```
-Reload daemon failed: Refusing to reload, not enough space available on /run/systemd/. 
+Reload daemon failed: Refusing to reload, not enough space available on /run/systemd/.
 Currently, 3.6M are free, but a safety buffer of 16M is enforced.
 Process exited with status 1
 ```
 
 ## Root Cause
+
 1. **Server disk full** - `/run/systemd/` only had 3.6M free space but needs 16M minimum
 2. **Docker daemon reload failing** - `systemctl enable docker` triggers daemon reload which requires disk space
 3. **Log files and Docker cache** consuming too much space
@@ -16,6 +19,7 @@ Process exited with status 1
 ## Solution
 
 ### 1. Enhanced Emergency Disk Cleanup
+
 Added aggressive cleanup of systemd runtime directories:
 
 ```yaml
@@ -33,24 +37,28 @@ sudo rm -rf /run/systemd/units/*
 ```
 
 ### 2. Avoid Daemon Reload
+
 Changed Docker service handling to avoid triggering daemon reload:
 
 **Before (CAUSES ERROR):**
+
 ```yaml
 sudo systemctl start docker
-sudo systemctl enable docker  # ← This triggers daemon reload
+sudo systemctl enable docker # ← This triggers daemon reload
 ```
 
 **After (SAFE):**
+
 ```yaml
 # Only start Docker if not running
 if ! sudo systemctl is-active --quiet docker; then
-  sudo systemctl start docker
+sudo systemctl start docker
 fi
 # Skip enable to avoid daemon reload
 ```
 
 ### 3. Stop Docker Before Cleanup
+
 Added proper Docker stop before cleanup:
 
 ```yaml
@@ -60,14 +68,15 @@ sudo systemctl stop docker
 ```
 
 ### 4. Better Error Recovery
+
 Added restart fallback if Docker fails to start:
 
 ```yaml
 timeout 30 bash -c 'until docker info >/dev/null 2>&1; do sleep 1; done' || {
-  echo "❌ Docker failed to start, trying restart..."
-  sudo systemctl restart docker
-  sleep 5
-  docker info || exit 1
+echo "❌ Docker failed to start, trying restart..."
+sudo systemctl restart docker
+sleep 5
+docker info || exit 1
 }
 ```
 
@@ -76,18 +85,21 @@ timeout 30 bash -c 'until docker info >/dev/null 2>&1; do sleep 1; done' || {
 ### File: `.github/workflows/deploy.yml`
 
 #### 1. Emergency Disk Cleanup Step (Lines ~50-115)
+
 - Added `/run/systemd/` specific cleanup
 - Added systemd journal cleanup
 - Stop Docker before cleanup
 - Start Docker without daemon reload
 
 #### 2. Docker Service Start (Lines ~250-270)
+
 - Check if Docker is already running
 - Only start if needed
 - Skip `systemctl enable` to avoid daemon reload
 - Added restart fallback
 
 #### 3. Enhanced Monitoring
+
 - Show `/run/systemd/` disk usage
 - Display largest files in `/run/systemd/`
 - Better error messages
@@ -97,6 +109,7 @@ timeout 30 bash -c 'until docker info >/dev/null 2>&1; do sleep 1; done' || {
 The deployment now cleans:
 
 1. **Docker:**
+
    - All stopped containers
    - All images
    - All volumes
@@ -104,18 +117,21 @@ The deployment now cleans:
    - Overlay2 storage
 
 2. **System Logs:**
+
    - Journal logs (keep only 1 hour)
    - System logs older than 7 days
    - `/run/log/journal/*`
    - `/var/log/journal/*`
 
 3. **Systemd Runtime:**
+
    - Timer files
    - Service files
    - Transient units
    - Cached units
 
 4. **Package Manager:**
+
    - APT cache
    - Old kernels
    - Unused packages
@@ -129,6 +145,7 @@ The deployment now cleans:
 ## Expected Behavior
 
 ### Before Fix:
+
 ```
 🐳 Starting Docker service...
 Reload daemon failed: Refusing to reload, not enough space available on /run/systemd/
@@ -136,6 +153,7 @@ Error: Process completed with exit code 1
 ```
 
 ### After Fix:
+
 ```
 🧹 Cleaning systemd runtime...
 📊 Space in /run/systemd/: 45M available
@@ -148,6 +166,7 @@ Error: Process completed with exit code 1
 ## Testing
 
 ### 1. Check Disk Space
+
 ```bash
 ssh user@server
 df -h
@@ -155,13 +174,16 @@ df -h /run/systemd/
 ```
 
 ### 2. Check Docker Status
+
 ```bash
 sudo systemctl status docker
 docker info
 ```
 
 ### 3. Monitor Deployment
+
 Watch GitHub Actions logs for:
+
 - ✅ Emergency cleanup completes
 - ✅ `/run/systemd/` has enough space
 - ✅ Docker starts without errors
@@ -172,11 +194,13 @@ Watch GitHub Actions logs for:
 To prevent future disk space issues:
 
 1. **Regular Cleanup:**
+
    - Add cron job to clean Docker weekly
    - Rotate logs more aggressively
    - Monitor disk usage
 
 2. **Docker Limits:**
+
    ```bash
    # Add to /etc/docker/daemon.json
    {
@@ -224,8 +248,10 @@ df -h
 ```
 
 ## Status
+
 ✅ **FIXED** - Deployment now handles low disk space gracefully
 
 ## Files Modified
+
 - `.github/workflows/deploy.yml` - Enhanced cleanup and Docker service handling
 - `DEPLOYMENT_DISK_SPACE_FIX.md` - This documentation

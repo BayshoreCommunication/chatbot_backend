@@ -65,7 +65,7 @@ jobs:
 
             # Stop Docker first (don't reload daemon yet)
             sudo systemctl stop docker 2>/dev/null || true
-            
+
             # Stop all Docker containers and remove everything
             sudo docker stop $(sudo docker ps -aq) 2>/dev/null || true
             sudo docker rm $(sudo docker ps -aq) 2>/dev/null || true
@@ -86,18 +86,18 @@ jobs:
             sudo journalctl --vacuum-size=10M 2>/dev/null || true
             sudo rm -rf /run/log/journal/* 2>/dev/null || true
             sudo rm -rf /var/log/journal/* 2>/dev/null || true
-            
+
             # Clean /run/systemd/ specifically
             echo "🧹 Cleaning /run/systemd/ directory..."
             sudo find /run/systemd/ -type f -name "*.timer" -delete 2>/dev/null || true
             sudo find /run/systemd/ -type f -name "*.service" -delete 2>/dev/null || true
             sudo rm -rf /run/systemd/transient/* 2>/dev/null || true
             sudo rm -rf /run/systemd/units/* 2>/dev/null || true
-            
+
             echo "📊 Space in /run/systemd/:"
             df -h /run/systemd/ || true
             du -sh /run/systemd/* 2>/dev/null | sort -hr | head -10 || true
-            
+
             # Clean package cache
             sudo apt-get autoremove -y 2>/dev/null || true
             sudo apt-get autoclean 2>/dev/null || true
@@ -127,7 +127,7 @@ jobs:
 
             echo "🔍 Finding largest directories:"
             sudo du -h --max-depth=1 / 2>/dev/null | sort -hr | head -10 || true
-            
+
             # Restart Docker WITHOUT daemon reload
             echo "🐳 Starting Docker (without daemon reload)..."
             sudo systemctl start docker 2>/dev/null || true
@@ -265,7 +265,7 @@ jobs:
             if ! sudo systemctl is-active --quiet docker; then
               sudo systemctl start docker 2>/dev/null || true
             fi
-            
+
             # Do NOT enable Docker at boot if it causes daemon reload issues
             # sudo systemctl enable docker
 
