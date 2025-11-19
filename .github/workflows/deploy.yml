@@ -151,8 +151,15 @@ jobs:
             echo "🔍 Finding largest directories:"
             sudo du -h --max-depth=1 / 2>/dev/null | sort -hr | head -10 || true
 
-            # Restart Docker with fresh filesystem
-            echo "🐳 Starting Docker with clean filesystem..."
+            # Restart Docker AND containerd with fresh filesystem
+            echo "🐳 Starting Docker and containerd with clean filesystem..."
+            sudo systemctl stop containerd 2>/dev/null || true
+            sudo pkill -9 containerd 2>/dev/null || true
+            sleep 3
+
+            sudo systemctl start containerd 2>/dev/null || true
+            sleep 5
+
             sudo systemctl start docker 2>/dev/null || true
             sleep 10
 
@@ -160,11 +167,14 @@ jobs:
             echo "✅ Verifying Docker status..."
             timeout 30 bash -c 'until docker info >/dev/null 2>&1; do sleep 2; done' || {
               echo "⚠️  Docker not responding, trying restart..."
+              sudo systemctl restart containerd
+              sleep 5
               sudo systemctl restart docker
               sleep 10
               timeout 30 bash -c 'until docker info >/dev/null 2>&1; do sleep 2; done' || {
                 echo "❌ Docker failed to start after restart"
                 sudo journalctl -u docker -n 50 --no-pager
+                sudo journalctl -u containerd -n 50 --no-pager
                 exit 1
               }
             }
