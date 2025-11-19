@@ -9,7 +9,10 @@
 {
     email arsahak.bayshore@gmail.com
     acme_ca https://acme.zerossl.com/v2/DV90
-    acme_eab "5-t9bq8YQa6soj74lhwAQw" "r2NaAN74zSwwJPwnOqIBmLrdwP6S6xXSzDUgMDSfnCy4kdrfmR6o4Sq9IpRpuqOJq0jNA9fsL9VBbjW4K5y_6g"
+    acme_eab {
+        key_id "5-t9bq8YQa6soj74lhwAQw"
+        mac_key "r2NaAN74zSwwJPwnOqIBmLrdwP6S6xXSzDUgMDSfnCy4kdrfmR6o4Sq9IpRpuqOJq0jNA9fsL9VBbjW4K5y_6g"
+    }
 }
 
 api.bayshorecommunication.org {
@@ -30,7 +33,10 @@ api.bayshorecommunication.org {
         }
 
         # Increase upstream timeout for external API calls
-        timeout 60s
+        transport http {
+            dial_timeout 10s
+            response_header_timeout 60s
+        }
     }
     
     # Enable gzip compression (but not for WebSocket connections)

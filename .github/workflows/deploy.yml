@@ -88,7 +88,7 @@ jobs:
             echo "🗑️  Removing corrupted Docker data (this will fix overlay2 errors)..."
             sudo rm -rf /var/lib/docker/* 2>/dev/null || true
             sudo rm -rf /var/lib/docker/.* 2>/dev/null || true
-            
+
             # Also clean buildkit cache separately
             echo "🗑️  Cleaning buildkit cache..."
             sudo rm -rf /var/lib/buildkit 2>/dev/null || true
@@ -168,7 +168,7 @@ jobs:
                 exit 1
               }
             }
-            
+
             docker info
             echo "✅ Docker is running successfully"
 
