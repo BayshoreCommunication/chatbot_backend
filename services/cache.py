@@ -8,7 +8,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# Configure logging format
+# Configure loggingformat
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - [CACHE] %(message)s',
