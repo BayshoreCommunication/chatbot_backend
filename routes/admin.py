@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-# JWT configuration
+#JWT configuration
 SECRET_KEY = os.getenv("JWT_SECRET_KEY", "e4f7c6d9b2a84f4aa01f1e3391e3e33e7c8a9cf23de141df97ad9e915c90b0f8")
 ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
 
