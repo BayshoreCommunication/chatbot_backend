@@ -136,6 +136,13 @@ except Exception as e:
     print(f"Warning: FAQ Intelligence router failed to import: {e}")
     faq_intelligence_available = False
 
+try:
+    from routes.knowledge_base import router as knowledge_base_router
+    knowledge_base_available = True
+except Exception as e:
+    print(f"Warning: Knowledge Base router failed to import: {e}")
+    knowledge_base_available = False
+
 # API credentials are now hardcoded in the respective service files
 # But we still need to load environment variables for configuration
 load_dotenv()
@@ -262,6 +269,11 @@ if organization_available:
 if faq_intelligence_available:
     app.include_router(faq_intelligence_router, prefix="/api/faq-intelligence", tags=["FAQ Intelligence"])
     available_features.append("AI-Powered FAQ Analysis & Suggestions")
+
+# Knowledge Base router
+if knowledge_base_available:
+    app.include_router(knowledge_base_router, tags=["Knowledge Base"])
+    available_features.append("Knowledge Base Management")
 
 # Dashboard router is always included
 app.include_router(dashboard_router, prefix="/api", tags=["Dashboard"])
