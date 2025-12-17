@@ -87,15 +87,16 @@ import os
 load_dotenv()
 
 def initialize_embeddings():
-    """Initialize OpenAI embeddings with native dimensions"""
+    """Initialize OpenAI embeddings with 1024 dimensions to match Pinecone index"""
     print("Initializing OpenAI embeddings...")
     
-    # Use OpenAI embeddings with native 1536 dimensions (matches your Pinecone index)
+    # Use OpenAI text-embedding-3-small with 1024 dimensions (matches Pinecone index)
     embeddings = OpenAIEmbeddings(
         openai_api_key=os.getenv("OPENAI_API_KEY"),
-        model="text-embedding-3-small",  # Native 1536 dimensions
+        model="text-embedding-3-small",
+        dimensions=1024,  # CRITICAL: Force 1024 dims to match Pinecone index
         openai_api_base="https://api.openai.com/v1"
     )
     
-    print("✅ OpenAI embeddings initialized with native 1536 dimensions")
+    print("✅ OpenAI embeddings initialized with 1024 dimensions (text-embedding-3-small)")
     return embeddings 

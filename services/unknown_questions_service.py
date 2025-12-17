@@ -113,15 +113,19 @@ class UnknownQuestionsService:
         visitor_id: str = None
     ) -> str:
         """Save an unknown question to the database"""
+        import logging
+        logger = logging.getLogger(__name__)
         
         try:
             question_normalized = UnknownQuestionsService.normalize_question(question)
+            logger.info(f"[UNKNOWN Q SERVICE] Processing question | org={organization_id[:8]}... | session={session_id[:8]}...")
             
             # Check if question already exists
             existing = UnknownQuestionsService.check_if_question_exists(organization_id, question_normalized)
             
             if existing:
                 # Update frequency and last asked time
+                new_frequency = existing.get("frequency_count", 1) + 1
                 unknown_questions_collection.update_one(
                     {"_id": existing["_id"]},
                     {
@@ -132,7 +136,8 @@ class UnknownQuestionsService:
                         }
                     }
                 )
-                print(f"[DEBUG] Updated existing unknown question frequency: {existing['_id']}")
+                logger.info(f"[UNKNOWN Q SERVICE] ✓ Updated existing | id={str(existing['_id'])} | frequency={new_frequency}")
+                logger.info(f"  └─ This question has been asked {new_frequency} times")
                 return str(existing["_id"])
             
             # Create new unknown question
@@ -173,11 +178,23 @@ class UnknownQuestionsService:
             result = unknown_questions_collection.insert_one(unknown_question)
             question_id = str(result.inserted_id)
             
-            print(f"[DEBUG] Saved unknown question: {question_id} - Category: {question_category}, Quality: {response_quality}")
+            # Log detailed information about what was saved
+            logger.info(f"[UNKNOWN Q SERVICE] ✓ New question saved | id={question_id[:12]}...")
+            logger.info(f"  └─ category={question_category} | quality={response_quality} | similarity={max_similarity:.3f}")
+            logger.info(f"  └─ needs_review={not is_answered_well} | kb_results={len(knowledge_base_results or [])}")
+            
+            # Log vectorstore info if available
+            if user_context:
+                vectorstore_id = user_context.get("vectorstore_id", "not_set")
+                user_id = user_context.get("user_id", "unknown")
+                logger.info(f"  └─ vectorstore_id={vectorstore_id[:12] if vectorstore_id != 'not_set' else 'not_set'}... | user_id={user_id[:8] if user_id != 'unknown' else 'unknown'}...")
+            
             return question_id
             
         except Exception as e:
-            print(f"Error saving unknown question: {str(e)}")
+            logger.error(f"[UNKNOWN Q SERVICE ERROR] Failed to save: {str(e)}")
+            import traceback
+            logger.error(f"  └─ {traceback.format_exc()}")
             return None
     
     @staticmethod

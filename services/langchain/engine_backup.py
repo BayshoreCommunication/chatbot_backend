@@ -751,3 +751,13 @@ def get_cache_performance():
             "port": cache.redis_port if hasattr(cache, 'redis_port') else "unknown"
         }
     }
+
+def escalate_to_human(query: str, context: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Simple escalation function that returns a message indicating human assistance is needed.
+    """
+    return {
+        "answer": "Your request has been escalated to our support team. A human agent will assist you shortly.",
+        "escalated": True,
+        "context": context
+    }

@@ -1,15 +1,11 @@
-"""
-Knowledge Base Routes - FastAPI Implementation
-Handles all knowledge base CRUD operations and queries
-No authentication required - uses userId and organizationId from request body
-Uses OpenAI web search tools for automatic information gathering
-"""
 
-from fastapi import APIRouter, HTTPException, Body
+from fastapi import APIRouter, HTTPException, Body, Depends, Header, Request
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, Field
 from bson import ObjectId
 import logging
+
+from services.database import get_organization_by_api_key
 
 from services.knowledge_base import (
     check_knowledge_base_exists,
@@ -24,7 +20,8 @@ from services.langchain.knowledge_base import (
     build_knowledge_base_auto,
     get_chatbot_chunks_by_intent,
     get_all_chatbot_context,
-    query_vector_db
+    query_vector_db,
+    add_document_to_knowledge_base
 )
 
 from models.knowledge_base import (
@@ -37,22 +34,49 @@ from models.knowledge_base import (
 router = APIRouter(prefix="/api/knowledge-base", tags=["Knowledge Base"])
 logger = logging.getLogger(__name__)
 
+def get_org_id(organization: Dict[str, Any]) -> str:
+    """Safely get organization ID from either 'id' or MongoDB '_id'."""
+    org_id = organization.get("id")
+    if not org_id:
+        mongo_id = organization.get("_id")
+        if mongo_id is not None:
+            try:
+                org_id = str(mongo_id)
+            except Exception:
+                org_id = None
+    if not org_id:
+        raise HTTPException(status_code=500, detail="Organization ID is missing")
+    return org_id
+
+async def get_organization_from_api_key(x_api_key: Optional[str] = Header(None)):
+    """Dependency to get organization from API key"""
+    if not x_api_key:
+        logger.error("❌ No X-API-Key header provided")
+        raise HTTPException(status_code=401, detail="API key is required in X-API-Key header")
+    
+    logger.info(f"🔑 Validating API key: {x_api_key[:20]}...")
+    organization = get_organization_by_api_key(x_api_key)
+    if not organization:
+        logger.error(f"❌ Invalid API key: {x_api_key}")
+        raise HTTPException(status_code=401, detail="Invalid API key")
+    
+    logger.info(f"✅ Organization validated: {organization.get('name')}")
+    return organization
+
 
 # ==========================================
 # REQUEST/RESPONSE MODELS
 # ==========================================
 
 class CheckKnowledgeBaseRequest(BaseModel):
-    user_id: str = Field(alias="userId")
-    organization_id: str = Field(alias="organizationId")
+    user_id: Optional[str] = Field(None, alias="userId")
+    organization_id: Optional[str] = Field(None, alias="organizationId")
 
     class Config:
         populate_by_name = True
 
 
 class CreateKnowledgeBaseRequest(BaseModel):
-    user_id: str = Field(alias="userId")
-    organization_id: str = Field(alias="organizationId")
     company_name: str = Field(alias="companyName")
     website: Optional[str] = None  # Optional website URL for automatic scraping
     sources: Optional[List[Dict[str, Any]]] = None  # Optional manual sources
@@ -64,8 +88,6 @@ class CreateKnowledgeBaseRequest(BaseModel):
 
 
 class UpdateKnowledgeBaseRequest(BaseModel):
-    user_id: str = Field(alias="userId")
-    organization_id: str = Field(alias="organizationId")
     sources: Optional[List[Dict[str, Any]]] = None
     structured_data: Optional[Dict[str, Any]] = Field(None, alias="structuredData")
     raw_content: Optional[str] = Field(None, alias="rawContent")
@@ -78,18 +100,23 @@ class UpdateKnowledgeBaseRequest(BaseModel):
 
 
 class QueryKnowledgeBaseRequest(BaseModel):
-    user_id: str = Field(alias="userId")
-    organization_id: str = Field(alias="organizationId")
     query: str
     top_k: int = Field(default=5, alias="topK")
 
     class Config:
         populate_by_name = True
 
+class UploadDocumentRequest(BaseModel):
+    file_path: Optional[str] = Field(None, alias="filePath")
+    url: Optional[str] = None
+    text: Optional[str] = None
+    max_pages: Optional[int] = Field(1, alias="maxPages")
+
+    class Config:
+        populate_by_name = True
 
 class DeleteKnowledgeBaseRequest(BaseModel):
-    user_id: str = Field(alias="userId")
-    organization_id: str = Field(alias="organizationId")
+    pass  # No fields needed - uses authenticated organization
 
     class Config:
         populate_by_name = True
@@ -101,16 +128,38 @@ class DeleteKnowledgeBaseRequest(BaseModel):
 
 @router.get("/check")
 async def check_knowledge_base(
-    user_id: str,
-    organization_id: str
+    request: Request,
+    x_api_key: Optional[str] = Header(None, description="API Key for authentication")
 ):
     """
     GET /api/knowledge-base/check
     Check if user has existing knowledge base
-    - Uses user_id and organization_id from query params
+    - Uses X-API-Key header for authentication
     - Returns knowledge base status and quality
     """
     try:
+        logger.info(f"📥 Received check request from {request.client.host}")
+        logger.info(f"🔑 Headers: {dict(request.headers)}")
+        
+        if not x_api_key:
+            logger.error("❌ No X-API-Key header provided")
+            raise HTTPException(status_code=401, detail="X-API-Key header is required")
+        
+        logger.info(f"🔑 Validating API key: {x_api_key[:20]}...")
+        organization = get_organization_by_api_key(x_api_key)
+        if not organization:
+            logger.error(f"❌ Invalid API key")
+            raise HTTPException(status_code=401, detail="Invalid API key")
+        
+        logger.info(f"✅ Organization validated: {organization.get('name')}")
+        user_id = organization.get("user_id")
+        if not user_id:
+            logger.error(f"❌ user_id not found in organization: {organization}")
+            raise HTTPException(status_code=400, detail="User ID not found in organization")
+        
+        organization_id = get_org_id(organization)
+        
+        logger.info(f"🔍 Checking knowledge base for user {user_id}, org {organization_id}")
         kb = await check_knowledge_base_exists(user_id, organization_id)
         
         if not kb:
@@ -143,12 +192,15 @@ async def check_knowledge_base(
 # ==========================================
 
 @router.post("/")
-async def create_knowledge_base(request: CreateKnowledgeBaseRequest):
+async def create_knowledge_base(
+    request: CreateKnowledgeBaseRequest,
+    organization=Depends(get_organization_from_api_key)
+):
     """
     POST /api/knowledge-base/
     Create new knowledge base with automatic information gathering
     
-    - Provide: userId, organizationId, companyName, website (optional)
+    - Authenticated request using X-API-Key
     - Automatically scrapes website
     - Performs intelligent web search using OpenAI
     - Extracts structured data
@@ -157,17 +209,20 @@ async def create_knowledge_base(request: CreateKnowledgeBaseRequest):
     
     Example:
     {
-      "userId": "675939fc72c39392b8e7ad51",
-      "organizationId": "675939fc72c39392b8e7ad52",
       "companyName": "Carter Injury Law",
       "website": "https://carterinjurylaw.com"
     }
     """
     try:
+        # Auto-detect user_id and organization_id from authenticated organization
+        user_id = organization.get("user_id")
+        organization_id = get_org_id(organization)
+        
         logger.info(f"🚀 Creating knowledge base for {request.company_name}")
+        logger.info(f"📍 User: {user_id}, Org: {organization_id}")
         
         # Check if already exists
-        existing = await check_knowledge_base_exists(request.user_id, request.organization_id)
+        existing = await check_knowledge_base_exists(user_id, organization_id)
         if existing:
             raise HTTPException(
                 status_code=400,
@@ -176,8 +231,8 @@ async def create_knowledge_base(request: CreateKnowledgeBaseRequest):
         
         # Build knowledge base automatically using OpenAI web search
         kb = await build_knowledge_base_auto(
-            user_id=request.user_id,
-            organization_id=request.organization_id,
+            user_id=user_id,
+            organization_id=organization_id,
             company_name=request.company_name,
             website=request.website
         )
@@ -208,26 +263,27 @@ async def create_knowledge_base(request: CreateKnowledgeBaseRequest):
 
 @router.get("/")
 async def get_knowledge_base_by_user(
-    user_id: str,
-    organization_id: str
+    organization=Depends(get_organization_from_api_key)
 ):
     """
     GET /api/knowledge-base/
     Get knowledge base for user
-    - Uses user_id and organization_id from query params
+    - Uses user_id and organization_id from authenticated request
     - Retrieves from MongoDB
     """
     try:
+        user_id = organization.get("user_id")
+        organization_id = get_org_id(organization)
+        
         kb = await get_knowledge_base(user_id, organization_id)
         
         if not kb:
             raise HTTPException(status_code=404, detail="Knowledge base not found")
         
-        # Convert ObjectId to string for JSON serialization
-        kb["_id"] = str(kb["_id"])
-        kb["userId"] = str(kb["userId"])
-        if "organizationId" in kb:
-            kb["organizationId"] = str(kb["organizationId"])
+        # Convert ObjectId to string for JSON serialization (only _id is ObjectId)
+        if isinstance(kb.get("_id"), ObjectId):
+            kb["_id"] = str(kb["_id"])
+        # userId and organizationId are already strings (UUIDs), no conversion needed
         
         # Convert datetime objects
         if "createdAt" in kb and kb["createdAt"]:
@@ -249,16 +305,23 @@ async def get_knowledge_base_by_user(
 
 
 @router.put("/")
-async def update_knowledge_base_data(request: UpdateKnowledgeBaseRequest):
+async def update_knowledge_base_data(
+    request: UpdateKnowledgeBaseRequest,
+    organization=Depends(get_organization_from_api_key)
+):
     """
     PUT /api/knowledge-base/
     Update existing knowledge base
-    - Uses user_id and organization_id from request body
+    - Uses user_id and organization_id from authenticated request
     - Adds new sources
     - Re-indexes in Pinecone (optional)
     - Updates MongoDB
     """
     try:
+        # Auto-detect user_id and organization_id from authenticated organization
+        user_id = organization.get("user_id")
+        organization_id = get_org_id(organization)
+        
         update_data = {}
         if request.sources:
             update_data["sources"] = request.sources
@@ -274,8 +337,8 @@ async def update_knowledge_base_data(request: UpdateKnowledgeBaseRequest):
             update_data["status"] = request.status
         
         kb = await update_knowledge_base(
-            user_id=request.user_id,
-            organization_id=request.organization_id,
+            user_id=user_id,
+            organization_id=organization_id,
             update_data=update_data
         )
         
@@ -301,16 +364,23 @@ async def update_knowledge_base_data(request: UpdateKnowledgeBaseRequest):
 
 
 @router.delete("/")
-async def delete_knowledge_base_data(request: DeleteKnowledgeBaseRequest):
+async def delete_knowledge_base_data(
+    request: DeleteKnowledgeBaseRequest,
+    organization=Depends(get_organization_from_api_key)
+):
     """
     DELETE /api/knowledge-base/
     Delete knowledge base
-    - Uses user_id and organization_id from request body
+    - Uses user_id and organization_id from authenticated request
     - Removes from Pinecone (optional)
     - Archives in MongoDB
     """
     try:
-        success = await delete_knowledge_base(request.user_id, request.organization_id)
+        # Auto-detect user_id and organization_id from authenticated organization
+        user_id = organization.get("user_id")
+        organization_id = get_org_id(organization)
+        
+        success = await delete_knowledge_base(user_id, organization_id)
         
         if not success:
             raise HTTPException(status_code=404, detail="Knowledge base not found")
@@ -331,18 +401,25 @@ async def delete_knowledge_base_data(request: DeleteKnowledgeBaseRequest):
 # ==========================================
 
 @router.post("/query")
-async def query_knowledge_base_search(request: QueryKnowledgeBaseRequest):
+async def query_knowledge_base_search(
+    request: QueryKnowledgeBaseRequest,
+    organization=Depends(get_organization_from_api_key)
+):
     """
     POST /api/knowledge-base/query
     Query knowledge base with semantic search
-    - Uses user_id and organization_id from request body
+    - Uses user_id and organization_id from authenticated request
     - Searches Pinecone vectors (optional)
     - Returns relevant chunks
     """
     try:
+        # Auto-detect user_id and organization_id from authenticated organization
+        user_id = organization.get("user_id")
+        organization_id = get_org_id(organization)
+        
         results = await query_knowledge_base(
-            user_id=request.user_id,
-            organization_id=request.organization_id,
+            user_id=user_id,
+            organization_id=organization_id,
             query=request.query,
             top_k=request.top_k
         )
@@ -358,18 +435,59 @@ async def query_knowledge_base_search(request: QueryKnowledgeBaseRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/upload-document")
+async def upload_knowledge_base_document(
+    request: UploadDocumentRequest,
+    organization=Depends(get_organization_from_api_key)
+):
+    """
+    POST /api/knowledge-base/upload-document
+    Upload document (URL, Text, or File Path) to Knowledge Base
+    
+    - Parses document
+    - Chunks text
+    - Embeds and stores in Pinecone
+    - Updates MongoDB record
+    """
+    try:
+        user_id = organization.get("user_id")
+        organization_id = get_org_id(organization)
+        company_name = organization.get("name", "Unknown Company")
+        
+        result = await add_document_to_knowledge_base(
+            user_id=user_id,
+            organization_id=organization_id,
+            company_name=company_name,
+            file_path=request.file_path,
+            url=request.url,
+            text=request.text,
+            max_pages=request.max_pages or 1
+        )
+        
+        return {
+            "success": True,
+            "message": "Document added successfully",
+            "details": result
+        }
+    except Exception as e:
+        logger.error(f"Error uploading document: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/stats")
 async def get_knowledge_base_statistics(
-    user_id: str,
-    organization_id: str
+    organization=Depends(get_organization_from_api_key)
 ):
     """
     GET /api/knowledge-base/stats
     Get knowledge base statistics
-    - Uses user_id and organization_id from query params
+    - Uses user_id and organization_id from authenticated request
     - Returns metrics about sources, quality, version history
     """
     try:
+        user_id = organization.get("user_id")
+        organization_id = get_org_id(organization)
+        
         stats = await get_knowledge_base_stats(user_id, organization_id)
         
         if not stats:
@@ -392,8 +510,7 @@ async def get_knowledge_base_statistics(
 
 @router.get("/chatbot/chunks")
 async def get_chatbot_chunks(
-    user_id: str,
-    organization_id: str,
+    organization=Depends(get_organization_from_api_key),
     intent: Optional[str] = None
 ):
     """
@@ -407,6 +524,9 @@ async def get_chatbot_chunks(
     Example intents: contact, services, pricing, faq, process, team
     """
     try:
+        user_id = organization.get("user_id")
+        organization_id = get_org_id(organization)
+        
         if intent:
             chunks = await get_chatbot_chunks_by_intent(user_id, organization_id, intent)
         else:
@@ -431,8 +551,7 @@ async def get_chatbot_chunks(
 
 @router.get("/chatbot/context")
 async def get_chatbot_context(
-    user_id: str,
-    organization_id: str
+    organization=Depends(get_organization_from_api_key)
 ):
     """
     GET /api/knowledge-base/chatbot/context
@@ -443,6 +562,9 @@ async def get_chatbot_context(
     - Optimized for chatbot understanding
     """
     try:
+        user_id = organization.get("user_id")
+        organization_id = get_org_id(organization)
+        
         context = await get_all_chatbot_context(user_id, organization_id)
         
         return {
@@ -458,9 +580,9 @@ async def get_chatbot_context(
 
 @router.get("/chatbot/vector-search")
 async def search_knowledge_vectors(
-    organization_id: str,
     query: str,
-    top_k: int = 5
+    top_k: int = 5,
+    organization=Depends(get_organization_from_api_key)
 ):
     """
     Search knowledge base using vector similarity (Pinecone)
@@ -471,6 +593,8 @@ async def search_knowledge_vectors(
     - Includes similarity scores
     """
     try:
+        organization_id = get_org_id(organization)
+        
         results = await query_vector_db(query, organization_id, top_k)
         
         return {
@@ -482,4 +606,86 @@ async def search_knowledge_vectors(
         }
     except Exception as e:
         logger.error(f"Error searching vectors: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/rebuild")
+async def rebuild_knowledge_base(
+    organization=Depends(get_organization_from_api_key)
+):
+    """
+    POST /api/knowledge-base/rebuild
+    Delete all vectors and rebuild knowledge base with correct embeddings
+    
+    This fixes embedding mismatch issues by:
+    1. Deleting all vectors in the namespace
+    2. Re-uploading with LangChain embeddings (matching query)
+    """
+    try:
+        import os
+        from pinecone import Pinecone
+        
+        user_id = organization.get("user_id")
+        organization_id = get_org_id(organization)
+        
+        logger.info(f"🔧 Rebuilding knowledge base for user: {user_id}")
+        
+        # Get existing knowledge base
+        kb = await get_knowledge_base(user_id, organization_id)
+        if not kb:
+            raise HTTPException(status_code=404, detail="Knowledge base not found")
+        
+        vectorstore_id = kb.get("vectorStoreId")
+        company_name = kb.get("companyName")
+        
+        if not vectorstore_id:
+            raise HTTPException(status_code=400, detail="No vectorStoreId found")
+        
+        # Delete all vectors in namespace
+        logger.info(f"🗑️  Deleting vectors in namespace: {vectorstore_id}")
+        pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
+        index_name = os.getenv("PINECONE_INDEX", "bayai")
+        index = pc.Index(index_name)
+        
+        try:
+            index.delete(delete_all=True, namespace=vectorstore_id)
+            logger.info(f"✅ Deleted all vectors from namespace: {vectorstore_id}")
+        except Exception as e:
+            logger.warning(f"⚠️  Error deleting vectors: {e}")
+        
+        # Get website from sources
+        website = None
+        sources = kb.get("sources", [])
+        for source in sources:
+            if source.get("type") == "website" and source.get("url"):
+                website = source["url"]
+                break
+        
+        # Rebuild with correct embeddings
+        logger.info(f"📤 Rebuilding knowledge base with LangChain embeddings...")
+        result = await build_knowledge_base_auto(
+            user_id=user_id,
+            organization_id=organization_id,
+            company_name=company_name,
+            website=website
+        )
+        
+        return {
+            "success": True,
+            "message": "Knowledge base rebuilt successfully with correct embeddings",
+            "knowledgeBase": {
+                "id": str(result["_id"]),
+                "companyName": result.get("companyName"),
+                "vectorStoreId": result.get("vectorStoreId"),
+                "totalChunks": len(result.get("aiChunks", [])),
+                "status": result.get("status")
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error rebuilding knowledge base: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))

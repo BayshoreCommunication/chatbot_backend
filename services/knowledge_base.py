@@ -29,15 +29,17 @@ async def check_knowledge_base_exists(user_id: str, organization_id: str) -> Opt
     Check if knowledge base exists for user/organization
     
     Args:
-        user_id: User ID
-        organization_id: Organization ID
+        user_id: User ID (string, not ObjectId)
+        organization_id: Organization ID (string, not ObjectId)
         
     Returns:
         Knowledge base document or None
     """
     try:
+        # Query by string IDs, not ObjectIds
         kb = knowledge_bases.find_one({
-            "userId": ObjectId(user_id),
+            "userId": user_id,
+            "organizationId": organization_id,
             "status": {"$ne": "archived"}
         })
         return kb
@@ -72,8 +74,8 @@ async def create_knowledge_base(
         now = datetime.now()
         
         kb_data = {
-            "userId": ObjectId(user_id),
-            "organizationId": ObjectId(organization_id),
+            "userId": user_id,
+            "organizationId": organization_id,
             "companyName": company_name,
             "sources": sources,
             "structuredData": structured_data or {},
@@ -119,7 +121,8 @@ async def get_knowledge_base(user_id: str, organization_id: str) -> Optional[Dic
     """
     try:
         kb = knowledge_bases.find_one({
-            "userId": ObjectId(user_id),
+            "userId": user_id,
+            "organizationId": organization_id,
             "status": {"$ne": "archived"}
         })
         return kb
@@ -226,7 +229,8 @@ async def delete_knowledge_base(user_id: str, organization_id: str) -> bool:
     try:
         result = knowledge_bases.update_one(
             {
-                "userId": ObjectId(user_id),
+                "userId": user_id,
+                "organizationId": organization_id,
                 "status": {"$ne": "archived"}
             },
             {

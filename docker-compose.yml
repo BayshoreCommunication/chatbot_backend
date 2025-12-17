@@ -46,6 +46,13 @@ services:
     volumes:
       - ./uploads:/opt/chatbot-app/uploads
       - ./logs:/opt/chatbot-app/logs
+      # Mount source code for hot-reload (development)
+      - ./main.py:/app/main.py
+      - ./logging_config.py:/app/logging_config.py
+      - ./routes:/app/routes
+      - ./services:/app/services
+      - ./models:/app/models
+      - ./utils:/app/utils
     dns:
       - 8.8.8.8
       - 8.8.4.4

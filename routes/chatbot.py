@@ -1,26 +1,22 @@
-import logging
-
-# Set up clean logging for chatbot
-logger = logging.getLogger('chatbot')
-
-# Reduce pymongo logging noise  
-logging.getLogger('pymongo').setLevel(logging.WARNING)
-
 from fastapi import APIRouter, Request, UploadFile, File, Form, HTTPException, Depends, Header, Body
 import sys
 import traceback
+from bson import ObjectId
 
-# Try to import required services with error handling
+# Critical imports (must succeed)
+from services.database import (
+    get_organization_by_api_key, create_or_update_visitor, add_conversation_message, 
+    get_visitor, get_conversation_history, save_user_profile, get_user_profile, db,
+    set_agent_mode, set_bot_mode, is_chat_in_agent_mode
+)
+
+# Try to import optional services with error handling
 try:
-    from services.langchain.engine import ask_bot, add_document, escalate_to_human
+    from services.chatbot_service import ChatbotService
+    from services.langchain.engine import ask_bot
+    from services.langchain.engine_backup import add_document, escalate_to_human
     from services.language_detect import detect_language
-    from services.database import (
-        get_organization_by_api_key, create_or_update_visitor, add_conversation_message, 
-        get_visitor, get_conversation_history, save_user_profile, get_user_profile, db,
-        set_agent_mode, set_bot_mode, is_chat_in_agent_mode
-    )
-    from bson import ObjectId
-    from services.faq_matcher import find_matching_faq, get_suggested_faqs
+    from services.faq_matcher import get_suggested_faqs
     from services.langchain.user_management import handle_name_collection, handle_email_collection
     SERVICES_AVAILABLE = True
 except Exception as e:
@@ -59,8 +55,6 @@ def init_socketio(app: FastAPI):
     
     @sio.event
     async def connect(sid, environ, auth):
-        logger.info(f"Client connected: {sid}")
-        
         # Get API key from auth or query params
         api_key = None
         if auth and isinstance(auth, dict):
@@ -79,7 +73,6 @@ def init_socketio(app: FastAPI):
             # Auto-join organization room using API key
             room_name = api_key
             await sio.enter_room(sid, room_name)
-            logger.info(f"Client {sid} joined room: {room_name}")
             
             # Send a welcome message to confirm connection
             await sio.emit('connection_confirmed', {
@@ -87,12 +80,10 @@ def init_socketio(app: FastAPI):
                 'room': room_name,
                 'message': 'Socket.IO connection established successfully'
             }, room=sid)
-        else:
-            logger.warning(f"Client {sid} connected without API key")
 
     @sio.event
     async def disconnect(sid):
-        logger.info(f"Client disconnected: {sid}")
+        pass
 
     @sio.event
     async def join_room(sid, data):
@@ -214,418 +205,43 @@ async def get_organization_from_api_key(api_key: Optional[str] = Header(None, al
 @router.post("/ask")
 async def ask_question(
     request: ChatRequest, 
-    organization=Depends(get_organization_from_api_key)
+    organization: dict = Depends(get_organization_from_api_key)
 ):
-    """Process a chat message and return a response"""
-    org_id = get_org_id(organization)
-    org_api_key = organization.get("api_key")
-    namespace = organization.get("pinecone_namespace", "")
-
+ 
     try:
-        print(f"[DEBUG] Processing message: {request.question}")
-        print(f"[DEBUG] Session ID: {request.session_id}")
-
-        # FIRST: Check if this chat is in agent mode
-        if is_chat_in_agent_mode(org_id, request.session_id):
-            print(f"[DEBUG] Chat {request.session_id} is in agent mode - skipping AI processing")
-            
-            # Get or create visitor for the user message
-            visitor = create_or_update_visitor(
-                organization_id=org_id,
-                session_id=request.session_id,
-                visitor_data={
-                    "last_active": None,
-                    "metadata": {
-                        "mode": request.mode,
-                        "user_data": request.user_data
-                    }
-                }
-            )
-
-            # Store the user message only
-            add_conversation_message(
-                organization_id=org_id,
-                visitor_id=visitor["id"],
-                session_id=request.session_id,
-                role="user",
-                content=request.question,
-                metadata={"mode": request.mode, "agent_mode": True}
-            )
-
-            # Emit user message to dashboard for agent to see
-            await sio.emit('new_message', {
-                'session_id': request.session_id,
-                'message': {
-                    'role': 'user',
-                    'content': request.question,
-                    'timestamp': datetime.utcnow().isoformat()
-                },
-                'organization_id': org_id,
-                'agent_mode': True
-            }, room=org_api_key)
-
-            # Return without AI response - agent will respond manually
-            return {
-                "answer": "",  # No AI response
-                "mode": "agent",
-                "language": "en",
-                "user_data": request.user_data or {},
-                "agent_mode": True,
-                "message": "Message received - agent will respond shortly"
-            }
-
-        # Continue with normal AI processing if not in agent mode
-        print(f"[DEBUG] Chat {request.session_id} is in bot mode - continuing with AI processing")
-
-        # Get or create visitor
-        visitor = create_or_update_visitor(
-            organization_id=org_id,
+        # Extract API Key from the organization object (provided by Depends)
+        api_key = organization.get("api_key")
+        
+       
+        
+        # Get organization info for response
+        user_id = organization.get("user_id")
+        knowledge_base_info = db.knowledge_bases.find_one({"userId": user_id}, {"vectorStoreId": 1, "kb_id": {"$toString": "$_id"}})
+        
+        # Check if services are available
+        if not SERVICES_AVAILABLE:
+            raise HTTPException(status_code=500, detail="Chatbot services are not available")
+        
+        # Pass everything to the Service Layer
+        response = await ChatbotService.process_chat_request(
+            question=request.question,
             session_id=request.session_id,
-            visitor_data={
-                "last_active": None,
-                "metadata": {
-                    "mode": request.mode,
-                    "user_data": request.user_data
-                }
-            }
-        )
-
-        # Initialize or get existing session data
-        if not request.user_data:
-            request.user_data = {}
-        
-        # Get previous conversations from MongoDB and initialize history
-        previous_conversations = get_conversation_history(org_id, request.session_id)
-        print(f"[DEBUG] Previous conversations count: {len(previous_conversations)}")
-        
-        # Always initialize conversation history from MongoDB
-        request.user_data["conversation_history"] = []
-        for msg in previous_conversations:
-            if "role" in msg and "content" in msg:
-                request.user_data["conversation_history"].append({
-                    "role": msg["role"],
-                    "content": msg["content"]
-                })
-
-        # Get user profile
-        user_profile = get_user_profile(org_id, request.session_id)
-        if user_profile and "profile_data" in user_profile:
-            request.user_data.update(user_profile["profile_data"])
-            request.user_data["returning_user"] = True
-            
-            # Ensure appointment_context is loaded from profile
-            if "appointment_context" in user_profile["profile_data"]:
-                request.user_data["appointment_context"] = user_profile["profile_data"]["appointment_context"]
-
-        # Store the current user message ONCE at the beginning
-        add_conversation_message(
-            organization_id=org_id,
-            visitor_id=visitor["id"],
-            session_id=request.session_id,
-            role="user",
-            content=request.question,
-            metadata={"mode": request.mode}
-        )
-        request.user_data["conversation_history"].append({
-            "role": "user",
-            "content": request.question
-        })
-
-        # Emit user message to dashboard
-        await sio.emit('new_message', {
-            'session_id': request.session_id,
-            'message': {
-                'role': 'user',
-                'content': request.question,
-                'timestamp': datetime.utcnow().isoformat()
-            },
-            'organization_id': org_id
-        }, room=org_api_key)
-
-        # Smart welcome logic - only for simple greetings, not actual questions
-        is_first_message = len(previous_conversations) == 0
-        
-        # Check if this is just a simple greeting (not a real question)
-        simple_greetings = ["hi", "hello", "hey", "good morning", "good afternoon", "good evening"]
-        user_message_lower = request.question.lower().strip()
-        
-        # Only show welcome if it's the first message AND it's a simple greeting
-        is_simple_greeting = any(greeting in user_message_lower for greeting in simple_greetings)
-        is_actual_question = any(word in user_message_lower for word in [
-            "do you", "can you", "what", "how", "when", "where", "why", "who", 
-            "injury", "law", "legal", "accident", "case", "help with", "about",
-            "service", "take", "handle", "work", "cost", "fee", "consultation"
-        ])
-        
-        # Show welcome only for simple greetings without questions
-        should_show_welcome = is_first_message and is_simple_greeting and not is_actual_question
-        
-        if should_show_welcome:
-            print(f"[DEBUG] First time simple greeting detected: '{request.question}'")
-            
-            # Get organization name from chat widget settings (preferred) or fallback to main name
-            chat_settings = organization.get("chat_widget_settings", {})
-            org_name = chat_settings.get("name", organization.get("name", "our team"))
-            ai_behavior = chat_settings.get("ai_behavior", "")
-            
-            print(f"[DEBUG] Using organization name: '{org_name}' from chat_widget_settings")
-            
-            # Create personalized welcome message
-            if ai_behavior:
-                # Use the AI behavior setting if available
-                welcome_msg = f"How may I assist you today?"
-            else:
-                # Default professional welcome
-                welcome_msg = f"How may I assist you today?"
-            
-            # Store welcome message
-            add_conversation_message(
-                organization_id=org_id,
-                visitor_id=visitor["id"],
-                session_id=request.session_id,
-                role="assistant",
-                content=welcome_msg,
-                metadata={"mode": "welcome", "type": "first_message"}
-            )
-            
-            request.user_data["conversation_history"].append({
-                "role": "assistant",
-                "content": welcome_msg
-            })
-
-            # Emit welcome message
-            await sio.emit('new_message', {
-                'session_id': request.session_id,
-                'message': {
-                    'role': 'assistant',
-                    'content': welcome_msg,
-                    'timestamp': datetime.utcnow().isoformat()
-                },
-                'organization_id': org_id
-            }, room=org_api_key)
-
-            return {
-                "answer": welcome_msg,
-                "mode": "faq",
-                "language": "en",
-                "user_data": request.user_data,
-                "first_message": True
-            }
-        
-        # If it's the first message but contains a real question, just process it normally
-        if is_first_message and is_actual_question:
-            print(f"[DEBUG] First message contains actual question: '{request.question}' - processing directly")
-
-        print("[DEBUG] Processing regular message with smart engine")
-        
-        # Skip the old lead collection logic - let smart engine handle it
-        # Try to find matching FAQ first
-        # Try to find matching FAQ first (with caching)
-        matching_faq = find_matching_faq(
-            query=request.question,
-            org_id=org_id,
-            namespace=namespace
-        )
-        print(f"[DEBUG] find_matching_faq returned: {matching_faq}")
-
-        # If we found a good FAQ match, return it
-        if matching_faq:
-            print("[DEBUG] Found matching FAQ, preparing response...")
-            
-            # Store the FAQ response
-            add_conversation_message(
-                organization_id=org_id,
-                visitor_id=visitor["id"],
-                session_id=request.session_id,
-                role="assistant",
-                content=matching_faq["response"],
-                metadata={
-                    "mode": "faq",
-                    "type": "faq_match",
-                    "faq_id": matching_faq["id"],
-                    "similarity_score": matching_faq["similarity_score"]
-                }
-            )
-
-            # Update conversation history
-            request.user_data["conversation_history"].append({
-                "role": "assistant", 
-                "content": matching_faq["response"]
-            })
-
-            # Emit assistant message to dashboard
-            await sio.emit('new_message', {
-                'session_id': request.session_id,
-                'message': {
-                    'role': 'assistant',
-                    'content': matching_faq["response"],
-                    'timestamp': datetime.utcnow().isoformat()
-                },
-                'organization_id': org_id
-            }, room=org_api_key)
-
-            # Get suggested FAQs for follow-up
-            suggested_faqs = get_suggested_faqs(org_id)
-            
-            return {
-                "answer": matching_faq["response"],
-                "mode": "faq",
-                "language": "en",
-                "user_data": request.user_data,
-                "suggested_faqs": suggested_faqs
-            }
-
-        # If no FAQ match, proceed with smart AI engine
-        # Prepare context for the bot
-        user_context = ""
-        if "name" in request.user_data and request.user_data["name"]:
-            user_context = f"The user's name is {request.user_data['name']}. "
-        if "email" in request.user_data and request.user_data["email"]:
-            user_context += f"The user's email is {request.user_data['email']}. "
-
-        # Get AI behavior from organization settings
-        ai_behavior = organization.get("chat_widget_settings", {}).get("ai_behavior", "")
-        if ai_behavior:
-            user_context += f"\nAI Behavior Instructions: {ai_behavior}\n"
-
-        # Enhance query with user context if needed
-        enhanced_query = request.question
-        if user_context and request.user_data.get("returning_user"):
-            enhanced_query = f"{user_context}The user, who you already know, asks: {request.question}"
-
-        # Add organization_id to user_data for appointment persistence
-        request.user_data["organization_id"] = org_id
-        request.user_data["session_id"] = request.session_id
-        
-        # Don't add the enhanced query to conversation history - use original question
-        response = ask_bot(
-            query=enhanced_query,
+            api_key=api_key,
             mode=request.mode,
             user_data=request.user_data,
-            available_slots=request.available_slots,
-            session_id=request.session_id,
-            api_key=org_api_key
+            organization=organization,
+            kb_id=knowledge_base_info.get("kb_id") if knowledge_base_info else None,
+            vectorStoreId=knowledge_base_info.get("vectorStoreId") if knowledge_base_info else None
         )
-
-        # Save assistant message to database FIRST
-        add_conversation_message(
-            organization_id=org_id,
-            visitor_id=visitor["id"],
-            session_id=request.session_id,
-            role="assistant",
-            content=response["answer"],
-            metadata={"mode": request.mode}
-        )
-
-        # Then update conversation history in user_data to match database order
-        response["user_data"]["conversation_history"].append({
-            "role": "assistant", 
-            "content": response["answer"]
-        })
-
-        # Get suggested FAQs
-        suggested_faqs = get_suggested_faqs(org_id)
-        response["suggested_faqs"] = suggested_faqs
-
-        # After getting bot response, emit it to dashboard
-        await sio.emit('new_message', {
-            'session_id': request.session_id,
-            'message': {
-                'role': 'assistant',
-                'content': response["answer"],
-                'timestamp': datetime.utcnow().isoformat()
-            },
-            'organization_id': org_id
-        }, room=org_api_key)
         
-        # CRITICAL: Save appointment_context and email to user profile if they exist
-        # This ensures state persists between requests
-        if "appointment_context" in response.get("user_data", {}) or "email" in response.get("user_data", {}):
-            try:
-                from services.database import save_user_profile
-                
-                # Prepare profile data to save
-                profile_data_to_save = {}
-                
-                # Save email if present
-                if "email" in response["user_data"] and response["user_data"]["email"]:
-                    profile_data_to_save["email"] = response["user_data"]["email"]
-                
-                # Save appointment_context if present
-                if "appointment_context" in response["user_data"] and response["user_data"]["appointment_context"]:
-                    profile_data_to_save["appointment_context"] = response["user_data"]["appointment_context"]
-                
-                # Save name if present
-                if "name" in response["user_data"] and response["user_data"]["name"]:
-                    profile_data_to_save["name"] = response["user_data"]["name"]
-                
-                # Save phone if present
-                if "phone" in response["user_data"] and response["user_data"]["phone"]:
-                    profile_data_to_save["phone"] = response["user_data"]["phone"]
-                
-                # Only save if we have data to persist
-                if profile_data_to_save:
-                    print(f"[DEBUG] Saving user profile data: {profile_data_to_save}")
-                    save_user_profile(org_id, request.session_id, profile_data_to_save)
-                    
-            except Exception as e:
-                print(f"[ERROR] Failed to save user profile: {str(e)}")
-                # Don't fail the main flow if profile saving fails
-
-        # Check if lead capture is enabled and we have collected both name and email
-        chat_settings = organization.get("chat_widget_settings", {})
-        lead_capture_enabled = chat_settings.get("leadCapture", False)
-        
-        if lead_capture_enabled:
-            # Check if we have collected both name and email in user_data
-            user_name = response.get("user_data", {}).get("name")
-            user_email = response.get("user_data", {}).get("email")
-            user_phone = response.get("user_data", {}).get("phone")
-            
-            if user_name and user_email:
-                print(f"[DEBUG] Lead capture enabled and both name ({user_name}) and email ({user_email}) collected")
-                
-                try:
-                    # Import the create_lead function
-                    from services.database import create_lead
-                    
-                    # Extract inquiry from conversation history
-                    conversation_history = response.get("user_data", {}).get("conversation_history", [])
-                    user_messages = [msg["content"] for msg in conversation_history if msg.get("role") == "user"]
-                    inquiry = " | ".join(user_messages[:3]) if user_messages else "General inquiry"
-                    
-                    # Create lead in MongoDB
-                    created_lead = create_lead(
-                        organization_id=org_id,
-                        session_id=request.session_id,
-                        name=user_name,
-                        email=user_email,
-                        phone=user_phone,
-                        inquiry=inquiry,
-                        source="chatbot"
-                    )
-                    
-                    print(f"[DEBUG] Lead created successfully: {created_lead['lead_id']}")
-                    
-                except Exception as e:
-                    print(f"[ERROR] Failed to create lead: {str(e)}")
-                    # Don't fail the main chat flow if lead creation fails
-
         return response
 
     except Exception as e:
-        print(f"Error processing chat message: {str(e)}")
-        print(f"Error type: {type(e).__name__}")
         import traceback
-        print(f"Traceback: {traceback.format_exc()}")
-        
-        # Return a more detailed error response
-        return {
-            "answer": "I'm sorry, I'm experiencing technical difficulties. Please try again later.",
-            "error": str(e),
-            "error_type": type(e).__name__,
-            "mode": "error"
-        }
+        print(f"Error in ask_question: {str(e)}")
+        print(traceback.format_exc())
+        raise HTTPException(status_code=500, detail="Internal Server Error")
+
 
 @router.get("/history/{session_id}")
 async def get_chat_history(

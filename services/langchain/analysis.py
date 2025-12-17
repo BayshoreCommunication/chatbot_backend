@@ -222,17 +222,31 @@ def generate_response(query, user_info, conversation_summary, retrieved_context,
                 """
     
     try:
+        import logging
+        logger = logging.getLogger(__name__)
+        
         # Call OpenAI for final response generation
+        model_name = "gpt-3.5-turbo"
+        prompt_length = len(final_prompt)
+        
+        logger.info(f"[LLM] Calling OpenAI | model={model_name} | temperature=0.7 | prompt_length={prompt_length} chars")
+        
         response_completion = openai.chat.completions.create(
-            model="gpt-3.5-turbo",
+            model=model_name,
             messages=[{"role": "user", "content": final_prompt}],
             temperature=0.7
         )
+        
+        # Extract token usage
+        usage = response_completion.usage
+        logger.info(f"[LLM TOKENS] model={model_name} | prompt_tokens={usage.prompt_tokens} | completion_tokens={usage.completion_tokens} | total_tokens={usage.total_tokens}")
         
         final_response = response_completion.choices[0].message.content.strip()
         
         # Remove any leading "Hello [Name]," pattern
         final_response = remove_greeting(final_response, user_info['name'])
+        
+        logger.info(f"[LLM OUTPUT] ✓ Response generated | length={len(final_response)} chars")
         
         return final_response
     except Exception as e:

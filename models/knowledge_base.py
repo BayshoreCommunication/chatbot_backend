@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field, ConfigDict
-from typing import Optional, List, Dict, Any, Literal
+from typing import Optional, List, Dict, Any, Literal, Union
 from datetime import datetime
 from bson import ObjectId
 from pydantic_core import CoreSchema, core_schema
@@ -39,7 +39,9 @@ class ContactInfo(BaseModel):
     email: Optional[str] = None
     phone: Optional[str] = None
     address: Optional[str] = None
-    social_media: Optional[Dict[str, str]] = Field(default_factory=dict)
+    website: Optional[str] = None
+    availability: Optional[str] = None
+    social_media: Optional[Dict[str, str]] = Field(default_factory=dict, alias="socialMedia")
 
     model_config = ConfigDict(
         populate_by_name=True,
@@ -51,17 +53,32 @@ class ContactInfo(BaseModel):
 class FAQ(BaseModel):
     question: str
     answer: str
+    category: Optional[str] = None
+
+
+class AIChunk(BaseModel):
+    type: str
+    title: str
+    content: str
+    metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
 class StructuredData(BaseModel):
-    company_overview: Optional[str] = None
-    services: Optional[List[str]] = Field(default_factory=list)
-    products: Optional[List[str]] = Field(default_factory=list)
-    contact_info: Optional[ContactInfo] = Field(default_factory=ContactInfo)
-    key_features: Optional[List[str]] = Field(default_factory=list)
-    pricing: Optional[str] = None
-    faqs: Optional[List[FAQ]] = Field(default_factory=list)
-    additional_info: Optional[Dict[str, Any]] = Field(default_factory=dict)
+    company_overview: Optional[str] = Field(None, alias="companyOverview")
+    tagline: Optional[str] = None
+    service_areas: Optional[Dict[str, Any]] = Field(default_factory=dict, alias="serviceAreas")
+    services: Optional[List[Union[str, Dict[str, Any]]]] = Field(default_factory=list)
+    products: Optional[List[Union[str, Dict[str, Any]]]] = Field(default_factory=list)
+    contact_info: Optional[ContactInfo] = Field(default_factory=ContactInfo, alias="contactInfo")
+    key_features: Optional[List[Union[str, Dict[str, Any]]]] = Field(default_factory=list, alias="keyFeatures")
+    pricing: Optional[Union[str, Dict[str, Any]]] = None
+    faqs: Optional[List[Union[FAQ, Dict[str, Any]]]] = Field(default_factory=list)
+    case_results: Optional[List[Dict[str, Any]]] = Field(default_factory=list, alias="caseResults")
+    team: Optional[List[Dict[str, Any]]] = Field(default_factory=list)
+    testimonials: Optional[List[Dict[str, Any]]] = Field(default_factory=list)
+    process_steps: Optional[List[Dict[str, Any]]] = Field(default_factory=list, alias="processSteps")
+    additional_info: Optional[Dict[str, Any]] = Field(default_factory=dict, alias="additionalInfo")
+    chatbot_responses: Optional[Dict[str, str]] = Field(default_factory=dict, alias="chatbotResponses")
 
     model_config = ConfigDict(
         populate_by_name=True,
@@ -71,11 +88,13 @@ class StructuredData(BaseModel):
 
 
 class Source(BaseModel):
-    type: Literal["website", "web_search", "manual", "document"]
+    type: Literal["website", "web_search", "manual", "document", "analysis"]
     url: Optional[str] = None
-    search_query: Optional[str] = None
+    search_query: Optional[str] = Field(None, alias="searchQuery")
+    file_path: Optional[str] = Field(None, alias="filePath")
     content: str
-    processed_at: datetime = Field(default_factory=datetime.now)
+    processed_at: datetime = Field(default_factory=datetime.now, alias="processedAt")
+    chunk_count: Optional[int] = Field(None, alias="chunkCount")
 
     model_config = ConfigDict(
         populate_by_name=True,
@@ -86,10 +105,10 @@ class Source(BaseModel):
 
 class UpdateHistory(BaseModel):
     version: int
-    updated_at: datetime
-    total_sources: int
+    updated_at: datetime = Field(alias="updatedAt")
+    total_sources: int = Field(alias="totalSources")
     quality: Literal["high", "medium", "low"]
-    quality_percentage: float
+    quality_percentage: float = Field(alias="qualityPercentage")
     changes: str
 
     model_config = ConfigDict(
@@ -100,14 +119,15 @@ class UpdateHistory(BaseModel):
 
 
 class Metadata(BaseModel):
-    total_sources: int = 0
-    last_updated: datetime = Field(default_factory=datetime.now)
+    total_sources: int = Field(0, alias="totalSources")
+    total_chunks: Optional[int] = Field(0, alias="totalChunks")
+    last_updated: datetime = Field(default_factory=datetime.now, alias="lastUpdated")
     version: int = 1
     model: str = "gpt-4"
-    token_count: Optional[int] = None
+    token_count: Optional[int] = Field(None, alias="tokenCount")
     quality: Literal["high", "medium", "low"] = "medium"
-    quality_percentage: float = 0.0
-    update_history: Optional[List[UpdateHistory]] = Field(default_factory=list)
+    quality_percentage: float = Field(0.0, alias="qualityPercentage")
+    update_history: Optional[List[UpdateHistory]] = Field(default_factory=list, alias="updateHistory")
 
     model_config = ConfigDict(
         populate_by_name=True,
@@ -123,6 +143,7 @@ class KnowledgeBaseBase(BaseModel):
     sources: List[Source] = Field(default_factory=list)
     structured_data: StructuredData = Field(default_factory=StructuredData, alias="structuredData")
     raw_content: Optional[str] = Field(default="", alias="rawContent")
+    ai_chunks: Optional[List[AIChunk]] = Field(default_factory=list, alias="aiChunks")
     vector_store_id: Optional[str] = Field(None, alias="vectorStoreId")
     file_ids: Optional[List[str]] = Field(default_factory=list, alias="fileIds")
     metadata: Metadata = Field(default_factory=Metadata)

@@ -6,12 +6,20 @@ Stores in MongoDB and Vector Database (Pinecone)
 
 import os
 import logging
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Union
 from datetime import datetime
 from bson import ObjectId
 from openai import OpenAI
 import requests
 from bs4 import BeautifulSoup
+from urllib.parse import urljoin, urlparse
+import time
+
+# LangChain Imports for Document Processing
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_community.document_loaders import PyPDFLoader, WebBaseLoader
+from langchain_core.documents import Document
+from langchain_openai import OpenAIEmbeddings
 
 from services.database import db
 
@@ -19,6 +27,10 @@ logger = logging.getLogger(__name__)
 
 # Initialize OpenAI client
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+# Initialize embeddings (MUST match engine.py configuration exactly!)
+embeddings = OpenAIEmbeddings(model="text-embedding-3-small", dimensions=1024)
+logger.info("✅ Embeddings initialized for knowledge base uploads (1024 dimensions)")
 
 # Initialize Pinecone
 pinecone_index = None
@@ -38,110 +50,153 @@ except Exception as e:
 knowledge_bases = db.knowledge_bases
 
 
-# Enhanced system prompt for knowledge extraction
-KNOWLEDGE_EXTRACTION_PROMPT = """You are an expert AI assistant specialized in extracting and structuring company information.
+# ==========================================
+# TEXT SPLITTING & PROCESSING
+# ==========================================
 
-Analyze the web search results and website content to extract comprehensive information about the company.
+def get_text_splitter():
+    """Get standard text splitter for consistency"""
+    return RecursiveCharacterTextSplitter(
+        chunk_size=1000,
+        chunk_overlap=100,
+        length_function=len,
+        separators=["\n\n", "\n", " ", ""]
+    )
 
-Extract the following in a clear, structured JSON format:
+async def load_and_split_document(
+    file_path: Optional[str] = None,
+    url: Optional[str] = None,
+    text: Optional[str] = None,
+    max_pages: int = 1
+) -> List[Document]:
+    """
+    Load and split document from various sources
+    """
+    documents = []
+    
+    try:
+        if file_path:
+            if file_path.endswith('.pdf'):
+                loader = PyPDFLoader(file_path)
+                documents = loader.load()
+            else:
+                # Text file
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                documents = [Document(page_content=content, metadata={"source": file_path})]
+                
+        elif url:
+            if max_pages > 1:
+                # Use comprehensive scraping
+                documents = scrape_website_content_recursive(url, max_pages)
+            else:
+                # Single page
+                try:
+                    loader = WebBaseLoader(url)
+                    documents = loader.load()
+                except Exception as e:
+                    # Fallback to simple scraping
+                    logger.warning(f"WebBaseLoader failed for {url}, using fallback: {e}")
+                    content = await scrape_website(url)
+                    documents = [Document(page_content=content, metadata={"source": url})]
 
-{
-  "companyOverview": "A comprehensive overview of the company (2-3 paragraphs)",
-  "services": ["Service 1", "Service 2", ...],
-  "products": ["Product 1", "Product 2", ...],
-  "contactInfo": {
-    "email": "contact@example.com",
-    "phone": "+1234567890",
-    "address": "Full address",
-    "socialMedia": {
-      "linkedin": "URL",
-      "twitter": "URL",
-      "facebook": "URL"
+        elif text:
+            documents = [Document(page_content=text, metadata={"source": "manual_input"})]
+
+        # Split documents
+        text_splitter = get_text_splitter()
+        split_docs = text_splitter.split_documents(documents) 
+        
+        return split_docs
+        
+    except Exception as e:
+        logger.error(f"Error loading/splitting document: {e}")
+        return []
+
+def scrape_website_content_recursive(base_url: str, max_pages: int = 10) -> List[Document]:
+    """
+    Recursive scraping logic (adapted from vectorstore.py)
+    """
+    logger.info(f"🕷️ Starting recursive scrape of {base_url} (max {max_pages} pages)")
+    
+    visited_urls = set()
+    to_visit = [base_url]
+    documents = []
+    count = 0
+    base_domain = urlparse(base_url).netloc
+    
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
     }
-  },
-  "keyFeatures": ["Feature 1", "Feature 2", ...],
-  "pricing": "Pricing information if available",
-  "faqs": [
-    {"question": "Q1?", "answer": "A1"},
-    {"question": "Q2?", "answer": "A2"}
-  ],
-  "additionalInfo": {
-    "mission": "Company mission",
-    "values": ["Value 1", "Value 2"],
-    "achievements": ["Achievement 1", "Achievement 2"],
-    "teamSize": "Number of employees",
-    "foundedYear": "Year",
-    "industries": ["Industry 1", "Industry 2"]
-  }
-}
+    
+    while to_visit and count < max_pages:
+        current_url = to_visit.pop(0)
+        if current_url in visited_urls:
+            continue
+            
+        try:
+            response = requests.get(current_url, headers=headers, timeout=10)
+            if response.status_code != 200: continue
+            
+            visited_urls.add(current_url)
+            count += 1
+            
+            soup = BeautifulSoup(response.text, 'html.parser')
+            for script in soup(["script", "style", "nav", "footer"]):
+                script.decompose()
+                
+            text = soup.get_text(separator="\n", strip=True)
+            text = "\n".join(line.strip() for line in text.split("\n") if line.strip())
+            
+            if len(text) > 100:
+                documents.append(Document(
+                    page_content=text, 
+                    metadata={"source": current_url, "title": soup.title.string if soup.title else ""}
+                ))
+            
+            # Find links
+            if count < max_pages:
+                for link in soup.find_all("a", href=True):
+                    full_url = urljoin(current_url, link["href"])
+                    parsed = urlparse(full_url)
+                    
+                    if (parsed.netloc == base_domain or not parsed.netloc) and \
+                       full_url not in visited_urls and \
+                       full_url not in to_visit and \
+                       not full_url.lower().endswith((".pdf", ".jpg", ".png")):
+                        to_visit.append(full_url)
+                        
+        except Exception as e:
+            logger.error(f"Error scraping {current_url}: {e}")
+            
+    return documents
 
-Instructions:
-- Extract ONLY factual information present in the content
-- Use null for missing information instead of guessing
-- Be comprehensive but concise
-- Organize information logically
-- Focus on information useful for customer support and sales
-- Return valid JSON only"""
 
+# ==========================================
+# AUTO-BUILD LOGIC (EXISTING)
+# ==========================================
 
 async def scrape_website(url: str) -> str:
-    """
-    Scrape website content using BeautifulSoup
-    
-    Args:
-        url: Website URL to scrape
-        
-    Returns:
-        Cleaned text content from website
-    """
+    """Scrape website content using BeautifulSoup (Simple)"""
     try:
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        }
-        
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
         response = requests.get(url, headers=headers, timeout=10)
         response.raise_for_status()
-        
         soup = BeautifulSoup(response.content, 'html.parser')
-        
-        # Remove unwanted elements
         for element in soup(['script', 'style', 'nav', 'footer', 'header', 'iframe']):
             element.decompose()
-        
-        # Extract text content
         content = soup.get_text(separator=' ', strip=True)
-        
-        # Clean up whitespace
-        content = ' '.join(content.split())
-        
-        logger.info(f"✅ Successfully scraped {url} ({len(content)} characters)")
-        return content[:10000]  # Limit to 10k characters
-        
+        return ' '.join(content.split())[:10000]
     except Exception as e:
         logger.error(f"❌ Error scraping {url}: {e}")
         return ""
 
-
 async def perform_web_search(company_name: str, website: Optional[str] = None) -> str:
-    """
-    Use GPT-4o to analyze and expand website content with additional context
-    Note: OpenAI Chat API doesn't support direct web search
-    
-    Args:
-        company_name: Name of the company
-        website: Optional website URL to focus search
-        
-    Returns:
-        Enhanced analysis of company information
-    """
+    """Use GPT-4o to analyze and expand company info"""
     try:
         logger.info(f"🔍 Using GPT-4o to enhance company data for: {company_name}")
-        
-        # Use GPT-4o to generate comprehensive questions/info about the company
-        # This helps structure the extraction better
         prompt = f"""Based on the company name "{company_name}" and website "{website if website else 'unknown'}", 
 generate a comprehensive analysis framework covering:
-
 1. What type of business/services they likely offer
 2. Common questions customers might ask
 3. Standard contact information needed
@@ -154,427 +209,121 @@ Provide this as a structured guide for information extraction."""
         response = client.chat.completions.create(
             model="gpt-4o",
             messages=[
-                {
-                    "role": "system",
-                    "content": "You are an expert business analyst. Generate comprehensive analysis frameworks for understanding companies."
-                },
-                {
-                    "role": "user",
-                    "content": prompt
-                }
+                {"role": "system", "content": "You are an expert business analyst."},
+                {"role": "user", "content": prompt}
             ],
             max_tokens=2048,
             temperature=0.3
         )
-        
-        result = response.choices[0].message.content or ""
-        logger.info(f"✅ Generated analysis framework ({len(result)} chars)")
-        return result
-        
+        return response.choices[0].message.content or ""
     except Exception as e:
         logger.error(f"❌ Analysis generation failed: {e}")
         return ""
 
-
-async def extract_structured_data(
-    combined_content: str,
-    company_name: str,
-    website: Optional[str] = None
-) -> Dict[str, Any]:
-    """
-    Extract structured data from raw content using OpenAI
-    Optimized for AI chatbot responses with detailed, conversational format
-    
-    Args:
-        combined_content: Combined content from all sources
-        company_name: Name of the company
-        website: Company website URL
-        
-    Returns:
-        Structured data dictionary optimized for chatbot use
-    """
+async def extract_structured_data(combined_content: str, company_name: str, website: Optional[str] = None) -> Dict[str, Any]:
+    """Extract structured data from raw content using OpenAI"""
     try:
         logger.info(f"🧠 Extracting structured data for {company_name}...")
-        
         enhanced_prompt = """You are an expert at extracting and structuring company information for AI chatbot use.
-
 Extract comprehensive, chatbot-friendly information in this exact JSON format:
-
 {
-  "companyOverview": "Detailed 2-3 paragraph overview written conversationally. Include what the company does, their mission, values, and what makes them unique.",
-  "tagline": "Main company tagline or slogan",
-  "serviceAreas": {
-    "geographic": ["City 1", "City 2", "State", "Region"],
-    "industries": ["Industry 1", "Industry 2"]
-  },
-  "services": [
-    {
-      "name": "Service Name",
-      "description": "Detailed description of what this service includes and who it helps",
-      "keywords": ["keyword1", "keyword2"]
-    }
-  ],
-  "products": [
-    {
-      "name": "Product Name",
-      "description": "What this product offers and its benefits"
-    }
-  ],
-  "contactInfo": {
-    "phone": "Phone number with formatting",
-    "email": "Email address",
-    "address": "Full address",
-    "website": "Website URL",
-    "availability": "Hours/availability info (e.g., '24/7', 'Mon-Fri 9-5')",
-    "socialMedia": {
-      "facebook": "URL",
-      "linkedin": "URL",
-      "twitter": "URL",
-      "instagram": "URL"
-    }
-  },
-  "keyFeatures": [
-    {
-      "feature": "Feature name",
-      "description": "Why this matters to customers"
-    }
-  ],
-  "pricing": {
-    "structure": "How pricing works (e.g., 'contingency fee', 'hourly', 'fixed')",
-    "details": "Specific pricing details",
-    "freeServices": ["Free consultation", "Free evaluation"],
-    "paymentTerms": "Payment terms explanation"
-  },
-  "faqs": [
-    {
-      "question": "Common question customers ask",
-      "answer": "Detailed, helpful answer in conversational tone",
-      "category": "Category (e.g., 'pricing', 'services', 'process')"
-    }
-  ],
-  "caseResults": [
-    {
-      "type": "Case type",
-      "result": "Settlement/outcome amount or description",
-      "description": "Brief case description"
-    }
-  ],
-  "team": [
-    {
-      "name": "Team member name",
-      "role": "Position/title",
-      "description": "Background and expertise"
-    }
-  ],
-  "testimonials": [
-    {
-      "text": "Client testimonial text",
-      "author": "Client name or Anonymous",
-      "rating": 5
-    }
-  ],
-  "processSteps": [
-    {
-      "step": 1,
-      "title": "Step title",
-      "description": "What happens in this step"
-    }
-  ],
-  "additionalInfo": {
-    "mission": "Company mission statement",
-    "values": ["Value 1", "Value 2"],
-    "certifications": ["Certification 1"],
-    "awards": ["Award 1"],
-    "yearsInBusiness": "Number or founding year",
-    "teamSize": "Number of employees/attorneys/staff",
-    "languages": ["English", "Spanish"],
-    "areasServed": ["Area 1", "Area 2"],
-    "specializations": ["Specialization 1"]
-  },
-  "chatbotResponses": {
-    "greeting": "How the chatbot should greet users",
-    "callToAction": "Main CTA text",
-    "emergencyMessage": "Message for urgent situations",
-    "officeClosedMessage": "After-hours message"
-  }
+  "companyOverview": "Detailed 2-3 paragraph overview...",
+  "tagline": "Main company tagline",
+  "services": [{"name": "Service Name", "description": "Desc..."}],
+  "products": [{"name": "Product Name", "description": "Desc..."}],
+  "contactInfo": {"phone": "...", "email": "...", "address": "...", "website": "..."},
+  "keyFeatures": [{"feature": "...", "description": "..."}],
+  "pricing": {"structure": "...", "details": "...", "freeServices": []},
+  "faqs": [{"question": "...", "answer": "...", "category": "..."}],
+  "team": [{"name": "...", "role": "..."}],
+  "testimonials": [{"text": "...", "author": "..."}],
+  "processSteps": [{"step": 1, "title": "...", "description": "..."}],
+  "chatbotResponses": {"greeting": "...", "callToAction": "..."}
 }
-
-IMPORTANT:
-- Write ALL text in natural, conversational language suitable for chatbot responses
-- Be comprehensive - extract every piece of useful information
-- Format phone numbers, addresses, and URLs properly
-- Group related information logically
-- Include context that helps the chatbot understand intent
-- Extract actual testimonials and case results if available
-- Use null for missing fields, never guess or make up information"""
+Use null for missing fields. Be comprehensive."""
         
         response = client.chat.completions.create(
-            model="gpt-4o",  # Latest GPT-4o model
+            model="gpt-4o",
             messages=[
-                {
-                    "role": "system",
-                    "content": enhanced_prompt
-                },
-                {
-                    "role": "user",
-                    "content": f"Company: {company_name}\nWebsite: {website or 'N/A'}\n\nCollected Information:\n{combined_content[:30000]}\n\nExtract and structure ALL relevant information in the JSON format specified. Be thorough and comprehensive."
-                }
+                {"role": "system", "content": enhanced_prompt},
+                {"role": "user", "content": f"Company: {company_name}\nWebsite: {website or 'N/A'}\n\nInfo:\n{combined_content[:30000]}"}
             ],
             response_format={"type": "json_object"},
-            temperature=0.1,  # Lower temperature for more consistent extraction
-            max_tokens=4096  # Allow comprehensive extraction
+            temperature=0.1,
+            max_tokens=4096
         )
-        
-        structured_data = response.choices[0].message.content or "{}"
-        
-        # Parse JSON response
         import json
-        structured_data = json.loads(structured_data)
-        
-        logger.info(f"✅ Structured data extracted successfully")
-        return structured_data
-        
+        return json.loads(response.choices[0].message.content or "{}")
     except Exception as e:
         logger.error(f"❌ Error extracting structured data: {e}")
-        return {
-            "companyOverview": combined_content[:500],
-            "services": [],
-            "products": [],
-            "contactInfo": {},
-            "keyFeatures": [],
-            "pricing": {},
-            "faqs": [],
-            "additionalInfo": {}
-        }
+        return {"companyOverview": combined_content[:500]}
 
-
-def create_chatbot_chunks(
-    structured_data: Dict[str, Any],
-    company_name: str
-) -> List[Dict[str, Any]]:
-    """
-    Create AI-friendly chunks optimized for chatbot responses
-    Each chunk is self-contained and conversational
-    
-    Args:
-        structured_data: Structured company data
-        company_name: Company name
-        
-    Returns:
-        List of chatbot-ready chunks
-    """
+def create_chatbot_chunks(structured_data: Dict[str, Any], company_name: str) -> List[Dict[str, Any]]:
+    """Create AI-friendly chunks optimized for chatbot responses"""
     chunks = []
     
-    # Chunk 1: Company Overview & Introduction
+    # Overview
     if structured_data.get("companyOverview"):
         chunks.append({
             "type": "company_overview",
             "title": f"About {company_name}",
             "content": structured_data["companyOverview"],
-            "metadata": {
-                "tagline": structured_data.get("tagline"),
-                "use_for": ["general_inquiry", "company_info", "introduction"]
-            }
+            "metadata": {"use_for": ["general_inquiry", "company_info", "introduction"]}
         })
     
-    # Chunk 2: Contact Information (Critical for chatbot)
+    # Contact
     contact = structured_data.get("contactInfo", {})
     if contact:
-        contact_text = f"You can reach {company_name} at:\n"
-        if contact.get("phone"):
-            contact_text += f"📞 Phone: {contact['phone']}"
-            if contact.get("availability"):
-                contact_text += f" ({contact['availability']})"
-            contact_text += "\n"
-        if contact.get("email"):
-            contact_text += f"📧 Email: {contact['email']}\n"
-        if contact.get("address"):
-            contact_text += f"📍 Address: {contact['address']}\n"
-        if contact.get("website"):
-            contact_text += f"🌐 Website: {contact['website']}\n"
+        contact_text = f"Contact {company_name}:\n"
+        if contact.get("phone"): contact_text += f"📞 {contact['phone']}\n"
+        if contact.get("email"): contact_text += f"📧 {contact['email']}\n"
+        if contact.get("address"): contact_text += f"📍 {contact['address']}\n"
+        if contact.get("website"): contact_text += f"🌐 {contact['website']}\n"
+        if contact.get("availability"): contact_text += f"🕒 {contact['availability']}\n"
         
         chunks.append({
             "type": "contact_info",
             "title": f"Contact {company_name}",
             "content": contact_text.strip(),
-            "metadata": {
-                "phone": contact.get("phone"),
-                "email": contact.get("email"),
-                "use_for": ["contact", "phone", "email", "address", "location", "hours"]
-            }
+            "metadata": {"use_for": ["contact", "phone", "email", "address", "location"]}
         })
-    
-    # Chunk 3: Services (One chunk per service for better retrieval)
+
+    # Services
     services = structured_data.get("services", [])
     if isinstance(services, list):
-        for idx, service in enumerate(services):
-            if isinstance(service, dict):
-                service_text = f"{company_name} offers {service.get('name', 'this service')}.\n\n"
-                if service.get("description"):
-                    service_text += service["description"]
-                
+        for s in services:
+            if isinstance(s, dict):
                 chunks.append({
                     "type": "service",
-                    "title": service.get("name", f"Service {idx + 1}"),
-                    "content": service_text,
-                    "metadata": {
-                        "keywords": service.get("keywords", []),
-                        "use_for": ["services", "what_we_do", "offerings"]
-                    }
+                    "title": s.get("name", "Service"),
+                    "content": f"{company_name} Service: {s.get('name')}\n\n{s.get('description', '')}",
+                    "metadata": {"use_for": ["services", "what_we_do"]}
                 })
-            elif isinstance(service, str):
-                chunks.append({
-                    "type": "service",
-                    "title": service,
-                    "content": f"{company_name} provides {service}.",
-                    "metadata": {
-                        "use_for": ["services", "what_we_do"]
-                    }
-                })
-    
-    # Chunk 4: Pricing Information
-    pricing = structured_data.get("pricing", {})
-    if isinstance(pricing, dict) and pricing:
-        pricing_text = f"Pricing at {company_name}:\n\n"
-        if pricing.get("structure"):
-            pricing_text += f"Structure: {pricing['structure']}\n"
-        if pricing.get("details"):
-            pricing_text += f"\n{pricing['details']}\n"
-        if pricing.get("freeServices"):
-            pricing_text += f"\nFree Services: {', '.join(pricing['freeServices'])}\n"
-        if pricing.get("paymentTerms"):
-            pricing_text += f"\nPayment Terms: {pricing['paymentTerms']}"
-        
-        chunks.append({
-            "type": "pricing",
-            "title": "Pricing & Fees",
-            "content": pricing_text.strip(),
-            "metadata": {
-                "use_for": ["pricing", "cost", "fees", "payment", "free"]
-            }
-        })
-    elif isinstance(pricing, str):
-        chunks.append({
-            "type": "pricing",
-            "title": "Pricing & Fees",
-            "content": pricing,
-            "metadata": {
-                "use_for": ["pricing", "cost", "fees"]
-            }
-        })
-    
-    # Chunk 5: FAQs (Each FAQ as separate chunk for precise answers)
+
+    # FAQs
     faqs = structured_data.get("faqs", [])
     if isinstance(faqs, list):
-        for faq in faqs:
-            if isinstance(faq, dict) and faq.get("question") and faq.get("answer"):
+        for f in faqs:
+            if isinstance(f, dict):
                 chunks.append({
                     "type": "faq",
-                    "title": faq["question"],
-                    "content": f"Q: {faq['question']}\n\nA: {faq['answer']}",
-                    "metadata": {
-                        "category": faq.get("category", "general"),
-                        "use_for": ["faq", "questions", faq.get("category", "general")]
-                    }
+                    "title": f.get("question", "FAQ"),
+                    "content": f"Q: {f.get('question')}\n\nA: {f.get('answer')}",
+                    "metadata": {"use_for": ["faq", "questions"]}
                 })
-    
-    # Chunk 6: Process/Steps
-    process = structured_data.get("processSteps", [])
-    if isinstance(process, list) and process:
-        process_text = f"How {company_name} works:\n\n"
-        for step in process:
-            if isinstance(step, dict):
-                process_text += f"Step {step.get('step', '')}: {step.get('title', '')}\n"
-                if step.get("description"):
-                    process_text += f"{step['description']}\n\n"
-        
+                
+    # Pricing
+    pricing = structured_data.get("pricing")
+    if pricing:
+        content = str(pricing) if not isinstance(pricing, dict) else f"Structure: {pricing.get('structure')}\nDetails: {pricing.get('details')}"
         chunks.append({
-            "type": "process",
-            "title": "Our Process",
-            "content": process_text.strip(),
-            "metadata": {
-                "use_for": ["process", "how_it_works", "steps", "procedure"]
-            }
+            "type": "pricing",
+            "title": "Pricing",
+            "content": content,
+            "metadata": {"use_for": ["pricing", "cost"]}
         })
-    
-    # Chunk 7: Testimonials & Social Proof
-    testimonials = structured_data.get("testimonials", [])
-    if isinstance(testimonials, list) and testimonials:
-        testimonial_text = f"What clients say about {company_name}:\n\n"
-        for idx, testimonial in enumerate(testimonials[:5], 1):  # Limit to 5
-            if isinstance(testimonial, dict):
-                testimonial_text += f"{idx}. "
-                if testimonial.get("rating"):
-                    testimonial_text += f"{'⭐' * int(testimonial['rating'])} "
-                testimonial_text += f"\"{testimonial.get('text', '')}\""
-                if testimonial.get("author"):
-                    testimonial_text += f" - {testimonial['author']}"
-                testimonial_text += "\n\n"
-        
-        chunks.append({
-            "type": "testimonials",
-            "title": "Client Testimonials",
-            "content": testimonial_text.strip(),
-            "metadata": {
-                "use_for": ["reviews", "testimonials", "feedback", "reputation"]
-            }
-        })
-    
-    # Chunk 8: Team Information
-    team = structured_data.get("team", [])
-    if isinstance(team, list) and team:
-        team_text = f"Meet the {company_name} team:\n\n"
-        for member in team:
-            if isinstance(member, dict):
-                team_text += f"• {member.get('name', '')} - {member.get('role', '')}\n"
-                if member.get("description"):
-                    team_text += f"  {member['description']}\n\n"
-        
-        chunks.append({
-            "type": "team",
-            "title": "Our Team",
-            "content": team_text.strip(),
-            "metadata": {
-                "use_for": ["team", "staff", "attorneys", "people", "who"]
-            }
-        })
-    
-    # Chunk 9: Case Results/Achievements
-    results = structured_data.get("caseResults", [])
-    if isinstance(results, list) and results:
-        results_text = f"{company_name} results:\n\n"
-        for result in results:
-            if isinstance(result, dict):
-                results_text += f"• {result.get('type', 'Case')}: {result.get('result', '')}\n"
-                if result.get("description"):
-                    results_text += f"  {result['description']}\n"
-        
-        chunks.append({
-            "type": "results",
-            "title": "Case Results",
-            "content": results_text.strip(),
-            "metadata": {
-                "use_for": ["results", "outcomes", "settlements", "wins"]
-            }
-        })
-    
-    # Chunk 10: Chatbot-specific responses
-    chatbot_responses = structured_data.get("chatbotResponses", {})
-    if chatbot_responses:
-        chunks.append({
-            "type": "chatbot_config",
-            "title": "Chatbot Configuration",
-            "content": str(chatbot_responses),
-            "metadata": {
-                "greeting": chatbot_responses.get("greeting"),
-                "cta": chatbot_responses.get("callToAction"),
-                "use_for": ["greeting", "cta", "emergency"]
-            }
-        })
-    
-    logger.info(f"✅ Created {len(chunks)} AI-friendly chunks")
-    return chunks
 
+    return chunks
 
 async def store_chunks_in_vector_db(
     chunks: List[Dict[str, Any]],
@@ -582,165 +331,149 @@ async def store_chunks_in_vector_db(
     organization_id: str,
     company_name: str
 ) -> str:
-    """
-    Store AI chunks in Pinecone vector database with embeddings
-    
-    Args:
-        chunks: List of AI-friendly chunks
-        user_id: User ID
-        organization_id: Organization ID  
-        company_name: Company name
-        
-    Returns:
-        Namespace used in Pinecone (serves as vector_store_id)
-    """
+    """Store AI chunks in Pinecone"""
     try:
-        if not pinecone_index:
-            logger.error("❌ Pinecone index is None - check PINECONE_API_KEY and PINECONE_INDEX environment variables")
-            logger.error(f"   PINECONE_API_KEY exists: {bool(os.getenv('PINECONE_API_KEY'))}")
-            logger.error(f"   PINECONE_INDEX: {os.getenv('PINECONE_INDEX', 'bayai')}")
-            return None
+        if not pinecone_index: return None
         
-        # Create unique namespace for this organization
+        # Standardized namespace
         namespace = f"kb_{organization_id}"
-        
         logger.info(f"📤 Storing {len(chunks)} chunks in Pinecone (namespace: {namespace})...")
         
-        vectors_to_upsert = []
-        
+        vectors = []
         for i, chunk in enumerate(chunks):
-            # Get embedding for chunk content
-            embedding_response = client.embeddings.create(
-                model="text-embedding-3-small",
-                input=chunk["content"],
-                dimensions=1024  # Match Pinecone index dimension
-            )
-            embedding = embedding_response.data[0].embedding
+            # Generate embedding using LangChain (same as query)
+            emb = embeddings.embed_query(chunk["content"])
             
-            # Prepare vector data
-            vector_id = f"kb_{user_id}_{organization_id}_{chunk['type']}_{i}"
-            
-            vectors_to_upsert.append({
-                "id": vector_id,
-                "values": embedding,
+            # Upsert
+            vectors.append({
+                "id": f"kb_{organization_id}_{chunk['type']}_{i}",
+                "values": emb,
                 "metadata": {
                     "user_id": user_id,
                     "organization_id": organization_id,
                     "company_name": company_name,
                     "chunk_type": chunk["type"],
                     "title": chunk["title"],
-                    "content": chunk["content"][:1000],  # Limit metadata size
+                    "content": chunk["content"][:2000],  # Limit text in metadata
                     "use_for": ",".join(chunk["metadata"].get("use_for", []))
                 }
             })
         
-        # Upsert to Pinecone in batch
-        pinecone_index.upsert(
-            vectors=vectors_to_upsert,
-            namespace=namespace
-        )
-        
-        logger.info(f"✅ Stored {len(vectors_to_upsert)} vectors in Pinecone")
+        pinecone_index.upsert(vectors=vectors, namespace=namespace)
         return namespace
         
     except Exception as e:
-        logger.error(f"❌ Error storing chunks in vector DB: {e}")
+        logger.error(f"❌ Error storing chunks: {e}")
         return None
 
 
-def calculate_quality_score(
-    structured_data: Dict[str, Any],
-    source_count: int
-) -> tuple[str, float]:
-    """
-    Calculate quality score and percentage based on chatbot-ready completeness
-    
-    Args:
-        structured_data: Structured company data
-        source_count: Number of sources collected
-        
-    Returns:
-        Tuple of (quality_level, quality_percentage)
-    """
-    score = 0
-    max_score = 130  # Total possible points
-    
-    # Core information (40 points)
-    if structured_data.get("companyOverview") and len(structured_data.get("companyOverview", "")) > 100:
-        score += 20
-    elif structured_data.get("companyOverview"):
-        score += 10
-        
-    if structured_data.get("tagline"):
-        score += 5
-        
-    if structured_data.get("serviceAreas"):
-        score += 5
-        
-    if structured_data.get("chatbotResponses"):
-        score += 10
-    
-    # Services and products (25 points)
-    services = structured_data.get("services", [])
-    if isinstance(services, list) and len(services) > 0:
-        if any(isinstance(s, dict) and s.get("description") for s in services):
-            score += 15  # Detailed services
-        else:
-            score += 8   # Basic services list
-    
-    products = structured_data.get("products", [])
-    if isinstance(products, list) and len(products) > 0:
-        score += 10
-    
-    # Contact information (25 points)
-    contact = structured_data.get("contactInfo", {})
-    if contact.get("phone"):
-        score += 8
-    if contact.get("email"):
-        score += 7
-    if contact.get("address"):
-        score += 5
-    if contact.get("availability"):
-        score += 5
-    
-    # Interactive content (30 points)
-    faqs = structured_data.get("faqs", [])
-    if isinstance(faqs, list) and len(faqs) >= 5:
-        score += 15
-    elif isinstance(faqs, list) and len(faqs) > 0:
-        score += 8
-    
-    if structured_data.get("testimonials") and len(structured_data.get("testimonials", [])) > 0:
-        score += 8
-        
-    if structured_data.get("processSteps") and len(structured_data.get("processSteps", [])) > 0:
-        score += 7
-    
-    # Additional valuable info (10 points)
-    if structured_data.get("pricing") and isinstance(structured_data.get("pricing"), dict):
-        score += 5
-    if structured_data.get("team") and len(structured_data.get("team", [])) > 0:
-        score += 5
-    
-    # Bonus for multiple sources and completeness
-    if source_count >= 3:
-        score += 10
-    elif source_count >= 2:
-        score += 5
-    
-    # Calculate percentage
-    percentage = min(int((score / max_score) * 100), 100)
-    
-    # Determine quality level
-    if percentage >= 75:
-        quality = "high"
-    elif percentage >= 50:
-        quality = "medium"
-    else:
-        quality = "low"
-    
-    return quality, percentage
+# ==========================================
+# UNIFIED ADD DOCUMENT FUNCTION
+# ==========================================
 
+async def add_document_to_knowledge_base(
+    user_id: str,
+    organization_id: str,
+    company_name: str,
+    file_path: Optional[str] = None,
+    url: Optional[str] = None,
+    text: Optional[str] = None,
+    max_pages: int = 1
+) -> Dict[str, Any]:
+    """
+    Unified function to add any document type to the Knowledge Base.
+    Handles Text, URLs, and PDFs.
+    """
+    try:
+        # 1. Load and Split
+        split_docs = await load_and_split_document(file_path, url, text, max_pages)
+        if not split_docs:
+            raise Exception("No content extracted from source")
+
+        logger.info(f"📄 Processed {len(split_docs)} chunks from source")
+
+        # 2. Store in Pinecone
+        if not pinecone_index:
+            raise Exception("Pinecone not initialized")
+
+        namespace = f"kb_{organization_id}"
+        vectors = []
+        
+        for i, doc in enumerate(split_docs):
+            # Generate ID
+            doc_hash = str(hash(doc.page_content))
+            vector_id = f"doc_{organization_id}_{doc_hash}_{i}"
+            
+            # Embed using LangChain (same as query)
+            emb = embeddings.embed_query(doc.page_content)
+            
+            # Metadata
+            vectors.append({
+                "id": vector_id,
+                "values": emb,
+                "metadata": {
+                    "user_id": user_id,
+                    "organization_id": organization_id,
+                    "company_name": company_name,
+                    "chunk_type": "document",
+                    "title": doc.metadata.get("title", "Document Segment"),
+                    "source": doc.metadata.get("source", "unknown"),
+                    "content": doc.page_content[:2000],
+                    "use_for": "general_knowledge"
+                }
+            })
+            
+            # Batch upsert if too large (Pinecone limit is usually 100-1000)
+            if len(vectors) >= 100:
+                pinecone_index.upsert(vectors=vectors, namespace=namespace)
+                vectors = []
+        
+        # Upsert remaining
+        if vectors:
+            pinecone_index.upsert(vectors=vectors, namespace=namespace)
+
+        # 3. Update MongoDB Knowledge Base
+        kb = knowledge_bases.find_one({"userId": user_id, "organizationId": organization_id})
+        
+        source_entry = {
+            "type": "document" if file_path else "website" if url else "manual",
+            "url": url,
+            "filePath": file_path,
+            "processedAt": datetime.now(),
+            "chunkCount": len(split_docs)
+        }
+        
+        if kb:
+            knowledge_bases.update_one(
+                {"_id": kb["_id"]},
+                {
+                    "$push": {"sources": source_entry},
+                    "$set": {"updatedAt": datetime.now(), "vectorStoreId": namespace}
+                }
+            )
+        else:
+            # Create if not exists (minimal)
+            knowledge_bases.insert_one({
+                "userId": user_id,
+                "organizationId": organization_id,
+                "companyName": company_name,
+                "sources": [source_entry],
+                "vectorStoreId": namespace,
+                "status": "active",
+                "createdAt": datetime.now(),
+                "updatedAt": datetime.now()
+            })
+            
+        return {"status": "success", "chunks": len(split_docs), "namespace": namespace}
+
+    except Exception as e:
+        logger.error(f"❌ Error adding document to KB: {e}")
+        raise e
+
+
+# ==========================================
+# PUBLIC API FUNCTIONS
+# ==========================================
 
 async def build_knowledge_base_auto(
     user_id: str,
@@ -748,320 +481,99 @@ async def build_knowledge_base_auto(
     company_name: str,
     website: Optional[str] = None
 ) -> Dict[str, Any]:
-    """
-    Automatically build knowledge base using OpenAI web search
-    
-    Args:
-        user_id: User ID
-        organization_id: Organization ID
-        company_name: Company name
-        website: Optional company website URL
-        
-    Returns:
-        Created/updated knowledge base document
-    """
+    """Top-level auto-build function"""
     try:
         logger.info(f"🚀 Building knowledge base for {company_name}")
-        logger.info(f"🔍 Pinecone status: {'Available' if pinecone_index else 'NOT AVAILABLE'}")
         
-        # Check if knowledge base already exists
-        existing_kb = knowledge_bases.find_one({
-            "userId": ObjectId(user_id),
-            "status": {"$ne": "archived"}
-        })
-        
-        sources = []
+        # 1. Scrape & Analyze
         combined_content = ""
+        sources = []
         
-        # Step 1: Scrape primary website if provided
         if website:
-            logger.info(f"📄 Scraping website: {website}")
-            website_content = await scrape_website(website)
+            content = await scrape_website(website)
+            combined_content += content
+            sources.append({"type": "website", "url": website, "content": content})
             
-            if website_content:
-                sources.append({
-                    "type": "website",
-                    "url": website,
-                    "content": website_content,
-                    "processedAt": datetime.now()
-                })
-                combined_content += f"\n\n=== WEBSITE ({website}) ===\n{website_content}"
+        analysis = await perform_web_search(company_name, website)
+        combined_content += f"\n\nAnalysis: {analysis}"
         
-        # Step 2: Generate analysis framework using GPT-4o
-        logger.info(f"🔍 Generating analysis framework...")
-        analysis_framework = await perform_web_search(company_name, website)
+        # 2. Extract Structure
+        structured = await extract_structured_data(combined_content, company_name, website)
         
-        if analysis_framework:
-            sources.append({
-                "type": "analysis",
-                "searchQuery": f"Analysis framework for {company_name}",
-                "content": analysis_framework,
-                "processedAt": datetime.now()
-            })
-            combined_content += f"\n\n=== ANALYSIS FRAMEWORK ===\n{analysis_framework}"
+        # 3. Create Chunks
+        chunks = create_chatbot_chunks(structured, company_name)
         
-        if not combined_content or len(combined_content) < 100:
-            raise Exception("Failed to gather sufficient information")
+        # 4. Store in Vector DB
+        namespace = await store_chunks_in_vector_db(chunks, user_id, organization_id, company_name)
         
-        # Step 3: Extract structured data using OpenAI
-        logger.info(f"🧠 Extracting structured information...")
-        structured_data = await extract_structured_data(combined_content, company_name, website)
+        # 5. Save/Update MongoDB
+        kb_data = {
+            "userId": user_id,
+            "organizationId": organization_id,
+            "companyName": company_name,
+            "sources": sources,
+            "structuredData": structured,
+            "aiChunks": chunks,
+            "vectorStoreId": namespace,
+            "status": "active",
+            "metadata": {
+                "totalSources": len(sources),
+                "totalChunks": len(chunks),
+                "lastUpdated": datetime.now(),
+                "model": "gpt-4o"
+            },
+            "updatedAt": datetime.now()
+        }
         
-        # Step 4: Calculate quality score
-        quality, quality_percentage = calculate_quality_score(
-            structured_data,
-            len(sources)
+        knowledge_bases.update_one(
+            {"userId": user_id, "organizationId": organization_id},
+            {"$set": kb_data},
+            upsert=True
         )
         
-        logger.info(f"📊 Quality: {quality} ({quality_percentage}%)")
-        
-        # Step 5: Create AI-friendly chunks for chatbot
-        logger.info(f"📦 Creating AI-friendly knowledge chunks...")
-        ai_chunks = create_chatbot_chunks(structured_data, company_name)
-        
-        # Step 6: Store chunks in vector database (Pinecone)
-        logger.info(f"💾 Storing chunks in vector database...")
-        vector_store_id = await store_chunks_in_vector_db(
-            ai_chunks,
-            user_id,
-            organization_id,
-            company_name
-        )
-        
-        if vector_store_id:
-            logger.info(f"✅ Vector storage successful - ID: {vector_store_id}")
-        else:
-            logger.warning(f"⚠️ Vector storage failed - continuing without vector DB")
-        
-        # Step 7: Prepare knowledge base data
-        now = datetime.now()
-        
-        if existing_kb:
-            # Update existing
-            version = existing_kb.get("metadata", {}).get("version", 1) + 1
-            
-            # Merge sources
-            existing_sources = existing_kb.get("sources", [])
-            all_sources = existing_sources + sources
-            
-            update_data = {
-                "companyName": company_name,
-                "sources": all_sources,
-                "structuredData": structured_data,
-                "rawContent": combined_content,
-                "aiChunks": ai_chunks,  # Updated AI-friendly chunks
-                "vectorStoreId": vector_store_id,  # Pinecone namespace
-                "status": "active",
-                "updatedAt": now,
-                "metadata": {
-                    "totalSources": len(all_sources),
-                    "totalChunks": len(ai_chunks),
-                    "lastUpdated": now,
-                    "version": version,
-                    "model": "gpt-4o",
-                    "tokenCount": len(combined_content) // 4,
-                    "quality": quality,
-                    "qualityPercentage": quality_percentage,
-                    "updateHistory": existing_kb.get("metadata", {}).get("updateHistory", []) + [{
-                        "version": version,
-                        "updatedAt": now,
-                        "totalSources": len(all_sources),
-                        "totalChunks": len(ai_chunks),
-                        "quality": quality,
-                        "qualityPercentage": quality_percentage,
-                        "changes": f"Updated with {len(sources)} new sources and {len(ai_chunks)} AI chunks"
-                    }]
-                }
-            }
-            
-            knowledge_bases.update_one(
-                {"_id": existing_kb["_id"]},
-                {"$set": update_data}
-            )
-            
-            kb_data = {**existing_kb, **update_data}
-            logger.info(f"✅ Knowledge base updated (ID: {existing_kb['_id']})")
-            
-        else:
-            # Create new
-            kb_data = {
-                "userId": ObjectId(user_id),
-                "organizationId": ObjectId(organization_id),
-                "companyName": company_name,
-                "sources": sources,
-                "structuredData": structured_data,
-                "rawContent": combined_content,
-                "aiChunks": ai_chunks,  # AI-friendly chunks for chatbot
-                "vectorStoreId": vector_store_id,  # Pinecone namespace where vectors are stored
-                "fileIds": [],
-                "metadata": {
-                    "totalSources": len(sources),
-                    "totalChunks": len(ai_chunks),
-                    "lastUpdated": now,
-                    "version": 1,
-                    "model": "gpt-4o",
-                    "tokenCount": len(combined_content) // 4,
-                    "quality": quality,
-                    "qualityPercentage": quality_percentage,
-                    "updateHistory": [{
-                        "version": 1,
-                        "updatedAt": now,
-                        "totalSources": len(sources),
-                        "totalChunks": len(ai_chunks),
-                        "quality": quality,
-                        "qualityPercentage": quality_percentage,
-                        "changes": "Initial knowledge base creation"
-                    }]
-                },
-                "status": "active",
-                "createdAt": now,
-                "updatedAt": now
-            }
-            
-            result = knowledge_bases.insert_one(kb_data)
-            kb_data["_id"] = result.inserted_id
-            logger.info(f"✅ Knowledge base created (ID: {result.inserted_id})")
-        
-        return kb_data
-        
+        return knowledge_bases.find_one({"userId": user_id, "organizationId": organization_id})
+
     except Exception as e:
-        logger.error(f"❌ Error building knowledge base: {e}")
+        logger.error(f"❌ Error building KB: {e}")
         raise
 
-
-async def query_vector_db(
-    query: str,
-    organization_id: str,
-    top_k: int = 5
-) -> List[Dict[str, Any]]:
-    """
-    Query Pinecone vector database for similar chunks
+async def get_chatbot_chunks_by_intent(user_id: str, organization_id: str, intent: str) -> List[Dict[str, Any]]:
+    """Get chunks filtered by intent"""
+    kb = knowledge_bases.find_one({"userId": user_id, "organizationId": organization_id})
+    if not kb or "aiChunks" not in kb: return []
     
-    Args:
-        query: Search query
-        organization_id: Organization ID
-        top_k: Number of results to return
-        
-    Returns:
-        List of similar chunks with scores
-    """
+    return [c for c in kb["aiChunks"] if intent.lower() in [u.lower() for u in c.get("metadata", {}).get("use_for", [])]]
+
+async def get_all_chatbot_context(user_id: str, organization_id: str) -> str:
+    """Get full context string"""
+    kb = knowledge_bases.find_one({"userId": user_id, "organizationId": organization_id})
+    if not kb: return "No knowledge base found."
+    
+    context = f"=== KNOWLEDGE BASE: {kb.get('companyName')} ===\n\n"
+    for chunk in kb.get("aiChunks", []):
+        context += f"## {chunk.get('title')}\n{chunk.get('content')}\n---\n"
+    return context
+
+async def query_vector_db(query: str, organization_id: str, top_k: int = 5) -> List[Dict[str, Any]]:
+    """Query Pinecone"""
+    if not pinecone_index: return []
     try:
-        if not pinecone_index:
-            logger.warning("⚠️ Pinecone not available")
-            return []
-        
         namespace = f"kb_{organization_id}"
+        # Use LangChain embeddings (same as query in engine.py)
+        emb = embeddings.embed_query(query)
         
-        # Get query embedding
-        embedding_response = client.embeddings.create(
-            model="text-embedding-3-small",
-            input=query,
-            dimensions=1024  # Match Pinecone index dimension
-        )
-        query_embedding = embedding_response.data[0].embedding
-        
-        # Query Pinecone
         results = pinecone_index.query(
-            vector=query_embedding,
+            vector=emb,
             top_k=top_k,
             namespace=namespace,
             include_metadata=True
         )
         
-        # Format results
-        chunks = []
-        for match in results.matches:
-            chunks.append({
-                "content": match.metadata.get("content", ""),
-                "title": match.metadata.get("title", ""),
-                "type": match.metadata.get("chunk_type", ""),
-                "score": match.score,
-                "use_for": match.metadata.get("use_for", "").split(",")
-            })
-        
-        logger.info(f"✅ Found {len(chunks)} similar chunks in vector DB")
-        return chunks
-        
+        return [{
+            "content": m.metadata.get("content", ""),
+            "title": m.metadata.get("title", ""),
+            "score": m.score
+        } for m in results.matches]
     except Exception as e:
-        logger.error(f"❌ Error querying vector DB: {e}")
+        logger.error(f"❌ Query error: {e}")
         return []
-
-
-async def get_chatbot_chunks_by_intent(
-    user_id: str,
-    organization_id: str,
-    intent: str
-) -> List[Dict[str, Any]]:
-    """
-    Get AI chunks filtered by intent/purpose for chatbot responses
-    
-    Args:
-        user_id: User ID
-        organization_id: Organization ID
-        intent: Intent category (e.g., 'contact', 'services', 'pricing')
-        
-    Returns:
-        List of relevant chunks for the intent
-    """
-    try:
-        kb = knowledge_bases.find_one({
-            "userId": ObjectId(user_id),
-            "status": "active"
-        })
-        
-        if not kb or not kb.get("aiChunks"):
-            return []
-        
-        # Filter chunks by intent
-        relevant_chunks = []
-        for chunk in kb["aiChunks"]:
-            use_for = chunk.get("metadata", {}).get("use_for", [])
-            if intent.lower() in [u.lower() for u in use_for]:
-                relevant_chunks.append(chunk)
-        
-        logger.info(f"✅ Found {len(relevant_chunks)} chunks for intent: {intent}")
-        return relevant_chunks
-        
-    except Exception as e:
-        logger.error(f"❌ Error getting chatbot chunks: {e}")
-        return []
-
-
-async def get_all_chatbot_context(
-    user_id: str,
-    organization_id: str
-) -> str:
-    """
-    Get complete chatbot context as formatted text
-    Useful for passing to AI assistant as system context
-    
-    Args:
-        user_id: User ID
-        organization_id: Organization ID
-        
-    Returns:
-        Formatted context string for AI assistant
-    """
-    try:
-        kb = knowledge_bases.find_one({
-            "userId": ObjectId(user_id),
-            "status": "active"
-        })
-        
-        if not kb:
-            return "No knowledge base found."
-        
-        context = f"=== KNOWLEDGE BASE: {kb.get('companyName')} ===\n\n"
-        
-        ai_chunks = kb.get("aiChunks", [])
-        for chunk in ai_chunks:
-            context += f"## {chunk.get('title', 'Information')}\n"
-            context += f"{chunk.get('content', '')}\n\n"
-            context += "---\n\n"
-        
-        logger.info(f"✅ Generated complete chatbot context ({len(context)} characters)")
-        return context
-        
-    except Exception as e:
-        logger.error(f"❌ Error getting chatbot context: {e}")
-        return "Error loading knowledge base."
