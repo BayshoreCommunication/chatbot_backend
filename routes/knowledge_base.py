@@ -31,7 +31,7 @@ from models.knowledge_base import (
     Source
 )
 
-router = APIRouter(prefix="/api/knowledge-base", tags=["Knowledge Base"])
+router = APIRouter()
 logger = logging.getLogger(__name__)
 
 def get_org_id(organization: Dict[str, Any]) -> str:

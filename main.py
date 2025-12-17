@@ -272,7 +272,7 @@ if faq_intelligence_available:
 
 # Knowledge Base router
 if knowledge_base_available:
-    app.include_router(knowledge_base_router, tags=["Knowledge Base"])
+    app.include_router(knowledge_base_router, prefix="/api/knowledge-base", tags=["Knowledge Base"])
     available_features.append("Knowledge Base Management")
 
 # Dashboard router is always included

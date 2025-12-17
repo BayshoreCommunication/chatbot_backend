@@ -6,6 +6,7 @@ Stores in MongoDB and Vector Database (Pinecone)
 
 import os
 import logging
+import json
 from typing import Dict, Any, Optional, List, Union
 from datetime import datetime
 from bson import ObjectId
@@ -176,6 +177,50 @@ def scrape_website_content_recursive(base_url: str, max_pages: int = 10) -> List
 # AUTO-BUILD LOGIC (EXISTING)
 # ==========================================
 
+def extract_schema_org(html_content: str) -> Dict[str, Any]:
+    """Extract Schema.org structured data (JSON-LD) from HTML"""
+    try:
+        soup = BeautifulSoup(html_content, 'html.parser')
+        schema_data = {}
+        
+        # Find all JSON-LD scripts
+        for script in soup.find_all('script', type='application/ld+json'):
+            try:
+                data = json.loads(script.string)
+                # Merge data
+                if isinstance(data, dict):
+                    schema_data.update(data)
+                elif isinstance(data, list):
+                    for item in data:
+                        if isinstance(item, dict):
+                            schema_data.update(item)
+            except json.JSONDecodeError:
+                continue
+        
+        logger.info(f"📋 Extracted Schema.org data: {list(schema_data.keys())}")
+        return schema_data
+    except Exception as e:
+        logger.error(f"Error extracting schema.org: {e}")
+        return {}
+
+def find_pdfs_on_website(base_url: str, html_content: str) -> List[str]:
+    """Discover PDF links on website"""
+    try:
+        soup = BeautifulSoup(html_content, 'html.parser')
+        pdf_urls = []
+        
+        for link in soup.find_all('a', href=True):
+            href = link['href']
+            if href.endswith('.pdf'):
+                full_url = urljoin(base_url, href)
+                pdf_urls.append(full_url)
+        
+        logger.info(f"📄 Found {len(pdf_urls)} PDFs on website")
+        return pdf_urls[:5]  # Limit to 5 PDFs
+    except Exception as e:
+        logger.error(f"Error finding PDFs: {e}")
+        return []
+
 async def scrape_website(url: str) -> str:
     """Scrape website content using BeautifulSoup (Simple)"""
     try:
@@ -191,34 +236,49 @@ async def scrape_website(url: str) -> str:
         logger.error(f"❌ Error scraping {url}: {e}")
         return ""
 
-async def perform_web_search(company_name: str, website: Optional[str] = None) -> str:
-    """Use GPT-4o to analyze and expand company info"""
+async def detect_missing_info(extracted_data: Dict[str, Any], company_name: str) -> Dict[str, Any]:
+    """Use GPT-4o to detect gaps and suggest enhancements"""
     try:
-        logger.info(f"🔍 Using GPT-4o to enhance company data for: {company_name}")
-        prompt = f"""Based on the company name "{company_name}" and website "{website if website else 'unknown'}", 
-generate a comprehensive analysis framework covering:
-1. What type of business/services they likely offer
-2. Common questions customers might ask
-3. Standard contact information needed
-4. Typical pricing structures for this industry
-5. Key features customers look for
-6. Process/workflow expectations
+        logger.info(f"🔍 Detecting missing information for: {company_name}")
+        
+        prompt = f"""Analyze this company data and identify CRITICAL missing information for a chatbot:
 
-Provide this as a structured guide for information extraction."""
+Company: {company_name}
+Current Data: {json.dumps(extracted_data, indent=2)[:3000]}
+
+Identify:
+1. Missing contact info (phone, email, address, hours)
+2. Missing service/product details
+3. Missing pricing information
+4. Missing team/about info
+5. Common customer questions we CAN'T answer yet
+
+Return JSON with:
+{{
+  "missing_critical": ["item1", "item2"],
+  "missing_important": ["item1", "item2"],
+  "confidence_score": 0-100,
+  "suggestions": "How to fill gaps"
+}}"""
         
         response = client.chat.completions.create(
             model="gpt-4o",
             messages=[
-                {"role": "system", "content": "You are an expert business analyst."},
+                {"role": "system", "content": "You are a data completeness analyst."},
                 {"role": "user", "content": prompt}
             ],
-            max_tokens=2048,
-            temperature=0.3
+            response_format={"type": "json_object"},
+            max_tokens=1024,
+            temperature=0.2
         )
-        return response.choices[0].message.content or ""
+        
+        gaps = json.loads(response.choices[0].message.content or "{}")
+        logger.info(f"📊 Completeness: {gaps.get('confidence_score', 0)}%")
+        return gaps
+        
     except Exception as e:
-        logger.error(f"❌ Analysis generation failed: {e}")
-        return ""
+        logger.error(f"❌ Gap detection failed: {e}")
+        return {"confidence_score": 50, "missing_critical": []}
 
 async def extract_structured_data(combined_content: str, company_name: str, website: Optional[str] = None) -> Dict[str, Any]:
     """Extract structured data from raw content using OpenAI"""
@@ -465,15 +525,10 @@ async def add_document_to_knowledge_base(
             })
             
         return {"status": "success", "chunks": len(split_docs), "namespace": namespace}
-
+    
     except Exception as e:
         logger.error(f"❌ Error adding document to KB: {e}")
-        raise e
-
-
-# ==========================================
-# PUBLIC API FUNCTIONS
-# ==========================================
+        raise
 
 async def build_knowledge_base_auto(
     user_id: str,
@@ -481,49 +536,133 @@ async def build_knowledge_base_auto(
     company_name: str,
     website: Optional[str] = None
 ) -> Dict[str, Any]:
-    """Top-level auto-build function"""
+    """Enhanced auto-build with multi-page crawling, Schema.org, and PDF extraction"""
     try:
-        logger.info(f"🚀 Building knowledge base for {company_name}")
+        logger.info(f"🚀 Building enhanced knowledge base for {company_name}")
         
-        # 1. Scrape & Analyze
+        # 1. MULTI-PAGE CRAWLING (10 pages)
         combined_content = ""
         sources = []
+        schema_data = {}
+        pdf_urls = []
+        docs = []
         
         if website:
-            content = await scrape_website(website)
-            combined_content += content
-            sources.append({"type": "website", "url": website, "content": content})
+            logger.info(f"🕷️ Starting multi-page crawl of {website}")
             
-        analysis = await perform_web_search(company_name, website)
-        combined_content += f"\n\nAnalysis: {analysis}"
+            # Get homepage first for Schema.org and PDFs
+            try:
+                headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+                response = requests.get(website, headers=headers, timeout=10)
+                html_content = response.text
+                
+                # Extract Schema.org structured data
+                schema_data = extract_schema_org(html_content)
+                
+                # Find PDFs
+                pdf_urls = find_pdfs_on_website(website, html_content)
+                
+            except Exception as e:
+                logger.warning(f"⚠️ Error getting homepage: {e}")
+            
+            # Recursive crawl (10 pages)
+            docs = scrape_website_content_recursive(website, max_pages=10)
+            for doc in docs:
+                combined_content += doc.page_content + "\n\n"
+                sources.append({
+                    "type": "website", 
+                    "url": doc.metadata.get("source", website),
+                    "title": doc.metadata.get("title", ""),
+                    "content": doc.page_content[:500]
+                })
+            
+            logger.info(f"✅ Crawled {len(docs)} pages")
+            
+        # 2. EXTRACT PDFs (if found)
+        if pdf_urls:
+            logger.info(f"📄 Extracting {len(pdf_urls)} PDFs...")
+            for pdf_url in pdf_urls:
+                try:
+                    pdf_docs = await load_and_split_document(url=pdf_url, max_pages=1)
+                    for doc in pdf_docs[:3]:  # Limit chunks per PDF
+                        combined_content += doc.page_content + "\n\n"
+                        sources.append({
+                            "type": "pdf",
+                            "url": pdf_url,
+                            "content": doc.page_content[:500]
+                        })
+                except Exception as e:
+                    logger.warning(f"⚠️ Error extracting PDF {pdf_url}: {e}")
         
-        # 2. Extract Structure
+        # 3. ENHANCE WITH SCHEMA.ORG DATA
+        if schema_data:
+            logger.info(f"📋 Adding Schema.org structured data")
+            combined_content += f"\n\nStructured Data: {json.dumps(schema_data, indent=2)}"
+            sources.append({
+                "type": "schema_org",
+                "content": json.dumps(schema_data)
+            })
+        
+        # 4. Extract Structure with GPT-4o
         structured = await extract_structured_data(combined_content, company_name, website)
         
-        # 3. Create Chunks
-        chunks = create_chatbot_chunks(structured, company_name)
+        # 5. MERGE SCHEMA.ORG INTO STRUCTURED DATA
+        if schema_data:
+            # Enhance contact info
+            if "@type" in schema_data and "Local" in schema_data.get("@type", ""):
+                if not structured.get("contactInfo"):
+                    structured["contactInfo"] = {}
+                if schema_data.get("telephone"):
+                    structured["contactInfo"]["phone"] = schema_data["telephone"]
+                if schema_data.get("email"):
+                    structured["contactInfo"]["email"] = schema_data["email"]
+                if schema_data.get("address"):
+                    addr = schema_data["address"]
+                    if isinstance(addr, dict):
+                        structured["contactInfo"]["address"] = f"{addr.get('streetAddress', '')}, {addr.get('addressLocality', '')}, {addr.get('addressRegion', '')} {addr.get('postalCode', '')}"
+                if schema_data.get("openingHours"):
+                    structured["contactInfo"]["availability"] = schema_data["openingHours"]
         
-        # 4. Store in Vector DB
+        # 6. DETECT GAPS & COMPLETENESS SCORE
+        gaps = await detect_missing_info(structured, company_name)
+        completeness_score = gaps.get("confidence_score", 50)
+        
+        # 7. Create Chunks
+        chunks = create_chatbot_chunks(structured, company_name)
+        logger.info(f"📦 Created {len(chunks)} chatbot chunks")
+        
+        # 8. Store in Vector DB
         namespace = await store_chunks_in_vector_db(chunks, user_id, organization_id, company_name)
         
-        # 5. Save/Update MongoDB
+        # 9. Save/Update MongoDB with enhanced metadata
         kb_data = {
             "userId": user_id,
             "organizationId": organization_id,
             "companyName": company_name,
+            "website": website,
             "sources": sources,
             "structuredData": structured,
+            "schemaOrgData": schema_data,
             "aiChunks": chunks,
             "vectorStoreId": namespace,
             "status": "active",
             "metadata": {
                 "totalSources": len(sources),
                 "totalChunks": len(chunks),
+                "pdfCount": len(pdf_urls),
+                "pagesScraped": len(docs),
+                "hasSchemaOrg": len(schema_data) > 0,
+                "completenessScore": completeness_score,
+                "missingInfo": gaps.get("missing_critical", []),
                 "lastUpdated": datetime.now(),
-                "model": "gpt-4o"
+                "model": "gpt-4o",
+                "quality": "high" if completeness_score >= 80 else "medium" if completeness_score >= 60 else "low"
             },
-            "updatedAt": datetime.now()
+            "updatedAt": datetime.now(),
+            "createdAt": datetime.now()
         }
+        
+        logger.info(f"✅ Knowledge base built: {len(sources)} sources, {len(chunks)} chunks, {completeness_score}% complete")
         
         knowledge_bases.update_one(
             {"userId": user_id, "organizationId": organization_id},
