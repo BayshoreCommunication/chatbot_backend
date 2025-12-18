@@ -7,13 +7,12 @@ Stores in MongoDB and Vector Database (Pinecone)
 import os
 import logging
 import json
-from typing import Dict, Any, Optional, List, Union
+import re
+import xml.etree.ElementTree as ET
+from typing import Dict, Any, Optional, List, Union, Set, Tuple
 from datetime import datetime
 from bson import ObjectId
 from openai import OpenAI
-import requests
-from bs4 import BeautifulSoup
-from urllib.parse import urljoin, urlparse
 import time
 
 # LangChain Imports for Document Processing
@@ -66,12 +65,10 @@ def get_text_splitter():
 
 async def load_and_split_document(
     file_path: Optional[str] = None,
-    url: Optional[str] = None,
-    text: Optional[str] = None,
-    max_pages: int = 1
+    text: Optional[str] = None
 ) -> List[Document]:
     """
-    Load and split document from various sources
+    Load and split document from file or text (PDFs and manual text only)
     """
     documents = []
     
@@ -85,21 +82,6 @@ async def load_and_split_document(
                 with open(file_path, 'r', encoding='utf-8') as f:
                     content = f.read()
                 documents = [Document(page_content=content, metadata={"source": file_path})]
-                
-        elif url:
-            if max_pages > 1:
-                # Use comprehensive scraping
-                documents = scrape_website_content_recursive(url, max_pages)
-            else:
-                # Single page
-                try:
-                    loader = WebBaseLoader(url)
-                    documents = loader.load()
-                except Exception as e:
-                    # Fallback to simple scraping
-                    logger.warning(f"WebBaseLoader failed for {url}, using fallback: {e}")
-                    content = await scrape_website(url)
-                    documents = [Document(page_content=content, metadata={"source": url})]
 
         elif text:
             documents = [Document(page_content=text, metadata={"source": "manual_input"})]
@@ -114,127 +96,266 @@ async def load_and_split_document(
         logger.error(f"Error loading/splitting document: {e}")
         return []
 
-def scrape_website_content_recursive(base_url: str, max_pages: int = 10) -> List[Document]:
-    """
-    Recursive scraping logic (adapted from vectorstore.py)
-    """
-    logger.info(f"🕷️ Starting recursive scrape of {base_url} (max {max_pages} pages)")
-    
-    visited_urls = set()
-    to_visit = [base_url]
-    documents = []
-    count = 0
-    base_domain = urlparse(base_url).netloc
-    
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-    }
-    
-    while to_visit and count < max_pages:
-        current_url = to_visit.pop(0)
-        if current_url in visited_urls:
-            continue
-            
-        try:
-            response = requests.get(current_url, headers=headers, timeout=10)
-            if response.status_code != 200: continue
-            
-            visited_urls.add(current_url)
-            count += 1
-            
-            soup = BeautifulSoup(response.text, 'html.parser')
-            for script in soup(["script", "style", "nav", "footer"]):
-                script.decompose()
-                
-            text = soup.get_text(separator="\n", strip=True)
-            text = "\n".join(line.strip() for line in text.split("\n") if line.strip())
-            
-            if len(text) > 100:
-                documents.append(Document(
-                    page_content=text, 
-                    metadata={"source": current_url, "title": soup.title.string if soup.title else ""}
-                ))
-            
-            # Find links
-            if count < max_pages:
-                for link in soup.find_all("a", href=True):
-                    full_url = urljoin(current_url, link["href"])
-                    parsed = urlparse(full_url)
-                    
-                    if (parsed.netloc == base_domain or not parsed.netloc) and \
-                       full_url not in visited_urls and \
-                       full_url not in to_visit and \
-                       not full_url.lower().endswith((".pdf", ".jpg", ".png")):
-                        to_visit.append(full_url)
-                        
-        except Exception as e:
-            logger.error(f"Error scraping {current_url}: {e}")
-            
-    return documents
-
-
 # ==========================================
-# AUTO-BUILD LOGIC (EXISTING)
+# OPENAI WEB SEARCH FOR COMPANY INFO
 # ==========================================
 
-def extract_schema_org(html_content: str) -> Dict[str, Any]:
-    """Extract Schema.org structured data (JSON-LD) from HTML"""
+async def detect_business_type(company_name: str, website: Optional[str] = None) -> Dict[str, Any]:
+    """
+    STEP 1: Detect business type and industry to determine what information to collect
+    """
     try:
-        soup = BeautifulSoup(html_content, 'html.parser')
-        schema_data = {}
+        logger.info(f"🔍 STEP 1: Detecting business type for {company_name}...")
         
-        # Find all JSON-LD scripts
-        for script in soup.find_all('script', type='application/ld+json'):
+        search_query = f"{company_name} {website or ''} what type of business industry"
+        
+        response = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are a business analyst. Search the web and determine the business type, industry, and what information customers typically need from this type of business."
+                },
+                {
+                    "role": "user",
+                    "content": f"""Search the web for: {search_query}
+
+Determine:
+1. What type of business is this? (e.g., law firm, restaurant, retail store, medical practice, software company, real estate, consulting, etc.)
+2. What industry/sector?
+3. What are the TOP 8-10 most important pieces of information customers need from this type of business?
+
+Return JSON format:
+{{
+  "businessType": "law firm / restaurant / retail / medical / software / consulting / etc.",
+  "industry": "specific industry",
+  "description": "brief description",
+  "keyInformationNeeded": [
+    "contact information",
+    "business-specific item 1",
+    "business-specific item 2",
+    ...
+  ]
+}}"""
+                }
+            ],
+            response_format={"type": "json_object"},
+            max_tokens=1000,
+            temperature=0.2
+        )
+        
+        result = json.loads(response.choices[0].message.content or "{}")
+        logger.info(f"✅ Detected: {result.get('businessType', 'Unknown')} in {result.get('industry', 'Unknown')} industry")
+        logger.info(f"📋 Key info needed: {', '.join(result.get('keyInformationNeeded', [])[:5])}...")
+        
+        return result
+        
+    except Exception as e:
+        logger.error(f"❌ Business type detection failed: {e}")
+        return {
+            "businessType": "general business",
+            "industry": "unknown",
+            "keyInformationNeeded": [
+                "contact information", "services", "team", "pricing", 
+                "testimonials", "FAQs", "location", "hours"
+            ]
+        }
+
+async def generate_search_queries(company_name: str, website: Optional[str], business_info: Dict[str, Any]) -> List[str]:
+    """
+    STEP 2: Generate UNLIMITED intelligent, business-specific search queries
+    """
+    try:
+        logger.info(f"🔍 STEP 2: Generating UNLIMITED search queries for {business_info.get('businessType', 'business')}...")
+        
+        prompt = f"""Based on this business information, generate AS MANY search queries as needed (NO LIMIT) to collect COMPLETE and COMPREHENSIVE information about this business:
+
+Business: {company_name}
+Type: {business_info.get('businessType', 'unknown')}
+Industry: {business_info.get('industry', 'unknown')}
+Website: {website or 'N/A'}
+
+Key Information Needed:
+{json.dumps(business_info.get('keyInformationNeeded', []), indent=2)}
+
+Generate COMPREHENSIVE search queries (15-25+ queries) that will find EVERYTHING:
+- Company overview, history, mission, values
+- EVERY team member with names, roles, experience, education
+- Complete contact information (phone, email, address, hours, social media)
+- ALL services/products offered with detailed descriptions
+- Pricing/fees/costs for everything
+- Process/how it works step-by-step
+- Testimonials/reviews from multiple sources
+- FAQs and common questions
+- Industry-specific certifications, awards, recognition
+- Locations, service areas, coverage
+- Portfolio/case studies/examples of work
+- Partnerships, affiliations
+- Company culture, values, community involvement
+- Technology, tools, methods used
+- Guarantees, warranties, policies
+- Booking/scheduling/ordering process
+- Payment options, financing
+- Emergency services (if applicable)
+- Any other business-critical information
+
+Return JSON array of search query strings:
+{{
+  "queries": [
+    "query 1",
+    "query 2",
+    "query 3",
+    ... (continue with ALL necessary queries)
+  ]
+}}
+
+Make queries HIGHLY SPECIFIC to this business type. Generate AT LEAST 15-20 queries, more if needed.
+
+Examples:
+- Restaurant: menu items, chef biography, cuisine style, dietary options, reservations, delivery, takeout, catering, reviews, awards, hours, parking, dress code, private events
+- Law firm: each practice area, each attorney with experience, case results, settlements, consultation process, fees, contingency, testimonials, awards, bar memberships
+- Medical: every service, every doctor with specialties, insurance accepted, appointment booking, emergency care, hours, patient reviews, certifications, technology
+- Retail: product categories, brands, pricing, shipping options, return policy, store locations, hours, sales, promotions, customer service, warranties"""
+        
+        response = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are an expert at creating comprehensive, targeted web search queries. Generate as many queries as needed (no limit) to ensure complete information coverage."
+                },
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ],
+            response_format={"type": "json_object"},
+            max_tokens=2000,
+            temperature=0.3
+        )
+        
+        result = json.loads(response.choices[0].message.content or "{}")
+        queries = result.get("queries", [])
+        
+        # Add site-specific queries if website provided
+        if website:
+            queries.insert(0, f"site:{website} about {company_name}")
+            queries.insert(1, f"site:{website} team staff people")
+            queries.insert(2, f"site:{website} contact location hours")
+        
+        logger.info(f"✅ Generated {len(queries)} search queries")
+        return queries
+        
+    except Exception as e:
+        logger.error(f"❌ Query generation failed: {e}")
+        # Fallback to comprehensive generic queries
+        return [
+            f"{company_name} official website overview history mission",
+            f"{company_name} team staff members employees leadership",
+            f"{company_name} contact information phone email address",
+            f"{company_name} services products offerings details",
+            f"{company_name} pricing fees costs rates",
+            f"{company_name} reviews testimonials client feedback",
+            f"{company_name} FAQ frequently asked questions",
+            f"{company_name} locations service areas coverage",
+            f"{company_name} process how it works booking",
+            f"{company_name} certifications awards recognition",
+            f"{company_name} portfolio case studies examples",
+            f"{company_name} hours availability schedule",
+            f"{company_name} payment options financing",
+            f"{company_name} policies guarantees warranties",
+            f"{company_name} community involvement social responsibility"
+        ]
+
+async def search_company_with_openai(company_name: str, website: Optional[str] = None) -> Dict[str, Any]:
+    """
+    INTELLIGENT WEB SEARCH: Adapts to any business type
+    
+    STEP 1: Detect business type and industry
+    STEP 2: Generate business-specific search queries
+    STEP 3: Execute searches and collect comprehensive information
+    """
+    try:
+        logger.info(f"🚀 Starting INTELLIGENT web search for {company_name}...")
+        
+        # STEP 1: Detect business type
+        business_info = await detect_business_type(company_name, website)
+        
+        # STEP 2: Generate adaptive search queries
+        search_queries = await generate_search_queries(company_name, website, business_info)
+        
+        # STEP 3: Execute searches
+        logger.info(f"🔍 STEP 3: Executing {len(search_queries)} searches...")
+        all_results = []
+        
+        for idx, query in enumerate(search_queries, 1):
             try:
-                data = json.loads(script.string)
-                # Merge data
-                if isinstance(data, dict):
-                    schema_data.update(data)
-                elif isinstance(data, list):
-                    for item in data:
-                        if isinstance(item, dict):
-                            schema_data.update(item)
-            except json.JSONDecodeError:
+                logger.info(f"  🔎 [{idx}/{len(search_queries)}] {query}")
+                
+                response = client.chat.completions.create(
+                    model="gpt-4o",
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": f"You are a research assistant specializing in {business_info.get('industry', 'business')} industry. Search the web and provide comprehensive, accurate information. Include specific details like names, numbers, dates, and direct quotes."
+                        },
+                        {
+                            "role": "user",
+                            "content": f"Search the web and provide detailed information about: {query}\n\nBusiness Context: {company_name} is a {business_info.get('businessType', 'business')}\n\nInclude:\n- Specific names, roles, and experience (e.g., 'John Smith, 10+ years')\n- Exact contact details\n- Detailed descriptions\n- Pricing/costs if mentioned\n- Direct quotes from official sources\n- Any unique or standout information"
+                        }
+                    ],
+                    max_tokens=2000,
+                    temperature=0.2
+                )
+                
+                result = response.choices[0].message.content
+                if result:
+                    all_results.append({
+                        "query": query,
+                        "content": result
+                    })
+                    logger.info(f"    ✅ Found: {len(result)} chars")
+                
+                # Rate limiting
+                time.sleep(1)
+                
+            except Exception as e:
+                logger.warning(f"    ⚠️ Search failed: {e}")
                 continue
         
-        logger.info(f"📋 Extracted Schema.org data: {list(schema_data.keys())}")
-        return schema_data
-    except Exception as e:
-        logger.error(f"Error extracting schema.org: {e}")
-        return {}
-
-def find_pdfs_on_website(base_url: str, html_content: str) -> List[str]:
-    """Discover PDF links on website"""
-    try:
-        soup = BeautifulSoup(html_content, 'html.parser')
-        pdf_urls = []
+        # Combine all results
+        combined_content = f"=== INTELLIGENT WEB SEARCH RESULTS ===\n\n"
+        combined_content += f"Business: {company_name}\n"
+        combined_content += f"Type: {business_info.get('businessType', 'Unknown')}\n"
+        combined_content += f"Industry: {business_info.get('industry', 'Unknown')}\n\n"
+        combined_content += "=" * 50 + "\n\n"
         
-        for link in soup.find_all('a', href=True):
-            href = link['href']
-            if href.endswith('.pdf'):
-                full_url = urljoin(base_url, href)
-                pdf_urls.append(full_url)
+        for result in all_results:
+            combined_content += f"\n## Query: {result['query']}\n{result['content']}\n\n---\n\n"
         
-        logger.info(f"📄 Found {len(pdf_urls)} PDFs on website")
-        return pdf_urls[:5]  # Limit to 5 PDFs
+        logger.info(f"✅ Collected {len(all_results)}/{len(search_queries)} search results ({len(combined_content)} chars)")
+        
+        return {
+            "combined_content": combined_content,
+            "search_results": all_results,
+            "business_type": business_info.get("businessType"),
+            "industry": business_info.get("industry"),
+            "total_queries": len(search_queries),
+            "successful_queries": len(all_results)
+        }
+        
     except Exception as e:
-        logger.error(f"Error finding PDFs: {e}")
-        return []
+        logger.error(f"❌ Error in OpenAI web search: {e}")
+        return {
+            "combined_content": f"Error searching for {company_name}",
+            "search_results": [],
+            "total_queries": 0,
+            "successful_queries": 0
+        }
 
-async def scrape_website(url: str) -> str:
-    """Scrape website content using BeautifulSoup (Simple)"""
-    try:
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-        response = requests.get(url, headers=headers, timeout=10)
-        response.raise_for_status()
-        soup = BeautifulSoup(response.content, 'html.parser')
-        for element in soup(['script', 'style', 'nav', 'footer', 'header', 'iframe']):
-            element.decompose()
-        content = soup.get_text(separator=' ', strip=True)
-        return ' '.join(content.split())[:10000]
-    except Exception as e:
-        logger.error(f"❌ Error scraping {url}: {e}")
-        return ""
+# ==========================================
+# AUTO-BUILD LOGIC
+# ==========================================
 
 async def detect_missing_info(extracted_data: Dict[str, Any], company_name: str) -> Dict[str, Any]:
     """Use GPT-4o to detect gaps and suggest enhancements"""
@@ -280,11 +401,11 @@ Return JSON with:
         logger.error(f"❌ Gap detection failed: {e}")
         return {"confidence_score": 50, "missing_critical": []}
 
-async def extract_structured_data(combined_content: str, company_name: str, website: Optional[str] = None) -> Dict[str, Any]:
-    """Extract structured data from raw content using OpenAI"""
+async def extract_structured_data(combined_content: str, company_name: str, website: Optional[str] = None, business_type: str = "business", industry: str = "general") -> Dict[str, Any]:
+    """Extract structured data from raw content using OpenAI (business-type aware)"""
     try:
-        logger.info(f"🧠 Extracting structured data for {company_name}...")
-        enhanced_prompt = """You are an expert at extracting and structuring company information for AI chatbot use.
+        logger.info(f"🧠 Extracting structured data for {company_name} ({business_type})...")
+        enhanced_prompt = f"""You are an expert at extracting and structuring {business_type} information for AI chatbot use in the {industry} industry.
 Extract comprehensive, chatbot-friendly information in this exact JSON format:
 {
   "companyOverview": "Detailed 2-3 paragraph overview...",
@@ -295,12 +416,28 @@ Extract comprehensive, chatbot-friendly information in this exact JSON format:
   "keyFeatures": [{"feature": "...", "description": "..."}],
   "pricing": {"structure": "...", "details": "...", "freeServices": []},
   "faqs": [{"question": "...", "answer": "...", "category": "..."}],
-  "team": [{"name": "...", "role": "..."}],
+  "team": [{
+    "name": "Full Name",
+    "role": "Attorney/Partner/Associate/Position",
+    "experienceYears": "10+",
+    "education": "Degree, University",
+    "specializations": ["Personal Injury", "Car Accidents"],
+    "bio": "Full biography with specific details"
+  }],
   "testimonials": [{"text": "...", "author": "..."}],
   "processSteps": [{"step": 1, "title": "...", "description": "..."}],
   "chatbotResponses": {"greeting": "...", "callToAction": "..."}
 }
-Use null for missing fields. Be comprehensive."""
+
+IMPORTANT FOR TEAM MEMBERS:
+- Extract EVERY individual person mentioned (attorneys, staff, partners)
+- Include full names (e.g., "David Carter", not just "Carter")
+- Capture years of experience (e.g., "10+ years", "5 years")
+- Include education and credentials
+- Extract full biographies with specific achievements
+- If text says "David Carter has 10 years experience", capture: {"name": "David Carter", "experienceYears": "10+", "bio": "..."}
+
+Use null for missing fields. Be comprehensive and specific."""
         
         response = client.chat.completions.create(
             model="gpt-4o",
@@ -347,6 +484,29 @@ def create_chatbot_chunks(structured_data: Dict[str, Any], company_name: str) ->
             "content": contact_text.strip(),
             "metadata": {"use_for": ["contact", "phone", "email", "address", "location"]}
         })
+
+    # Team Members (NEW: Individual attorney profiles)
+    team = structured_data.get("team", [])
+    if isinstance(team, list):
+        for member in team:
+            if isinstance(member, dict) and member.get("name"):
+                team_content = f"{member.get('name')} - {member.get('role', 'Team Member')}\n\n"
+                
+                if member.get("experienceYears"):
+                    team_content += f"Experience: {member['experienceYears']}\n"
+                if member.get("education"):
+                    team_content += f"Education: {member['education']}\n"
+                if member.get("specializations"):
+                    team_content += f"Specializations: {', '.join(member['specializations'])}\n"
+                if member.get("bio"):
+                    team_content += f"\n{member['bio']}"
+                
+                chunks.append({
+                    "type": "team_member",
+                    "title": f"{member.get('name')} - {member.get('role', 'Team Member')}",
+                    "content": team_content.strip(),
+                    "metadata": {"use_for": ["team", "attorney", "staff", "about", member.get('name', '').lower()]}
+                })
 
     # Services
     services = structured_data.get("services", [])
@@ -436,17 +596,15 @@ async def add_document_to_knowledge_base(
     organization_id: str,
     company_name: str,
     file_path: Optional[str] = None,
-    url: Optional[str] = None,
-    text: Optional[str] = None,
-    max_pages: int = 1
+    text: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Unified function to add any document type to the Knowledge Base.
-    Handles Text, URLs, and PDFs.
+    Handles Text and PDFs only (no web scraping).
     """
     try:
         # 1. Load and Split
-        split_docs = await load_and_split_document(file_path, url, text, max_pages)
+        split_docs = await load_and_split_document(file_path, text)
         if not split_docs:
             raise Exception("No content extracted from source")
 
@@ -496,8 +654,7 @@ async def add_document_to_knowledge_base(
         kb = knowledge_bases.find_one({"userId": user_id, "organizationId": organization_id})
         
         source_entry = {
-            "type": "document" if file_path else "website" if url else "manual",
-            "url": url,
+            "type": "document" if file_path else "manual",
             "filePath": file_path,
             "processedAt": datetime.now(),
             "chunkCount": len(split_docs)
@@ -536,105 +693,48 @@ async def build_knowledge_base_auto(
     company_name: str,
     website: Optional[str] = None
 ) -> Dict[str, Any]:
-    """Enhanced auto-build with multi-page crawling, Schema.org, and PDF extraction"""
+    """Enhanced auto-build using OpenAI web search (no BeautifulSoup scraping)"""
     try:
-        logger.info(f"🚀 Building enhanced knowledge base for {company_name}")
+        logger.info(f"🚀 Building knowledge base for {company_name} using OpenAI Web Search")
         
-        # 1. MULTI-PAGE CRAWLING (10 pages)
-        combined_content = ""
+        # 1. USE OPENAI WEB SEARCH TO GATHER ALL COMPANY INFO
+        search_data = await search_company_with_openai(company_name, website)
+        combined_content = search_data.get("combined_content", "")
+        search_results = search_data.get("search_results", [])
+        
+        if not combined_content or len(combined_content) < 100:
+            raise Exception("No content found from web search")
+        
         sources = []
-        schema_data = {}
-        pdf_urls = []
-        docs = []
-        
-        if website:
-            logger.info(f"🕷️ Starting multi-page crawl of {website}")
-            
-            # Get homepage first for Schema.org and PDFs
-            try:
-                headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-                response = requests.get(website, headers=headers, timeout=10)
-                html_content = response.text
-                
-                # Extract Schema.org structured data
-                schema_data = extract_schema_org(html_content)
-                
-                # Find PDFs
-                pdf_urls = find_pdfs_on_website(website, html_content)
-                
-            except Exception as e:
-                logger.warning(f"⚠️ Error getting homepage: {e}")
-            
-            # Recursive crawl (10 pages)
-            docs = scrape_website_content_recursive(website, max_pages=10)
-            for doc in docs:
-                combined_content += doc.page_content + "\n\n"
-                sources.append({
-                    "type": "website", 
-                    "url": doc.metadata.get("source", website),
-                    "title": doc.metadata.get("title", ""),
-                    "content": doc.page_content[:500]
-                })
-            
-            logger.info(f"✅ Crawled {len(docs)} pages")
-            
-        # 2. EXTRACT PDFs (if found)
-        if pdf_urls:
-            logger.info(f"📄 Extracting {len(pdf_urls)} PDFs...")
-            for pdf_url in pdf_urls:
-                try:
-                    pdf_docs = await load_and_split_document(url=pdf_url, max_pages=1)
-                    for doc in pdf_docs[:3]:  # Limit chunks per PDF
-                        combined_content += doc.page_content + "\n\n"
-                        sources.append({
-                            "type": "pdf",
-                            "url": pdf_url,
-                            "content": doc.page_content[:500]
-                        })
-                except Exception as e:
-                    logger.warning(f"⚠️ Error extracting PDF {pdf_url}: {e}")
-        
-        # 3. ENHANCE WITH SCHEMA.ORG DATA
-        if schema_data:
-            logger.info(f"📋 Adding Schema.org structured data")
-            combined_content += f"\n\nStructured Data: {json.dumps(schema_data, indent=2)}"
+        for result in search_results:
             sources.append({
-                "type": "schema_org",
-                "content": json.dumps(schema_data)
+                "type": "web_search",
+                "query": result.get("query", ""),
+                "content": result.get("content", "")[:500]
             })
         
-        # 4. Extract Structure with GPT-4o
-        structured = await extract_structured_data(combined_content, company_name, website)
+        logger.info(f"✅ Collected data from {len(search_results)} web searches")
         
-        # 5. MERGE SCHEMA.ORG INTO STRUCTURED DATA
-        if schema_data:
-            # Enhance contact info
-            if "@type" in schema_data and "Local" in schema_data.get("@type", ""):
-                if not structured.get("contactInfo"):
-                    structured["contactInfo"] = {}
-                if schema_data.get("telephone"):
-                    structured["contactInfo"]["phone"] = schema_data["telephone"]
-                if schema_data.get("email"):
-                    structured["contactInfo"]["email"] = schema_data["email"]
-                if schema_data.get("address"):
-                    addr = schema_data["address"]
-                    if isinstance(addr, dict):
-                        structured["contactInfo"]["address"] = f"{addr.get('streetAddress', '')}, {addr.get('addressLocality', '')}, {addr.get('addressRegion', '')} {addr.get('postalCode', '')}"
-                if schema_data.get("openingHours"):
-                    structured["contactInfo"]["availability"] = schema_data["openingHours"]
+        # Get business type for better extraction
+        business_type = search_data.get("business_type", "business")
+        industry = search_data.get("industry", "general")
+        logger.info(f"📊 Processing as: {business_type} in {industry} industry")
         
-        # 6. DETECT GAPS & COMPLETENESS SCORE
+        # 2. Extract Structure with GPT-4o (business-aware)
+        structured = await extract_structured_data(combined_content, company_name, website, business_type, industry)
+        
+        # 3. DETECT GAPS & COMPLETENESS SCORE
         gaps = await detect_missing_info(structured, company_name)
         completeness_score = gaps.get("confidence_score", 50)
         
-        # 7. Create Chunks
+        # 6. Create Chunks (includes individual team member profiles)
         chunks = create_chatbot_chunks(structured, company_name)
         logger.info(f"📦 Created {len(chunks)} chatbot chunks")
         
-        # 8. Store in Vector DB
+        # 7. Store in Vector DB
         namespace = await store_chunks_in_vector_db(chunks, user_id, organization_id, company_name)
         
-        # 9. Save/Update MongoDB with enhanced metadata
+        # 7. Save/Update MongoDB with enhanced metadata
         kb_data = {
             "userId": user_id,
             "organizationId": organization_id,
@@ -642,19 +742,19 @@ async def build_knowledge_base_auto(
             "website": website,
             "sources": sources,
             "structuredData": structured,
-            "schemaOrgData": schema_data,
             "aiChunks": chunks,
             "vectorStoreId": namespace,
             "status": "active",
+            "businessType": search_data.get("business_type", "unknown"),
+            "industry": search_data.get("industry", "unknown"),
             "metadata": {
                 "totalSources": len(sources),
                 "totalChunks": len(chunks),
-                "pdfCount": len(pdf_urls),
-                "pagesScraped": len(docs),
-                "hasSchemaOrg": len(schema_data) > 0,
+                "webSearchQueries": search_data.get("successful_queries", 0),
                 "completenessScore": completeness_score,
                 "missingInfo": gaps.get("missing_critical", []),
                 "lastUpdated": datetime.now(),
+                "method": "intelligent_web_search",
                 "model": "gpt-4o",
                 "quality": "high" if completeness_score >= 80 else "medium" if completeness_score >= 60 else "low"
             },
@@ -662,7 +762,7 @@ async def build_knowledge_base_auto(
             "createdAt": datetime.now()
         }
         
-        logger.info(f"✅ Knowledge base built: {len(sources)} sources, {len(chunks)} chunks, {completeness_score}% complete")
+        logger.info(f"✅ Knowledge base built using OpenAI Web Search: {len(sources)} sources, {len(chunks)} chunks, {completeness_score}% complete")
         
         knowledge_bases.update_one(
             {"userId": user_id, "organizationId": organization_id},
