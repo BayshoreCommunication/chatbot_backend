@@ -1214,3 +1214,128 @@ async def get_video_settings(
     except Exception as e:
         print(f"Error getting video settings: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+
+
+
+# Test langgraph integration route
+@router.post("/ask-langgraph")
+async def ask_langgraph(
+    request: ChatRequest,
+    organization: dict = Depends(get_organization_from_api_key)
+):
+    """
+    LangGraph-powered chatbot endpoint.
+    Uses advanced RAG with conversation history and source citations.
+    """
+    try:
+        from services.langgraph_service import LangGraphService
+        
+        # Get organization info
+        org_id = get_org_id(organization)
+        org_name = organization.get("name", "our company")
+        user_id = organization.get("user_id")
+        
+        # Get knowledge base info
+        knowledge_base_info = db.knowledge_bases.find_one(
+            {"userId": user_id}, 
+            {"vectorStoreId": 1, "kb_id": {"$toString": "$_id"}}
+        )
+        
+        namespace = knowledge_base_info.get("vectorStoreId") if knowledge_base_info else "kb_default"
+        
+        print(f"\n[LANGGRAPH ENDPOINT] === Request ===")
+        print(f"[LANGGRAPH ENDPOINT] Org: {org_name} ({org_id})")
+        print(f"[LANGGRAPH ENDPOINT] Session: {request.session_id}")
+        print(f"[LANGGRAPH ENDPOINT] Namespace: {namespace}")
+        print(f"[LANGGRAPH ENDPOINT] Question: {request.question}")
+        
+        # Check if agent mode is active
+        if is_chat_in_agent_mode(org_id, request.session_id):
+            # Save user message and return
+            add_conversation_message(
+                organization_id=org_id,
+                visitor_id=None,
+                session_id=request.session_id,
+                role="user",
+                content=request.question,
+                metadata={"mode": request.mode}
+            )
+            return {
+                "answer": "",
+                "mode": "agent_active",
+                "message": "Message sent to human agent."
+            }
+        
+        # Ensure visitor exists
+        visitor = create_or_update_visitor(org_id, request.session_id, {"user_data": request.user_data})
+        
+        # Save user message to database
+        add_conversation_message(
+            organization_id=org_id,
+            visitor_id=visitor.get("id") if visitor else None,
+            session_id=request.session_id,
+            role="user",
+            content=request.question,
+            metadata={"mode": request.mode}
+        )
+        
+        # Process query with LangGraph
+        result = LangGraphService.process_query(
+            question=request.question,
+            session_id=request.session_id,
+            namespace=namespace,
+            company_name=org_name
+        )
+        
+        # Save AI response to database
+        add_conversation_message(
+            organization_id=org_id,
+            visitor_id=visitor.get("id") if visitor else None,
+            session_id=request.session_id,
+            role="assistant",
+            content=result["answer"],
+            metadata={
+                "mode": "langgraph_rag",
+                "sources": result.get("sources", [])
+            }
+        )
+        
+        # Update user profile if data provided
+        if request.user_data:
+            save_user_profile(org_id, request.session_id, request.user_data)
+        
+        print(f"[LANGGRAPH ENDPOINT] ✅ Response sent")
+        
+        return result
+        
+    except Exception as e:
+        import traceback
+        print(f"[LANGGRAPH ENDPOINT] ❌ Error: {str(e)}")
+        print(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
+
+
+@router.post("/ask-test-bot")
+def ask_bot(session_id: str, query: str, namespace: str = "kb_default"):
+    """Legacy test endpoint - simple LangGraph invocation"""
+    from services.langgraph.memory import get_history, save_history
+    from services.langgraph.graph import app
+    
+    history = get_history(session_id)
+
+    result = app.invoke({
+        "session_id": session_id,
+        "question": query,
+        "namespace": namespace,
+        "chat_history": history,
+        "context": "",
+        "answer": "",
+        "sources": [],
+        "company_name": "Test Company"
+    })
+
+    save_history(session_id, query, result["answer"])
+
+    return result["answer"]

@@ -1,16 +1,13 @@
-FROM python:3.11-alpine
+FROM python:3.11-slim
 
 # Set working directory
 WORKDIR /app
 
-# Install minimal system dependencies
-RUN apk add --no-cache \
+# Install minimal system dependencies (slim has pre-built wheels)
+RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     gcc \
-    musl-dev \
-    libffi-dev \
-    openssl-dev \
-    && rm -rf /var/cache/apk/*
+    && rm -rf /var/lib/apt/lists/*
 
 # Upgrade pip first
 RUN pip install --upgrade pip
@@ -36,7 +33,7 @@ ENV REDIS_PORT=6379
 ENV REDIS_DB=0
 
 # Create non-root user
-RUN adduser -D -u 1000 appuser && chown -R appuser:appuser /app
+RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
 USER appuser
 
 # Expose port

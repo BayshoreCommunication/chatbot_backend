@@ -64,6 +64,10 @@ def delete_cache(key: str) -> bool:
         print(f"[ERROR] Cache DELETE failed: {str(e)}")
         return False
 
+def cache_key(*parts) -> str:
+    """Generate a cache key from multiple parts"""
+    return ":".join(str(part) for part in parts)
+
 def invalidate_chatbot_cache(org_id: str = None):
     """Invalidate chatbot related cache keys"""
     try:
@@ -82,4 +86,23 @@ def invalidate_chatbot_cache(org_id: str = None):
         return True
     except Exception as e:
         print(f"[ERROR] Cache invalidation failed: {str(e)}")
+        return False
+
+def invalidate_admin_cache():
+    """Invalidate admin related cache keys"""
+    try:
+        keys_to_remove = []
+        
+        for key in list(_memory_cache.keys()):
+            if key.startswith("admin:"):
+                keys_to_remove.append(key)
+        
+        for key in keys_to_remove:
+            del _memory_cache[key]
+            
+        if keys_to_remove:
+            print(f"[DEBUG] Invalidated {len(keys_to_remove)} admin cache keys")
+        return True
+    except Exception as e:
+        print(f"[ERROR] Admin cache invalidation failed: {str(e)}")
         return False

@@ -3,6 +3,7 @@ import pymongo
 from dotenv import load_dotenv
 from models.organization import Organization, Subscription
 from models.visitor import Visitor, ConversationMessage
+from models.conversation import Conversation
 import uuid
 import secrets
 import datetime  # Import Python's datetime module
@@ -371,20 +372,25 @@ def add_conversation_message(
     content: str,
     metadata: Dict[str, Any] = None
 ) -> Dict[str, Any]:
-    """Add a message to the conversation history"""
-    message = {
-        "id": str(uuid.uuid4()),
-        "organization_id": organization_id,
-        "visitor_id": visitor_id,
-        "session_id": session_id,
-        "role": role,
-        "content": content,
-        "created_at": datetime.datetime.utcnow(),  # Explicitly set current timestamp
-        "metadata": metadata or {}
-    }
+    """Add a message to the conversation history using the Conversation model"""
     
-    conversations.insert_one(message)
-    return message
+    # Use Pydantic model to create/validate the message
+    conversation = Conversation(
+        id=str(uuid.uuid4()),
+        organization_id=organization_id,
+        visitor_id=visitor_id or "anonymous", # Handle None visitor_id
+        session_id=session_id,
+        role=role,
+        content=content,
+        created_at=datetime.datetime.utcnow(),
+        metadata=metadata or {}
+    )
+    
+    # Convert to dict for MongoDB
+    message_dict = conversation.model_dump()
+    
+    conversations.insert_one(message_dict)
+    return message_dict
 
 def get_conversation_history(organization_id, session_id):
     """Retrieve conversation history from MongoDB for a specific session"""

@@ -2,7 +2,7 @@ from pinecone import Pinecone
 from langchain_pinecone import PineconeVectorStore
 import os
 from langchain_community.document_loaders import WebBaseLoader, PyPDFLoader
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.documents import Document
 import openai
 from services.database import get_organization_by_api_key
@@ -46,17 +46,19 @@ def initialize_vectorstore(embeddings, api_key=None):
         )
 
     try:
-        index = pc.Index(index_name)
+        # Use langchain_pinecone.PineconeVectorStore (not langchain_community)
         vectorstore = PineconeVectorStore(
-            index=index, 
-            embedding=embeddings, 
-            text_key="text",
-            namespace=namespace
+            index_name=index_name,
+            embedding=embeddings,
+            namespace=namespace,
+            pinecone_api_key=os.getenv("PINECONE_API_KEY")
         )
         print(f"Successfully initialized vectorstore with index: {index_name}, namespace: {namespace}")
         return pc, index_name, vectorstore, namespace
     except Exception as e:
         print(f"Error initializing vectorstore: {str(e)}")
+        import traceback
+        traceback.print_exc()
         # Fallback mechanism
         return pc, index_name, None, namespace
 
@@ -234,20 +236,16 @@ def add_document_to_vectorstore(vectorstore, pc, index_name, embeddings, api_key
                         if not index_name:
                             index_name = "bayai"
                             print(f"Using default index name: {index_name}")
-                            
-                        # Get Pinecone index
-                        index = pc.Index(index_name)
-                        print(f"Successfully retrieved index: {index_name}")
                         
                         # Import here to avoid circular imports
                         from langchain_pinecone import PineconeVectorStore
                         
-                        # Create the vector store
+                        # Create the vector store using langchain_pinecone (not langchain_community)
                         vectorstore = PineconeVectorStore(
-                            index=index, 
-                            embedding=embeddings, 
-                            text_key="text",
-                            namespace=namespace
+                            index_name=index_name,
+                            embedding=embeddings,
+                            namespace=namespace,
+                            pinecone_api_key=os.getenv("PINECONE_API_KEY")
                         )
                         print(f"Created PineconeVectorStore with namespace: {namespace}")
                         
@@ -258,6 +256,8 @@ def add_document_to_vectorstore(vectorstore, pc, index_name, embeddings, api_key
                     except Exception as e:
                         error_msg = str(e)
                         print(f"Error creating vector store: {error_msg}")
+                        import traceback
+                        traceback.print_exc()
                         return {"status": "error", "message": error_msg}
                 
                 # Process each document manually

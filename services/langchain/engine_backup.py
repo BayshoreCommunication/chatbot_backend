@@ -10,7 +10,7 @@ This version includes:
 """
 
 from langchain_openai import ChatOpenAI
-from langchain.chains.question_answering import load_qa_chain
+from langchain_classic.chains.question_answering import load_qa_chain
 from dotenv import load_dotenv
 import os
 import openai
@@ -248,15 +248,14 @@ def get_org_vectorstore(api_key):
             index_name = os.getenv("PINECONE_INDEX", "bayai")
             
         try:
-            # Import PineconeVectorStore here to avoid the "not defined" error
+            # Import PineconeVectorStore from langchain_pinecone (not langchain_community)
             from langchain_pinecone import PineconeVectorStore
             
-            index = pc.Index(index_name)
             org_vectorstore = PineconeVectorStore(
-                index=index, 
-                embedding=embeddings, 
-                text_key="text",
-                namespace=namespace
+                index_name=index_name,
+                embedding=embeddings,
+                namespace=namespace,
+                pinecone_api_key=os.getenv("PINECONE_API_KEY")
             )
             
             # Explicitly set the namespace property for easier access

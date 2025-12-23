@@ -1,10 +1,11 @@
 from datetime import datetime
 from typing import Dict, Any, Optional
+import os
 
-# Import the AI Engine
+# Import the Agent-Based AI Engine (default)
 from services.langchain.engine import ask_bot
 
-# Import Database Helpers (Assuming these exist in your project)
+# Import Database Helpers
 from services.database import (
     create_or_update_visitor,
     add_conversation_message,
@@ -15,6 +16,7 @@ from services.database import (
 class ChatbotService:
     """
     Orchestrates the chatbot flow: Validation -> Persistence -> AI Engine
+    Uses Agent-Based Chatbot with Tools and Advanced Memory Management
     """
     
     @staticmethod
@@ -53,21 +55,20 @@ class ChatbotService:
         ChatbotService._save_message(org_id, session_id, "user", question, mode)
 
         # ---------------------------------------------------------
-        # 3. CALL THE AI ENGINE (The Brain)
+        # 3. CALL THE AI ENGINE (The Brain) - AGENT-BASED
         # ---------------------------------------------------------
-        # This is where the RAG magic happens
-        # Extract vectorStoreId from kwargs to avoid duplicate
+        # Using Agent-Based Chatbot with Tools and Advanced Memory
         vector_store_id = kwargs.get("vectorStoreId")
-        kb_id = kwargs.get("kb_id")
+        
+        print(f"[CHATBOT SERVICE] Using AGENT-BASED chatbot for session: {session_id}")
         
         ai_result = ask_bot(
             query=question,
             session_id=session_id,
             api_key=api_key,
             user_data=user_data,
-            org_name=org_name,
-            vectorStoreId=vector_store_id,
-            kb_id=kb_id
+            namespace=vector_store_id or "kb_default",
+            company_name=org_name
         )
 
         answer_text = ai_result.get("answer", "I'm sorry, I couldn't process that.")
