@@ -1230,7 +1230,8 @@ async def ask_langgraph(
     Uses advanced RAG with conversation history and source citations.
     """
     try:
-        from services.langgraph_service import LangGraphService
+        from services.langgraph_service import get_langgraph_service
+        from services.database import get_database
         
         # Get organization info
         org_id = get_org_id(organization)
@@ -1281,10 +1282,16 @@ async def ask_langgraph(
             metadata={"mode": request.mode}
         )
         
+        # Get database and service
+        mongodb = get_database()
+        service = get_langgraph_service(mongodb)
+
         # Process query with LangGraph
-        result = LangGraphService.process_query(
+        result = service.process_query(
             question=request.question,
             session_id=request.session_id,
+            organization_id=org_id,
+            visitor_id=visitor.get("id") if visitor else None,
             namespace=namespace,
             company_name=org_name
         )
@@ -1298,16 +1305,25 @@ async def ask_langgraph(
             content=result["answer"],
             metadata={
                 "mode": "langgraph_rag",
-                "sources": result.get("sources", [])
+                "sources": result.get("sources", []),
+                "query_rewritten": result.get("query_rewritten", False),
+                "is_off_topic": result.get("is_off_topic", False),
+                "has_summary": result.get("has_summary", False)
             }
         )
         
         # Update user profile if data provided
         if request.user_data:
             save_user_profile(org_id, request.session_id, request.user_data)
-        
-        print(f"[LANGGRAPH ENDPOINT] ✅ Response sent")
-        
+
+        # Get full conversation history for this session
+        conversation_history = get_conversation_history(org_id, request.session_id)
+
+        # Add conversation history to result
+        result["conversation_history"] = conversation_history
+
+        print(f"[LANGGRAPH ENDPOINT] ✅ Response sent (with {len(conversation_history)} messages in history)")
+
         return result
         
     except Exception as e:
@@ -1317,25 +1333,3 @@ async def ask_langgraph(
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
 
 
-@router.post("/ask-test-bot")
-def ask_bot(session_id: str, query: str, namespace: str = "kb_default"):
-    """Legacy test endpoint - simple LangGraph invocation"""
-    from services.langgraph.memory import get_history, save_history
-    from services.langgraph.graph import app
-    
-    history = get_history(session_id)
-
-    result = app.invoke({
-        "session_id": session_id,
-        "question": query,
-        "namespace": namespace,
-        "chat_history": history,
-        "context": "",
-        "answer": "",
-        "sources": [],
-        "company_name": "Test Company"
-    })
-
-    save_history(session_id, query, result["answer"])
-
-    return result["answer"]

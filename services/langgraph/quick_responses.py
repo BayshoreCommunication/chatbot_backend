@@ -69,7 +69,7 @@ def get_engaging_greeting(company_name: str = "our company", has_kb_context: boo
         company_name = company_name.replace("'s Organization", "").replace("'s organization", "")
     
     return (
-        f"Hello! I'm here to help you.\n\n"
+        f"Hello! I'm here to help you. "
         "I can assist with questions about our services, pricing, availability, and more. What brings you here today?"
     )
 

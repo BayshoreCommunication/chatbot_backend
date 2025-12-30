@@ -90,4 +90,12 @@ site/
 *.DS_Store*
 ehthumbs.db
 Icon?
-Thumbs.db 
+Thumbs.db
+
+# Backup files (may contain secrets)
+*.backup
+*.bak
+*.old
+*_old.py
+*_backup.py
+graph_old.py*

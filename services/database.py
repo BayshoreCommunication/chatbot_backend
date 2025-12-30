@@ -16,27 +16,72 @@ load_dotenv()
 # Get MongoDB connection string
 MONGO_URI = os.getenv("MONGO_URI")
 
-# Connect to MongoDB
-client = pymongo.MongoClient(MONGO_URI)
-db = client.saas_chatbot_db
+# Connect to MongoDB with timeout settings and error handling
+try:
+    client = pymongo.MongoClient(
+        MONGO_URI,
+        serverSelectionTimeoutMS=10000,  # 10 seconds timeout for server selection
+        connectTimeoutMS=10000,           # 10 seconds timeout for initial connection
+        socketTimeoutMS=10000,            # 10 seconds timeout for socket operations
+        maxPoolSize=50,                   # Maximum number of connections
+        retryWrites=True,                 # Retry writes on network errors
+        w='majority',                     # Write concern: wait for majority acknowledgment
+        journal=True                      # Wait for journal commit
+    )
+
+    # Test the connection
+    client.admin.command('ping')
+    print("[DATABASE] ✅ Successfully connected to MongoDB")
+
+except pymongo.errors.ServerSelectionTimeoutError as e:
+    print(f"[DATABASE] ❌ MongoDB connection timeout: {e}")
+    print("[DATABASE] ⚠️ Check your MONGO_URI and network connectivity")
+    # Create a dummy client to prevent app crash - will fail gracefully
+    client = None
+
+except Exception as e:
+    print(f"[DATABASE] ❌ MongoDB connection error: {e}")
+    client = None
+
+# Get database instance
+db = client.saas_chatbot_db if client else None
 
 def get_database():
     """Return the database instance"""
+    if db is None:
+        raise RuntimeError("MongoDB connection is not available. Check your MONGO_URI configuration.")
     return db
 
-# Collections
-organizations = db.organizations
-visitors = db.visitors
-conversations = db.conversations
-api_keys = db.api_keys
-user_profiles = db.user_profiles  # New collection for user profiles
-users = db.users  # Added users collection
-subscriptions = db.subscriptions  # Add subscriptions collection
-leads = db.leads  # Collection for storing leads
+# Collections - only initialize if db is available
+if db is not None:
+    organizations = db.organizations
+    visitors = db.visitors
+    conversations = db.conversations
+    api_keys = db.api_keys
+    user_profiles = db.user_profiles  # New collection for user profiles
+    users = db.users  # Added users collection
+    subscriptions = db.subscriptions  # Add subscriptions collection
+    leads = db.leads  # Collection for storing leads
+    documents = db.documents
+else:
+    # Create None placeholders
+    organizations = None
+    visitors = None
+    conversations = None
+    api_keys = None
+    user_profiles = None
+    users = None
+    subscriptions = None
+    leads = None
+    documents = None
 
 # Initialize the database with indexes
 def init_db():
     """Initialize database with necessary indexes"""
+    if db is None:
+        print("[DATABASE] ⚠️ Skipping index creation - MongoDB not connected")
+        return
+
     # Organization indexes
     organizations.create_index("api_key", unique=True)
     
@@ -78,9 +123,6 @@ def init_db():
     leads.create_index("visitor_id")
     leads.create_index([("organization_id", pymongo.ASCENDING), ("email", pymongo.ASCENDING)])
     leads.create_index([("organization_id", pymongo.ASCENDING), ("timestamp", pymongo.ASCENDING)])
-
-# Documents collection
-documents = db.documents
 
 # Lead methods
 def create_lead(organization_id: str, session_id: str, name: str, email: str, phone: str = None, inquiry: str = "", source: str = "chatbot") -> Dict[str, Any]:
