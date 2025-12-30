@@ -403,16 +403,46 @@ def answer_node(state: ChatState):
         if intent_guidance:
             dynamic_guidance += f"\n\n🎯 INTENT GUIDANCE: {intent_guidance}"
 
+    # 🆕 Check if user declined callback in conversation history
+    user_declined_callback = False
+    if chat_history:
+        # Check last few messages for decline patterns
+        recent_messages = chat_history[-6:] if len(chat_history) >= 6 else chat_history
+        for msg in recent_messages:
+            if isinstance(msg, HumanMessage):
+                msg_lower = msg.content.lower()
+                decline_patterns = [
+                    'no thanks', 'not interested', "don't call", "dont call",
+                    "i'm not interested", "im not interested", 'no thank you',
+                    'not now', 'maybe later', 'no need'
+                ]
+                if any(pattern in msg_lower for pattern in decline_patterns):
+                    user_declined_callback = True
+                    break
+
     # Add contact collection status
     if state.get("needs_callback"):
         collected = state.get("collected_contact", {})
         missing = get_missing_contact_fields(collected, required_fields=['name', 'phone'])
 
-        if missing:
+        # 🆕 Check if user declined
+        if user_declined_callback:
+            dynamic_guidance += f"\n\n🚫 USER DECLINED CALLBACK:"
+            dynamic_guidance += f"\n- User said they're NOT interested earlier"
+            dynamic_guidance += f"\n- DON'T ask for contact info again"
+            dynamic_guidance += f"\n- DO offer other help instead"
+        elif missing:
             dynamic_guidance += f"\n\n📋 CONTACT COLLECTION STATUS:"
-            dynamic_guidance += f"\n- Collected: {', '.join([k for k, v in collected.items() if v])}"
-            dynamic_guidance += f"\n- Still needed: {', '.join(missing)}"
-            dynamic_guidance += f"\n- Next: Ask for {missing[0]} naturally"
+            # Show what we already have
+            collected_items = [k for k, v in collected.items() if v]
+            if collected_items:
+                dynamic_guidance += f"\n- ✅ Already have: {', '.join(collected_items)}"
+                # Show the actual values
+                for item in collected_items:
+                    dynamic_guidance += f"\n  • {item.title()}: {collected[item]}"
+            dynamic_guidance += f"\n- ⚠️ Still need: {', '.join(missing)}"
+            dynamic_guidance += f"\n- ❗ DON'T ask for info you already have!"
+            dynamic_guidance += f"\n- Next: Ask ONLY for {missing[0]} (ask once, don't repeat)"
         else:
             # All contact info collected!
             name = collected.get('name', 'Unknown')
@@ -420,10 +450,11 @@ def answer_node(state: ChatState):
             dynamic_guidance += f"\n\n✅ CONTACT INFO COMPLETE:"
             dynamic_guidance += f"\n- Name: {name}"
             dynamic_guidance += f"\n- Phone: {phone}"
+            dynamic_guidance += f"\n- ❗ DON'T ask for name or phone again - you have both!"
             if not state.get("contact_confirmed"):
-                dynamic_guidance += f"\n- Action: Confirm these details with the user before proceeding"
+                dynamic_guidance += f"\n- Action: Confirm these details ONCE, then move on"
             else:
-                dynamic_guidance += f"\n- Action: Thank them and confirm someone will call soon"
+                dynamic_guidance += f"\n- Action: Thank them, confirm someone will call"
 
     # Add conversation stage context
     if state.get("conversation_stage"):
